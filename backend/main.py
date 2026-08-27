@@ -16,7 +16,7 @@ import logging
 import logging.config
 import os
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -46,7 +46,7 @@ try:
     load_dotenv()
     load_dotenv(Path(__file__).resolve().parent / ".env")
 except ImportError:
-    pass
+    load_dotenv = None
 
 # Apply logging config at module import time so no messages are lost before
 # the lifespan hook fires.  uvicorn will later call dictConfig with its own
@@ -66,16 +66,24 @@ logger = logging.getLogger(__name__)
 # Liveness / sweeper config
 # ---------------------------------------------------------------------------
 
+
+def _env_float(name: str, default: str) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except ValueError:
+        return float(default)
+
+
 # How long a worker can go without sending any WebSocket message before the
 # sweeper probes it. If the worker does not answer the probe, the next sweep
 # marks it and its agents offline.
-WORKER_OFFLINE_AFTER_SECONDS = float(os.environ.get("WORKER_OFFLINE_AFTER_SECONDS", "90"))
+WORKER_OFFLINE_AFTER_SECONDS = _env_float("WORKER_OFFLINE_AFTER_SECONDS", "90")
 # How long an unanswered worker-ping is allowed to sit before the worker is
 # considered offline. The sweeper checks this on its normal interval, so the
 # practical delay is this timeout plus up to WORKER_SWEEP_INTERVAL_SECONDS.
-WORKER_PROBE_TIMEOUT_SECONDS = float(os.environ.get("WORKER_PROBE_TIMEOUT_SECONDS", "10"))
+WORKER_PROBE_TIMEOUT_SECONDS = _env_float("WORKER_PROBE_TIMEOUT_SECONDS", "10")
 # How often the sweeper task wakes up to look for stale agents.
-WORKER_SWEEP_INTERVAL_SECONDS = float(os.environ.get("WORKER_SWEEP_INTERVAL_SECONDS", "30"))
+WORKER_SWEEP_INTERVAL_SECONDS = _env_float("WORKER_SWEEP_INTERVAL_SECONDS", "30")
 
 
 async def reset_connection_state() -> None:
@@ -99,8 +107,8 @@ async def _sweep_stale_workers_once() -> int:
     now = datetime.now(UTC)
     cutoff = now - timedelta(seconds=WORKER_OFFLINE_AFTER_SECONDS)
     probe_cutoff = now - timedelta(seconds=WORKER_PROBE_TIMEOUT_SECONDS)
-    workers_marked_offline: list[Any] = []
-    agents_marked_offline: list[Any] = []
+    workers_marked_offline: list[tuple[str, str]] = []
+    agents_marked_offline: list[tuple[str, str]] = []
     async with AsyncSessionLocal() as db:
         stale_workers = (
             await db.exec(
@@ -135,22 +143,22 @@ async def _sweep_stale_workers_once() -> int:
             )
         ).all()
 
-        for row in stale_agent_only_rows:
+        for agent_id, agent_guild_id, agent_guild_slug in stale_agent_only_rows:
             await db.exec(
                 update(Agent)
-                .where(col(Agent.id) == row.id, col(Agent.guild_id) == row.guild_id)
+                .where(col(Agent.id) == agent_id, col(Agent.guild_id) == agent_guild_id)
                 .values(state="offline", activity=None, current_task_id=None)
             )
-            agent_owners.pop(row.id, None)
-            agents_marked_offline.append(row)
+            agent_owners.pop(agent_id, None)
+            agents_marked_offline.append((agent_id, agent_guild_slug))
 
-        for row in stale_workers:
-            key = (row.guild_id, row.id)
+        for worker_id, worker_guild_id, worker_guild_slug, _last_seen in stale_workers:
+            key = (worker_guild_id, worker_id)
             agent_ids = (
                 await db.exec(
                     select(col(Agent.id)).where(
-                        col(Agent.worker_id) == row.id,
-                        col(Agent.guild_id) == row.guild_id,
+                        col(Agent.worker_id) == worker_id,
+                        col(Agent.guild_id) == worker_guild_id,
                         col(Agent.state) != "offline",
                     )
                 )
@@ -170,21 +178,27 @@ async def _sweep_stale_workers_once() -> int:
                 try:
                     await send_ws_message(
                         owner_ws,
-                        WorkerPingMsg(workerId=row.id, timestamp=now.isoformat()),
+                        WorkerPingMsg.model_validate(
+                            {
+                                "workerId": worker_id,
+                                "timestamp": now.isoformat(),
+                                "from": "foreman",
+                            }
+                        ),
                     )
                     pending_worker_probes[key] = now
                     logger.info(
                         "Sent liveness probe to worker %s after %.0fs without inbound WS frame"
                         " (guild=%s)",
-                        row.id,
+                        worker_id,
                         WORKER_OFFLINE_AFTER_SECONDS,
-                        row.guild_slug,
+                        worker_guild_slug,
                     )
                 except Exception:
                     logger.warning(
                         "Worker liveness probe failed for %s (guild=%s); marking offline",
-                        row.id,
-                        row.guild_slug,
+                        worker_id,
+                        worker_guild_slug,
                         exc_info=True,
                     )
                     should_mark_offline = True
@@ -192,7 +206,7 @@ async def _sweep_stale_workers_once() -> int:
             if not should_mark_offline:
                 continue
 
-            workers_marked_offline.append(row)
+            workers_marked_offline.append((worker_id, worker_guild_slug))
             pending_worker_probes.pop(key, None)
             worker_agent_rows = (
                 await db.exec(
@@ -203,24 +217,24 @@ async def _sweep_stale_workers_once() -> int:
                     )
                     .join(Guild, col(Guild.id) == col(Agent.guild_id))
                     .where(
-                        col(Agent.worker_id) == row.id,
-                        col(Agent.guild_id) == row.guild_id,
+                        col(Agent.worker_id) == worker_id,
+                        col(Agent.guild_id) == worker_guild_id,
                         col(Agent.state) != "offline",
                     )
                 )
             ).all()
-            for agent_row in worker_agent_rows:
+            for agent_id, agent_guild_id, agent_guild_slug in worker_agent_rows:
                 await db.exec(
                     update(Agent)
-                    .where(col(Agent.id) == agent_row.id, col(Agent.guild_id) == row.guild_id)
+                    .where(col(Agent.id) == agent_id, col(Agent.guild_id) == agent_guild_id)
                     .values(state="offline", activity=None, current_task_id=None)
                 )
-                agent_owners.pop(agent_row.id, None)
-                agents_marked_offline.append(agent_row)
+                agent_owners.pop(agent_id, None)
+                agents_marked_offline.append((agent_id, agent_guild_slug))
 
             await db.exec(
                 update(Worker)
-                .where(col(Worker.id) == row.id, col(Worker.guild_id) == row.guild_id)
+                .where(col(Worker.id) == worker_id, col(Worker.guild_id) == worker_guild_id)
                 .values(state="offline")
             )
 
@@ -288,23 +302,23 @@ async def _sweep_stale_workers_once() -> int:
             WORKER_OFFLINE_AFTER_SECONDS,
         )
 
-    for row in agents_marked_offline:
+    for agent_id, agent_guild_slug in agents_marked_offline:
         logger.warning(
             "Marking %s offline: no live parent worker or agent frame in over %.0fs (guild=%s)",
-            row.id,
+            agent_id,
             WORKER_OFFLINE_AFTER_SECONDS,
-            row.guild_slug,
+            agent_guild_slug,
         )
         await broadcast(
-            row.guild_slug,
-            {"type": "agent-state", "agentId": row.id, "state": "offline"},
+            agent_guild_slug,
+            {"type": "agent-state", "agentId": agent_id, "state": "offline"},
         )
-    for row in workers_marked_offline:
+    for worker_id, worker_guild_slug in workers_marked_offline:
         logger.warning(
             "Marking worker %s offline: no liveness probe response after %.0fs stale (guild=%s)",
-            row.id,
+            worker_id,
             WORKER_OFFLINE_AFTER_SECONDS,
-            row.guild_slug,
+            worker_guild_slug,
         )
     return len(workers_marked_offline) + len(stale_agent_only_rows)
 
@@ -320,9 +334,9 @@ async def _stale_worker_sweeper() -> None:
         try:
             await asyncio.sleep(WORKER_SWEEP_INTERVAL_SECONDS)
             await _sweep_stale_workers_once()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
+        except BaseException as exc:
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             logger.exception("Stale-worker sweeper iteration failed")
 
 
@@ -346,9 +360,8 @@ async def lifespan(app: FastAPI):
 
     dnsid_runtime = get_dnsid_runtime()
     if dnsid_runtime is not None:
-        verified_self = await asyncio.to_thread(
-            dnsid_runtime.manager.verify_domain, dnsid_runtime.domain
-        )
+        manager: Any = dnsid_runtime.manager
+        verified_self = await asyncio.to_thread(manager.verify_domain, dnsid_runtime.domain)
         if verified_self.cached_state() != "ACTIVE":
             raise RuntimeError(
                 f"configured DNSid identity {dnsid_runtime.domain} is "
@@ -402,19 +415,13 @@ async def lifespan(app: FastAPI):
         idle_reaper.cancel()
         if discord_gw_task is not None:
             discord_gw_task.cancel()
-        try:
+        with suppress(asyncio.CancelledError, Exception):
             await sweeper
-        except (asyncio.CancelledError, Exception):
-            pass
-        try:
+        with suppress(asyncio.CancelledError, Exception):
             await idle_reaper
-        except (asyncio.CancelledError, Exception):
-            pass
         if discord_gw_task is not None:
-            try:
+            with suppress(asyncio.CancelledError, Exception):
                 await discord_gw_task
-            except (asyncio.CancelledError, Exception):
-                pass
         if discord_router_task is not None:
             await stop_router()
         await _shutdown_webhook_debouncer()
@@ -447,9 +454,18 @@ class _AccessLogMiddleware(BaseHTTPMiddleware):
 app = FastAPI(title="Pioneer Square", lifespan=lifespan)
 
 app.add_middleware(_AccessLogMiddleware)
+_CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get(
+        "PIONEER_CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173",
+    ).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -530,8 +546,9 @@ class _SPAStaticFiles(StaticFiles):
         try:
             return await super().get_response(path, scope)
         except StarletteHTTPException as exc:
-            if exc.status_code == 404 and path != "index.html":
-                return await super().get_response("index.html", scope)
+            if exc.status_code == 404:
+                if path != "index.html":
+                    return await super().get_response("index.html", scope)
             raise
 
 
@@ -577,7 +594,7 @@ if __name__ == "__main__":
     _main_log_format = os.environ.get("LOG_FORMAT", _default_log_format())
     uvicorn.run(
         "main:app",
-        host="0.0.0.0",
+        host=os.environ.get("PIONEER_HOST", "127.0.0.1"),
         port=8000,
         access_log=True,
         log_level=_main_log_level.lower(),

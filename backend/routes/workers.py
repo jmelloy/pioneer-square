@@ -11,7 +11,6 @@ import json
 import logging
 import math
 import os
-import random
 import re
 import secrets
 import string
@@ -23,7 +22,7 @@ from database import get_db_dep
 from events import broadcast_msg, emit_terminal_line
 from fastapi import APIRouter, Depends, HTTPException
 from models import Task, Worker, live_tasks_filter
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from spawn_config import SpawnLayer, get_spawn_row, resolve_spawn, row_to_layer, upsert_spawn_row
 from sqlalchemy import update
 from sqlmodel import col, select
@@ -49,7 +48,7 @@ router = APIRouter()
 
 
 class WorkerCreate(BaseModel):
-    repos: list[str] = []  # ["owner/repo", ...]
+    repos: list[str] = Field(default_factory=list)  # ["owner/repo", ...]
     # Optional GitHub org. When set the worker accepts any task for <org>/* and
     # clones repos lazily. May be used alongside or instead of repos.
     org: str | None = None
@@ -66,7 +65,7 @@ _MAX_ENV_VALUE_LEN = 4096
 
 
 class SpawnWorkerRequest(BaseModel):
-    repos: list[str] = []
+    repos: list[str] = Field(default_factory=list)
     name: str | None = None
     tools: list[str] | None = None
     agent_count: int | None = None
@@ -112,8 +111,8 @@ class SpawnWorkerRequest(BaseModel):
 class SaveSpawnDefaultsRequest(BaseModel):
     """Guild-level spawn baseline. A full-replace PUT (no partial semantics)."""
 
-    repos: list[str] = []
-    tools: list[str] = []
+    repos: list[str] = Field(default_factory=list)
+    tools: list[str] = Field(default_factory=list)
     agent_count: int | None = None
 
     @field_validator("agent_count")
@@ -135,7 +134,7 @@ class TaskCreate(BaseModel):
     issue_repo: str | None = None
     pr_number: int | None = None
     pr_repo: str | None = None
-    repos: list[str] = []
+    repos: list[str] = Field(default_factory=list)
     parent_task_id: str | None = None
     phase: str | None = "execute"
 
@@ -364,7 +363,9 @@ async def assign_task(
     db: AsyncSession = Depends(get_db_dep),
 ):
     """Persist a task and broadcast a task-assigned event for the worker process."""
-    task_id = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+    task_id = "t-" + "".join(
+        secrets.choice(string.ascii_lowercase + string.digits) for _ in range(6)
+    )
     created_at = datetime.now(UTC)
 
     guild_pk = await get_guild_pk(db, guild_id)
@@ -484,18 +485,18 @@ def _validate_env_pairs(pairs: list[EnvVarPair]) -> list[EnvVarPair]:
 class SaveSpawnSettingsRequest(BaseModel):
     # All fields default to empty so a PUT always replaces the full settings object
     # (no partial-update / PATCH semantics).
-    repos: list[str] = []
-    tools: list[str] = []
-    envVars: list[EnvVarPair] = []
+    repos: list[str] = Field(default_factory=list)
+    tools: list[str] = Field(default_factory=list)
+    envVars: list[EnvVarPair] = Field(default_factory=list)
     # Default worker-tool provider/model (currently used by Pi when task assignment
     # omits explicit provider/model). Stored in spawn_settings, not foreman_config,
     # because it affects spawned worker behavior.
     provider: str | None = None
     model: str | None = None
-    toolDefaults: dict[str, dict[str, str | None]] = {}
+    toolDefaults: dict[str, dict[str, str | None]] = Field(default_factory=dict)
     # Per-tool env overrides, {tool: [{key, value}, ...]}. Same shape as the guild
     # settings tool_env_vars; merged in only when that tool spawns for this user.
-    toolEnvVars: dict[str, list[EnvVarPair]] = {}
+    toolEnvVars: dict[str, list[EnvVarPair]] = Field(default_factory=dict)
 
     @field_validator("envVars")
     @classmethod
@@ -512,6 +513,14 @@ class SaveSpawnSettingsRequest(BaseModel):
         return v
 
 
+def _load_json_list(value: str | None) -> list:
+    try:
+        data = json.loads(value or "[]")
+    except json.JSONDecodeError:
+        return []
+    return data if isinstance(data, list) else []
+
+
 @router.get("/guilds/{guild_id}/spawn-settings")
 async def get_spawn_settings(
     guild_id: str,
@@ -526,8 +535,8 @@ async def get_spawn_settings(
     if row is None:
         return {}
     return {
-        "repos": json.loads(row.repos or "[]"),
-        "tools": json.loads(row.tools or "[]"),
+        "repos": _load_json_list(row.repos),
+        "tools": _load_json_list(row.tools),
         "envVars": [{"key": k, "value": v} for k, v in (row.env_vars or {}).items()],
         "provider": row.provider,
         "model": row.model,
@@ -592,8 +601,8 @@ def _spawn_defaults_payload(row) -> dict:
     if row is None:
         return {"repos": [], "tools": [], "agent_count": None}
     return {
-        "repos": json.loads(row.repos or "[]"),
-        "tools": json.loads(row.tools or "[]"),
+        "repos": _load_json_list(row.repos),
+        "tools": _load_json_list(row.tools),
         "agent_count": row.agent_count,
     }
 

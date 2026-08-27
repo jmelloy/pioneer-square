@@ -7,7 +7,7 @@ message injection just like normal tasks.
 
 from __future__ import annotations
 
-import random
+import secrets
 import string
 from datetime import UTC, datetime
 
@@ -52,7 +52,9 @@ async def start_agent_run(
     if tool not in {"claude", "codex", "pi"}:
         raise HTTPException(status_code=400, detail="Unknown tool")
 
-    task_id = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+    task_id = "t-" + "".join(
+        secrets.choice(string.ascii_lowercase + string.digits) for _ in range(6)
+    )
     created_at = datetime.now(UTC)
     name = req.prompt[:60] or "Interactive Pi"
     db.add(

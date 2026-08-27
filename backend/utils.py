@@ -11,8 +11,8 @@ import hashlib
 import hmac
 import json
 import logging
-import random
 import re
+import secrets
 import string
 import time
 import unicodedata
@@ -100,7 +100,7 @@ def generate_guild_id(name: str = "", existing_ids: set[str] | None = None) -> s
     if not candidate:
         # No usable name — generate a random ID.
         while True:
-            rid = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+            rid = "".join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(6))
             if rid not in existing_ids:
                 return rid
 
@@ -109,7 +109,9 @@ def generate_guild_id(name: str = "", existing_ids: set[str] | None = None) -> s
 
     # Collision: append a random suffix.
     while True:
-        suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=_SUFFIX_LEN))
+        suffix = "".join(
+            secrets.choice(string.ascii_lowercase + string.digits) for _ in range(_SUFFIX_LEN)
+        )
         unique = f"{candidate}-{suffix}"
         if unique not in existing_ids:
             return unique
