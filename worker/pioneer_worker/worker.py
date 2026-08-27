@@ -22,6 +22,7 @@ from . import (
     github_pr,
     pi_runner,
     s3_uploader,
+    task_worktree,
     tool_installer,
 )
 from . import config as config_mod
@@ -143,7 +144,7 @@ class Worker:
     managed by the backend/foreman.  The worker and its agents are the
     execution environment: the worker receives tasks, runs them on an agent,
     and reports results.  Task-tracking state (``_known_task_ids``,
-    ``_cancelled_tasks``, ``_redirect_queues``, ``_task_worktrees``) is
+    ``_cancelled_tasks``, ``_redirect_queues``, ``worktrees``) is
     routing/bookkeeping infrastructure that lives here only because this
     worker is the current execution context — the authoritative task record
     lives in the backend.
@@ -188,9 +189,15 @@ class Worker:
         self._redirect_queues: dict[str, asyncio.Queue] = {}
         self._interactive_queues: dict[str, asyncio.Queue] = {}
         # Worktrees materialised for each task, kept alive within the TTL window
-        # so follow-ups can reuse the existing checkout without a re-clone.
-        # Keyed by task_id; each entry is a list of (repo_path, wt_path, last_used_monotonic).
-        self._task_worktrees: dict[str, list[tuple[str, str, float]]] = {}
+        # so follow-ups can reuse the existing checkout without a re-clone. See
+        # task_worktree.TaskWorktree for the on-disk layout, reuse heuristic,
+        # and TTL/reclamation policy. base_dir is resolved lazily because a
+        # self-registered worker only learns its worker_id (and therefore its
+        # work directory) after _register() runs, post-__init__.
+        self.worktrees = task_worktree.TaskWorktree(
+            base_dir=lambda: os.path.join(self.cfg.work_dir, self.cfg.guild_id, self.cfg.worker_id),
+            ttl_seconds=WORKTREE_TTL_SECONDS,
+        )
 
         # ── Repo state ───────────────────────────────────────────────────────
         # Set to True once _join() has been called the first time so that
@@ -1622,37 +1629,17 @@ class Worker:
                 logger.exception("Error handling WS message type=%s", mtype)
 
     # ------------------------------------------------------------------ Worktree bookkeeping
-
-    def _register_worktrees(self, task_id: str, entries: list[tuple[str, str, str]]) -> None:
-        """Record the worktrees we materialised for ``task_id``.
-
-        Stored entries are ``(repo_path, wt_path, last_used_monotonic)``. The
-        sweeper consults the timestamp to decide what's stale.
-        """
-        if not entries:
-            return
-        ts = asyncio.get_event_loop().time()
-        self._task_worktrees[task_id] = [(rp, wt, ts) for _repo_full, rp, wt in entries]
+    # Thin delegates to self.worktrees, kept as overridable Worker methods:
+    # MockWorker overrides the sweepers to no-ops, and tests patch these
+    # directly to observe/stub cleanup without reaching into the registry.
 
     def _touch_task_worktrees(self, task_id: str) -> None:
         """Refresh the activity timestamp for a task's worktrees."""
-        existing = self._task_worktrees.get(task_id)
-        if not existing:
-            return
-        ts = asyncio.get_event_loop().time()
-        self._task_worktrees[task_id] = [(rp, wt, ts) for rp, wt, _old in existing]
+        self.worktrees.touch(task_id)
 
     async def _release_task_worktrees(self, task_id: str) -> None:
         """Remove all worktrees for a task immediately and forget them."""
-        entries = self._task_worktrees.pop(task_id, None)
-        if not entries:
-            return
-        logger.info("Releasing %d worktree(s) for task %s", len(entries), task_id)
-        for repo_path, wt_path, _ts in entries:
-            try:
-                await git_ops.remove_worktree(repo_path, wt_path)
-            except Exception as exc:
-                logger.warning("remove_worktree failed for %s: %s", wt_path, exc)
+        await self.worktrees.release(task_id)
 
     async def _refresh_github_repos(self) -> None:
         """Fetch repos accessible to the GitHub token and update the registered list.
@@ -1729,67 +1716,23 @@ class Worker:
                         repos.append(repo_full)
         return repos
 
+    def _known_repo_paths(self) -> list[tuple[str, str]]:
+        """``_known_repos()`` paired with each repo's local cache path."""
+        return [
+            (repo_full, git_ops.repo_cache_path(self.cfg.repos_dir, repo_full))
+            for repo_full in self._known_repos()
+        ]
+
     async def _initial_worktree_sweep(self) -> None:
         """At startup, prune any worktrees this worker left behind from a previous run.
 
         The previous process may have died mid-task; nothing in memory tracks
-        those worktrees, so we walk the work directory and remove anything
-        attributable to this worker_id that's older than the TTL.
+        those worktrees, so self.worktrees walks the work directory and
+        removes anything attributable to this worker_id that's older than
+        the TTL, re-registering anything still fresh.
         """
-        base = os.path.join(self.cfg.work_dir, self.cfg.guild_id, self.cfg.worker_id)
-        if not os.path.isdir(base):
-            return
         try:
-            now = asyncio.get_event_loop().time()
-            wall_now = datetime.now(UTC).timestamp()
-            known_repos = self._known_repos()
-            for entry in os.listdir(base):
-                full = os.path.join(base, entry)
-                if not os.path.isdir(full):
-                    continue
-                try:
-                    age = wall_now - os.path.getmtime(full)
-                except OSError:
-                    continue
-                if age <= WORKTREE_TTL_SECONDS:
-                    # Re-register so the in-memory sweeper takes over.
-                    ts = now - age
-                    repos_for_task: list[tuple[str, str, float]] = []
-                    for repo_full in known_repos:
-                        repo_name = repo_full.split("/")[-1]
-                        wt_path = os.path.join(full, repo_name)
-                        if os.path.isdir(wt_path):
-                            repo_path = os.path.join(self.cfg.repos_dir, *repo_full.split("/", 1))
-                            repos_for_task.append((repo_path, wt_path, ts))
-                    if repos_for_task:
-                        self._task_worktrees[entry] = repos_for_task
-                    continue
-                logger.info("Startup sweep: removing stale task dir %s (age=%.0fs)", full, age)
-                # Best-effort: remove each worktree via git, then drop the dir.
-                for repo_full in known_repos:
-                    repo_name = repo_full.split("/")[-1]
-                    wt_path = os.path.join(full, repo_name)
-                    if os.path.isdir(wt_path):
-                        repo_path = os.path.join(self.cfg.repos_dir, *repo_full.split("/", 1))
-                        try:
-                            await git_ops.remove_worktree(repo_path, wt_path)
-                        except Exception as exc:
-                            logger.debug("startup-sweep remove_worktree failed: %s", exc)
-                # Whatever git left behind, drop the directory.
-                import shutil
-
-                try:
-                    shutil.rmtree(full, ignore_errors=True)
-                except Exception as exc:
-                    logger.debug("startup-sweep rmtree failed for %s: %s", full, exc)
-            # Prune dangling worktree references in each repo.
-            for repo_full in known_repos:
-                repo_path = os.path.join(self.cfg.repos_dir, *repo_full.split("/", 1))
-                if os.path.isdir(repo_path):
-                    try:
-                        await git_ops.prune_worktrees(repo_path)
-                    except Exception as exc:
-                        logger.debug("prune_worktrees failed for %s: %s", repo_path, exc)
+            await self.worktrees.reclaim_startup(self._known_repo_paths())
         except Exception as exc:
             logger.warning("Worktree startup sweep failed: %s", exc)
 
@@ -1809,17 +1752,9 @@ class Worker:
                 return  # shutdown
             except TimeoutError:
                 pass
-            now = asyncio.get_event_loop().time()
-            stale: list[str] = []
             active_task_ids = {s.current_task_id for s in self.agents if s.current_task_id}
-            for task_id, entries in list(self._task_worktrees.items()):
-                if task_id in active_task_ids:
-                    continue
-                if all(now - ts > WORKTREE_TTL_SECONDS for _rp, _wt, ts in entries):
-                    stale.append(task_id)
-            for tid in stale:
-                logger.info("Sweeper: retiring worktrees for task %s", tid)
-                await self._release_task_worktrees(tid)
+            for tid in await self.worktrees.sweep(active_task_ids):
+                logger.info("Sweeper: retired worktrees for task %s", tid)
 
     # ------------------------------------------------------------------ S3 syncer
     async def _s3_syncer(self) -> None:
@@ -2090,11 +2025,13 @@ class Worker:
                 issue_number = task.get("issue_number")
                 branch_prefix = str(issue_number) if issue_number else "ps"
                 branch = f"{branch_prefix}/{_slug(name)}-{task_id}"
-        work_dir = os.path.join(self.cfg.work_dir, self.cfg.guild_id, self.cfg.worker_id, task_id)
         logger.info(
-            "Task %s branch=%s work_dir=%s followup=%s", task_id, branch, work_dir, is_followup
+            "Task %s branch=%s work_dir=%s followup=%s",
+            task_id,
+            branch,
+            self.worktrees.task_dir(task_id),
+            is_followup,
         )
-        os.makedirs(work_dir, exist_ok=True)
 
         if is_followup:
             await emit(f"Follow-up: {followup_instructions[:120]}", level=LEVEL_WORKER)
@@ -2103,9 +2040,11 @@ class Worker:
             await emit(f"Task: {desc}", level=LEVEL_WORKER)
             await emit(f"Branch: {branch}", level=LEVEL_WORKER)
 
-        worktree_entries: list[tuple[str, str, str]] = []
-        primary_wt: str | None = None
-
+        # Clone/fetch the shared per-repo cache for each repo this task
+        # touches. This is a worker-wide concern independent of the task —
+        # TaskWorktree.acquire only deals with the per-task worktree layered
+        # on top of an already-cloned repo.
+        cloned_repos: list[tuple[str, str]] = []
         for repo_full in repos:
             logger.info("Task %s: preparing repo %s", task_id, repo_full)
             await emit(f"Preparing {repo_full}...", level=LEVEL_WORKER)
@@ -2124,82 +2063,20 @@ class Worker:
                 logger.error("Task %s: clone/fetch failed for %s", task_id, repo_full)
                 await emit(f"✗ Clone failed: {repo_full}", level=LEVEL_WORKER)
                 continue
-            repo_name = repo_full.split("/")[-1]
-            wt_path = os.path.join(work_dir, repo_name)
-            if (
-                os.path.isdir(wt_path)
-                and os.path.isdir(os.path.join(wt_path, ".git"))
-                or (os.path.isdir(wt_path) and os.path.isfile(os.path.join(wt_path, ".git")))
-            ):
-                # Worktree from a prior run on the same task — reuse it.
-                logger.info("Task %s: reusing worktree at %s", task_id, wt_path)
-                await emit(f"Reusing worktree {repo_name}", level=LEVEL_WORKER)
-                if is_followup or is_review:
-                    # Pull latest so we don't clobber commits pushed since the
-                    # last follow-up or by other workers.
-                    await git_ops.run_git(["fetch", "origin", branch], cwd=wt_path, token=token)
-                    await git_ops.run_git(["reset", "--hard", f"origin/{branch}"], cwd=wt_path)
-                worktree_entries.append((repo_full, repo_path, wt_path))
-                if primary_wt is None:
-                    primary_wt = wt_path
-                continue
-            if is_followup:
-                logger.info("Task %s: attaching worktree %s to branch %s", task_id, wt_path, branch)
-                # attach_worktree fetches origin/<branch> before checking it out, so the
-                # new worktree starts at the latest remote commit — no separate pull needed.
-                # Pull latest so we don't clobber commits pushed since the last follow-up
-                # or by other workers.
-                ok = await git_ops.attach_worktree(repo_path, wt_path, branch, token)
-                if not ok:
-                    # Branch never reached origin (e.g. original task failed before push).
-                    # Fall back to creating a fresh branch so the follow-up can still run.
-                    logger.warning(
-                        "Task %s: attach failed for %s — branch %s not found on origin; "
-                        "falling back to create_worktree",
-                        task_id,
-                        repo_full,
-                        branch,
-                    )
-                    await emit(
-                        f"Branch not found on origin; creating fresh branch {branch[:50]}",
-                        level=LEVEL_WORKER,
-                    )
-                    ok = await git_ops.create_worktree(repo_path, wt_path, branch, token)
-            elif is_review and pr_repo and repo_full.lower() == pr_repo.lower():
-                # Check out the PR's own branch via `gh pr checkout` instead of
-                # `git checkout -b` — review tasks read an existing PR, they
-                # never create a new branch. Compared case-insensitively since
-                # GitHub repo slugs are case-insensitive.
-                logger.info(
-                    "Task %s: checking out PR #%s (%s) into worktree %s",
-                    task_id,
-                    pr_number,
-                    repo_full,
-                    wt_path,
-                )
-                ok = await git_ops.checkout_pr_worktree(
-                    repo_path, wt_path, pr_number, repo_full, token
-                )
-            else:
-                if is_review:
-                    logger.warning(
-                        "Task %s: repo %s does not match PR repo %s (case-insensitive) — "
-                        "falling back to create_worktree instead of gh pr checkout",
-                        task_id,
-                        repo_full,
-                        pr_repo,
-                    )
-                logger.info("Task %s: creating worktree %s on branch %s", task_id, wt_path, branch)
-                ok = await git_ops.create_worktree(repo_path, wt_path, branch, token)
-            if ok:
-                logger.info("Task %s: worktree ready at %s", task_id, wt_path)
-                await emit(f"Worktree ready: {repo_name}", level=LEVEL_WORKER)
-                worktree_entries.append((repo_full, repo_path, wt_path))
-                if primary_wt is None:
-                    primary_wt = wt_path
-            else:
-                logger.error("Task %s: worktree failed for %s", task_id, repo_full)
-                await emit(f"✗ Worktree failed: {repo_full}", level=LEVEL_WORKER)
+            cloned_repos.append((repo_full, repo_path))
+
+        mode = "followup" if is_followup else ("review_pr" if is_review else "fresh")
+        acquired = await self.worktrees.acquire(
+            task_id,
+            cloned_repos,
+            mode=mode,
+            branch=branch,
+            token=token,
+            pr_repo=pr_repo,
+            pr_number=pr_number,
+            emit=emit,
+        )
+        primary_wt = acquired.primary
 
         if not primary_wt:
             logger.error("Task %s: no worktrees created — aborting", task_id)
@@ -2216,9 +2093,6 @@ class Worker:
             return
 
         await self._task_update(task_id, agent=agent, branch=branch, worktreePath=primary_wt)
-        # Register worktrees for the deferred sweeper — touched again below in
-        # finally so the timestamp reflects the most recent activity.
-        self._register_worktrees(task_id, worktree_entries)
 
         # Tracks the last agent session ID so redirects and same-worker follow-ups
         # can resume with full context. Seeded from the task's saved session_id
