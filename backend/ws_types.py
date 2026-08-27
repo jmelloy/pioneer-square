@@ -28,7 +28,7 @@ Inbound validation in dispatch::
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
@@ -173,6 +173,12 @@ class TaskUpdateMsg(_WS):
     prUrl: str | None = None
     deletedAt: str | None = None
     phase: str | None = None
+    # Present on the worker's state="error" report — a plain task-update, not
+    # a task-complete/task-followup-done, so these ride along here instead.
+    agentId: str | None = None
+    stopReason: str | None = None
+    lastText: str | None = None
+    sessionId: str | None = None
 
 
 class TaskRejectedMsg(_WS):
@@ -190,12 +196,16 @@ class TaskCompleteMsg(_WS):
     type: Literal["task-complete"] = "task-complete"
     taskId: str | None = None
     workerId: str | None = None
+    agentId: str | None = None
     description: str | None = None
     branch: str | None = None
     prUrl: str | None = None
     lastText: str | None = None
     stopReason: str = "success"
     sessionId: str | None = None
+    # Worker-reported post-run state (e.g. "awaiting-review",
+    # "awaiting-foreman-review") — determines the next task state.
+    state: str | None = None
 
 
 class TaskFollowupMsg(_WS):
@@ -228,10 +238,14 @@ class TaskFollowupDoneMsg(_WS):
     type: Literal["task-followup-done"] = "task-followup-done"
     taskId: str | None = None
     workerId: str | None = None
+    agentId: str | None = None
     stopReason: str = "success"
     lastText: str | None = None
     prUrl: str | None = None
     sessionId: str | None = None
+    # Worker-reported post-run state (e.g. "awaiting-review",
+    # "awaiting-foreman-review") — determines the next task state.
+    state: str | None = None
 
 
 class TaskFinalizeMsg(_WS):
@@ -452,6 +466,10 @@ class WorkerRegisterMsg(_WS):
     repos: list[str] | None = None
     user: str | None = None
     hostname: str | None = None
+    tools: list[str] | None = None
+    models: dict[str, Any] | None = None
+    provider: str | None = None
+    tool: str | None = None
 
 
 class WorkerDisconnectMsg(_WS):
@@ -546,28 +564,24 @@ InboundWSMessage = Annotated[
 
 _inbound_adapter: TypeAdapter[InboundWSMessage] = TypeAdapter(InboundWSMessage)
 
-# Set of type strings that are known inbound message types
-KNOWN_INBOUND_TYPES: frozenset[str] = frozenset(
-    {
-        "ping",
-        "join",
-        "agent-state",
-        "chat",
-        "terminal-output",
-        "worker-register",
-        "worker-disconnect",
-        "worker-pong",
-        "task-update",
-        "task-complete",
-        "task-followup-done",
-        "needs-input",
-        "foreman-disconnect",
-        "foreman-api-response",
-        "offer",
-        "answer",
-        "ice-candidate",
-    }
-)
+
+def _discriminator_values(union: Any) -> frozenset[str]:
+    """Extract the ``type`` literal of every variant in a discriminated union.
+
+    Works on the ``Annotated[A | B | ..., Field(discriminator="type")]`` shape
+    used by ``InboundWSMessage``/``OutboundWSMessage``: unwraps the
+    ``Annotated`` layer, then reads each variant's default value for its
+    ``type`` field (always a one-value ``Literal``).
+    """
+    (variants_type,) = get_args(union)[:1]
+    return frozenset(variant.model_fields["type"].default for variant in get_args(variants_type))
+
+
+# Set of type strings that are known inbound message types — derived from
+# InboundWSMessage so it can never drift from the union it describes (a
+# hand-maintained copy previously missed "task-rejected", letting it bypass
+# validation entirely).
+KNOWN_INBOUND_TYPES: frozenset[str] = _discriminator_values(InboundWSMessage)
 
 
 def parse_inbound_message(data: dict[str, Any]) -> InboundWSMessage:
@@ -576,3 +590,33 @@ def parse_inbound_message(data: dict[str, Any]) -> InboundWSMessage:
     Raises ``pydantic.ValidationError`` when the message is malformed.
     """
     return _inbound_adapter.validate_python(data)
+
+
+def protocol_spec() -> dict[str, dict[str, list[str]]]:
+    """Machine-readable snapshot of the WS protocol's *closed* message shapes.
+
+    For each direction, every message type's field names (wire keys — aliases
+    resolved, ``"type"`` excluded). Models with ``extra="allow"``
+    (``claude-usage``, the WebRTC signaling types) have an open, dynamic shape
+    by design and are omitted — there's no fixed field set to compare against.
+
+    Source of truth for the frontend/backend protocol parity check: see
+    ``scripts/export_ws_protocol.py`` and
+    ``frontend/src/generated/ws-protocol.spec.ts``.
+    """
+
+    def _spec(union: Any) -> dict[str, list[str]]:
+        (variants_type,) = get_args(union)[:1]
+        out: dict[str, list[str]] = {}
+        for variant in get_args(variants_type):
+            if variant.model_config.get("extra") == "allow":
+                continue
+            type_name = variant.model_fields["type"].default
+            out[type_name] = sorted(
+                (info.alias or name)
+                for name, info in variant.model_fields.items()
+                if name != "type"
+            )
+        return out
+
+    return {"outbound": _spec(OutboundWSMessage), "inbound": _spec(InboundWSMessage)}

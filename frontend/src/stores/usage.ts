@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import { useGuildStore } from './guild'
 import { api } from '../utils/api'
 import type { ClaudeUsageWS, WSInbound } from '../types'
 
@@ -109,6 +110,10 @@ export const useUsageStore = defineStore('usage', () => {
     const { type: _t, ...summary } = data
     byTask.value = { ...byTask.value, [data.taskId]: summary }
   }
+
+  // Declare interest in every inbound WS frame — see subscribeWS in guild.ts,
+  // which owns parsing/validation/routing and dispatches here.
+  useGuildStore().subscribeWS(handleWebSocketMessage)
 
   function usageForTask(taskId: string): UsageSummary | null {
     return byTask.value[taskId] ?? null

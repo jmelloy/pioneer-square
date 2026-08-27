@@ -1,0 +1,358 @@
+{
+  "inbound": {
+    "agent-state": [
+      "activity",
+      "agentId",
+      "state",
+      "taskId",
+      "workerId"
+    ],
+    "chat": [
+      "content",
+      "createdAt",
+      "from",
+      "isError",
+      "role",
+      "source",
+      "taskId",
+      "threadId",
+      "to",
+      "toolId",
+      "toolInput",
+      "toolName",
+      "toolOutput",
+      "userId"
+    ],
+    "foreman-api-response": [
+      "apiRequestId",
+      "error",
+      "guildId",
+      "model",
+      "ok",
+      "provider",
+      "requestId",
+      "response"
+    ],
+    "foreman-disconnect": [
+      "guildId"
+    ],
+    "join": [
+      "agentId",
+      "agentName",
+      "agentType",
+      "external",
+      "workerId"
+    ],
+    "needs-input": [
+      "description",
+      "lastMessage",
+      "stopReason",
+      "taskId",
+      "workerId"
+    ],
+    "ping": [],
+    "task-complete": [
+      "agentId",
+      "branch",
+      "description",
+      "lastText",
+      "prUrl",
+      "sessionId",
+      "state",
+      "stopReason",
+      "taskId",
+      "workerId"
+    ],
+    "task-followup-done": [
+      "agentId",
+      "lastText",
+      "prUrl",
+      "sessionId",
+      "state",
+      "stopReason",
+      "taskId",
+      "workerId"
+    ],
+    "task-rejected": [
+      "reason",
+      "taskId",
+      "workerId"
+    ],
+    "task-update": [
+      "agentId",
+      "branch",
+      "deletedAt",
+      "lastText",
+      "phase",
+      "prUrl",
+      "sessionId",
+      "state",
+      "stopReason",
+      "taskId",
+      "workerId",
+      "worktreePath"
+    ],
+    "terminal-output": [
+      "agentId",
+      "detail",
+      "level",
+      "line",
+      "taskId",
+      "timestamp",
+      "workerId"
+    ],
+    "worker-disconnect": [
+      "reason",
+      "workerId"
+    ],
+    "worker-pong": [
+      "timestamp",
+      "workerId"
+    ],
+    "worker-register": [
+      "hostname",
+      "models",
+      "provider",
+      "repos",
+      "tool",
+      "tools",
+      "user",
+      "workerId"
+    ]
+  },
+  "outbound": {
+    "agent-joined": [
+      "agentId",
+      "agentName",
+      "agentType",
+      "joinedAt",
+      "state",
+      "workerId",
+      "workerName"
+    ],
+    "agent-state": [
+      "activity",
+      "agentId",
+      "state",
+      "taskId",
+      "workerId"
+    ],
+    "chat": [
+      "content",
+      "createdAt",
+      "from",
+      "isError",
+      "role",
+      "source",
+      "taskId",
+      "threadId",
+      "to",
+      "toolId",
+      "toolInput",
+      "toolName",
+      "toolOutput",
+      "userId"
+    ],
+    "foreman-api-request": [
+      "guildId",
+      "maxTokens",
+      "messages",
+      "model",
+      "requestId",
+      "system",
+      "toolChoice",
+      "tools"
+    ],
+    "foreman-disconnect": [
+      "guildId"
+    ],
+    "foreman-evicted": [
+      "guildId",
+      "reason"
+    ],
+    "foreman-poll-status": [
+      "nextCheckIn"
+    ],
+    "foreman-registered": [
+      "agentId",
+      "guildId"
+    ],
+    "github-event": [
+      "action",
+      "deliveryId",
+      "event",
+      "prNumber",
+      "prUrl",
+      "repo",
+      "sender",
+      "taskId"
+    ],
+    "guild-updated": [
+      "description",
+      "id",
+      "name",
+      "primary_repo",
+      "url",
+      "version"
+    ],
+    "needs-input": [
+      "description",
+      "lastMessage",
+      "stopReason",
+      "taskId",
+      "workerId"
+    ],
+    "pong": [
+      "timestamp"
+    ],
+    "task-assigned": [
+      "branch",
+      "description",
+      "headSha",
+      "issueNumber",
+      "issueRepo",
+      "model",
+      "modelTier",
+      "name",
+      "parentTaskId",
+      "phase",
+      "prNumber",
+      "prRepo",
+      "prUrl",
+      "provider",
+      "repos",
+      "targetAgentId",
+      "taskId",
+      "taskType",
+      "threadId",
+      "tool",
+      "workerId"
+    ],
+    "task-cancel": [
+      "taskId",
+      "workerId"
+    ],
+    "task-complete": [
+      "agentId",
+      "branch",
+      "description",
+      "lastText",
+      "prUrl",
+      "sessionId",
+      "state",
+      "stopReason",
+      "taskId",
+      "workerId"
+    ],
+    "task-created": [
+      "createdAt",
+      "description",
+      "name",
+      "phase",
+      "state",
+      "taskId",
+      "taskType",
+      "threadId"
+    ],
+    "task-finalize": [
+      "taskId",
+      "workerId"
+    ],
+    "task-followup": [
+      "branch",
+      "createPr",
+      "description",
+      "instructions",
+      "issueNumber",
+      "issueRepo",
+      "model",
+      "modelTier",
+      "name",
+      "provider",
+      "sessionId",
+      "taskId",
+      "tool",
+      "workerId"
+    ],
+    "task-followup-done": [
+      "agentId",
+      "lastText",
+      "prUrl",
+      "sessionId",
+      "state",
+      "stopReason",
+      "taskId",
+      "workerId"
+    ],
+    "task-redirect": [
+      "instructions",
+      "taskId",
+      "workerId"
+    ],
+    "task-rejected": [
+      "reason",
+      "taskId",
+      "workerId"
+    ],
+    "task-update": [
+      "agentId",
+      "branch",
+      "deletedAt",
+      "lastText",
+      "phase",
+      "prUrl",
+      "sessionId",
+      "state",
+      "stopReason",
+      "taskId",
+      "workerId",
+      "worktreePath"
+    ],
+    "terminal-output": [
+      "agentId",
+      "detail",
+      "level",
+      "line",
+      "taskId",
+      "timestamp",
+      "workerId"
+    ],
+    "thread-created": [
+      "conversationId",
+      "createdAt",
+      "name",
+      "status",
+      "threadId",
+      "userId"
+    ],
+    "thread-updated": [
+      "deletedAt",
+      "discordThreadId",
+      "status",
+      "threadId"
+    ],
+    "worker-message": [
+      "message",
+      "taskId",
+      "workerId"
+    ],
+    "worker-outdated": [
+      "reason",
+      "workerId"
+    ],
+    "worker-ping": [
+      "from",
+      "timestamp",
+      "workerId"
+    ],
+    "worker-shutdown": [
+      "reason",
+      "workerId"
+    ],
+    "worker-state": [
+      "name",
+      "state",
+      "workerId"
+    ]
+  }
+}

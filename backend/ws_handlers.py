@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -45,17 +46,20 @@ from util.tasks import spawn
 from utils import worker_display_name
 from worker_lifecycle import signal_stale_worker_on_join
 from ws_types import (
-    KNOWN_INBOUND_TYPES,
     AgentJoinedMsg,
     AgentStateMsg,
     AnswerMsg,
     ChatMsg,
+    ForemanApiResponseMsg,
     ForemanDisconnectMsg,
     ForemanEvictedMsg,
     ForemanRegisteredMsg,
     IceCandidateMsg,
+    InboundWSMessage,
+    JoinMsg,
     NeedsInputMsg,
     OfferMsg,
+    PingMsg,
     PongMsg,
     TaskAssignedMsg,
     TaskCompleteMsg,
@@ -63,6 +67,9 @@ from ws_types import (
     TaskRejectedMsg,
     TaskUpdateMsg,
     TerminalOutputMsg,
+    WorkerDisconnectMsg,
+    WorkerPongMsg,
+    WorkerRegisterMsg,
     parse_inbound_message,
 )
 
@@ -262,12 +269,12 @@ class WSContext:
 # ---------------------------------------------------------------------------
 
 
-async def handle_ping(ctx: WSContext, data: dict) -> None:
+async def handle_ping(ctx: WSContext, msg: PingMsg) -> None:
     """Generic application-level ping used by tests and legacy clients."""
     await send_ws_message(ctx.websocket, PongMsg(timestamp=datetime.now(UTC).isoformat()))
 
 
-async def handle_worker_pong(ctx: WSContext, data: dict) -> None:
+async def handle_worker_pong(ctx: WSContext, msg: WorkerPongMsg) -> None:
     """Worker liveness probe reply.
 
     ``routes.websocket._touch_agent`` already refreshed Worker.last_seen before
@@ -276,13 +283,13 @@ async def handle_worker_pong(ctx: WSContext, data: dict) -> None:
     """
 
 
-async def handle_join(ctx: WSContext, data: dict) -> None:
-    agent_id = data.get("agentId")
-    agent_name = data.get("agentName", "Unknown")
-    agent_type = data.get("agentType", "worker")
-    worker_id = data.get("workerId")
+async def handle_join(ctx: WSContext, msg: JoinMsg) -> None:
+    agent_id = msg.agentId
+    agent_name = msg.agentName
+    agent_type = msg.agentType
+    worker_id = msg.workerId
     joined_at = datetime.now(UTC)
-    is_external_foreman = agent_type == "foreman" and bool(data.get("external"))
+    is_external_foreman = agent_type == "foreman" and bool(msg.external)
     # Validate that the worker actually belongs to this guild before proceeding.
     # A misconfigured or misbehaving worker could connect to the wrong guild's
     # WebSocket; without this check it would create agent rows and broadcast
@@ -414,7 +421,7 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
     # the legacy browser join still carries agentType="foreman" but must NOT
     # be registered in foreman_connections. The external client signals its
     # intent with `external: true`.
-    if agent_type == "foreman" and bool(data.get("external")):
+    if agent_type == "foreman" and bool(msg.external):
         # Register as the active external API proxy for this guild.
         # Evict any previously connected proxy so there is never more than one
         # active provider-call endpoint at a time.
@@ -516,11 +523,11 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
 _LOCK_RELEASE_AGENT_STATES = frozenset({"idle", "offline", "error", "timeout"})
 
 
-async def handle_agent_state(ctx: WSContext, data: dict) -> None:
-    agent_id = data.get("agentId")
-    worker_id = data.get("workerId")
-    state = data.get("state", "idle")
-    activity = data.get("activity")
+async def handle_agent_state(ctx: WSContext, msg: AgentStateMsg) -> None:
+    agent_id = msg.agentId
+    worker_id = msg.workerId
+    state = msg.state
+    activity = msg.activity
     update_vals: dict = {"state": state}
     if activity is not None:
         update_vals["activity"] = activity
@@ -528,9 +535,11 @@ async def handle_agent_state(ctx: WSContext, data: dict) -> None:
         update_vals["activity"] = None
     # taskId is the slot's current_task_id. Idle/offline agents are not
     # executing anything, so we always clear the column for those states even
-    # if the worker forgot to send taskId=null.
-    if "taskId" in data:
-        update_vals["current_task_id"] = data.get("taskId")
+    # if the worker forgot to send taskId=null. ``model_fields_set`` (not
+    # ``msg.taskId is not None``) distinguishes "field omitted" from
+    # "explicitly sent null" the same way ``"taskId" in data`` did.
+    if "taskId" in msg.model_fields_set:
+        update_vals["current_task_id"] = msg.taskId
     elif state in ("idle", "offline"):
         update_vals["current_task_id"] = None
 
@@ -587,11 +596,11 @@ async def handle_agent_state(ctx: WSContext, data: dict) -> None:
     ensure_poll_loop(ctx.guild_id)
 
 
-async def handle_chat(ctx: WSContext, data: dict) -> None:
+async def handle_chat(ctx: WSContext, msg: ChatMsg) -> None:
     """Persist authenticated chat messages and route human Foreman chat."""
-    from_agent = data.get("from", "user")
-    to_agent = data.get("to", "foreman")
-    content = data.get("content", "")
+    from_agent = msg.from_
+    to_agent = msg.to
+    content = msg.content
     created_at = datetime.now(UTC)
     is_foreman_chat = from_agent == "user" and to_agent == "foreman" and content
 
@@ -657,13 +666,13 @@ async def handle_chat(ctx: WSContext, data: dict) -> None:
     reset_foreman_poll(ctx.guild_id)
 
 
-async def handle_terminal_output(ctx: WSContext, data: dict) -> None:
-    msg_agent_id = data.get("agentId")
-    msg_worker_id = data.get("workerId")
-    line = data.get("line", "")
-    task_id = data.get("taskId")
-    detail = data.get("detail")
-    level = data.get("level")
+async def handle_terminal_output(ctx: WSContext, msg: TerminalOutputMsg) -> None:
+    msg_agent_id = msg.agentId
+    msg_worker_id = msg.workerId
+    line = msg.line
+    task_id = msg.taskId
+    detail = msg.detail
+    level = msg.level
     created_at = datetime.now(UTC)
     worker_id_for_log = msg_worker_id
     if worker_id_for_log is None and msg_agent_id:
@@ -703,8 +712,8 @@ async def handle_terminal_output(ctx: WSContext, data: dict) -> None:
         await discord_notifier.notify_task_stream(ctx.guild_id, task_id, line, detail)
 
 
-async def handle_worker_register(ctx: WSContext, data: dict) -> None:
-    worker_id = data.get("workerId")
+async def handle_worker_register(ctx: WSContext, msg: WorkerRegisterMsg) -> None:
+    worker_id = msg.workerId
     if not worker_id:
         return
     # Guard: only process worker-register from workers that belong to this guild.
@@ -721,17 +730,17 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
             ctx.guild_id,
         )
         return
-    repos = data.get("repos") or []
-    tools = data.get("tools") or []
-    models = data.get("models") or {}
-    user_ident = data.get("user")
-    provider = data.get("provider") or None
-    tool = data.get("tool") or None
-    hostname = data.get("hostname") or None
+    repos = msg.repos or []
+    tools = msg.tools or []
+    models = msg.models or {}
+    user_ident = msg.user
+    provider = msg.provider or None
+    tool = msg.tool or None
+    hostname = msg.hostname or None
     update_vals: dict = {
         "repos": json.dumps(repos),
         "tools": json.dumps(tools),
-        "available_models": models if isinstance(models, dict) else {},
+        "available_models": models,
         "provider": provider,
         "tool": tool,
         "hostname": hostname,
@@ -776,9 +785,9 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
     )
 
 
-async def handle_worker_disconnect(ctx: WSContext, data: dict) -> None:
-    worker_id = data.get("workerId")
-    reason = data.get("reason") or "shutdown"
+async def handle_worker_disconnect(ctx: WSContext, msg: WorkerDisconnectMsg) -> None:
+    worker_id = msg.workerId
+    reason = msg.reason or "shutdown"
     for agent_id in ctx.joined_agents:
         await ctx.db.exec(
             update(Agent)
@@ -822,16 +831,16 @@ async def handle_worker_disconnect(ctx: WSContext, data: dict) -> None:
     ensure_poll_loop(ctx.guild_id)
 
 
-async def handle_task_rejected(ctx: WSContext, data: dict) -> None:
+async def handle_task_rejected(ctx: WSContext, msg: TaskRejectedMsg) -> None:
     """Handle a worker refusing an assignment because it has no free slot.
 
     This is a defensive backstop for races/stale state. The foreman should only
     assign to workers with idle agent capacity, but if an assignment reaches a
     full worker, the worker must not silently backlog it locally.
     """
-    task_id = data.get("taskId")
-    worker_id = data.get("workerId")
-    reason = data.get("reason") or "worker has no idle agent slot"
+    task_id = msg.taskId
+    worker_id = msg.workerId
+    reason = msg.reason
     if not task_id or not worker_id:
         return
     result = await ctx.db.exec(
@@ -891,10 +900,13 @@ async def handle_task_rejected(ctx: WSContext, data: dict) -> None:
     reset_foreman_poll(ctx.guild_id)
 
 
-async def handle_task_update(ctx: WSContext, data: dict) -> None:
-    task_id = data.get("taskId")
+async def handle_task_update(ctx: WSContext, msg: TaskUpdateMsg) -> None:
+    task_id = msg.taskId
     if not task_id:
         return
+    # ``model_fields_set`` distinguishes "field omitted" from "explicitly sent
+    # null" the same way ``src in data`` did against the raw dict.
+    fields_set = msg.model_fields_set
     update_values: dict = {}
     for src, col_name in (
         ("state", "state"),
@@ -902,13 +914,13 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
         ("worktreePath", "worktree_path"),
         ("prUrl", "pr_url"),
     ):
-        if src in data:
-            update_values[col_name] = data[src]
+        if src in fields_set:
+            update_values[col_name] = getattr(msg, src)
     # When the worker reports a PR URL, derive pr_number + pr_repo so github
     # webhook deliveries can be linked back to this task without fragile URL
     # substring matching at receive time.
-    if "prUrl" in data:
-        pr_number, pr_repo = _parse_pr_url(data.get("prUrl"))
+    if "prUrl" in fields_set:
+        pr_number, pr_repo = _parse_pr_url(msg.prUrl)
         update_values["pr_number"] = pr_number
         update_values["pr_repo"] = pr_repo
     if update_values:
@@ -916,7 +928,7 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
         if update_values.get("state") in _TERMINAL_STATES:
             await LockService(ctx.db).release(f"task:{task_id}")
         await ctx.db.commit()
-    await broadcast_msg(ctx.guild_id, TaskUpdateMsg.model_validate(data), exclude=ctx.websocket)
+    await broadcast_msg(ctx.guild_id, msg, exclude=ctx.websocket)
     if "state" in update_values:
         # Worker-driven task state update is automated — ensure the loop, no reset.
         ensure_poll_loop(ctx.guild_id)
@@ -941,10 +953,10 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
     # to retry, so the operator still gets an immediate heads-up.
     if update_values.get("state") in ("failed", "cancelled", "error"):
         state_label = update_values["state"]
-        worker_id_msg = data.get("workerId", "")
-        stop_reason_msg = data.get("stopReason", "")
-        last_text_msg = data.get("lastText", "")
-        pr_url_msg = data.get("prUrl", "")
+        worker_id_msg = msg.workerId or ""
+        stop_reason_msg = msg.stopReason or ""
+        last_text_msg = msg.lastText or ""
+        pr_url_msg = msg.prUrl or ""
         task_row = (
             await ctx.db.exec(
                 select(Task.name, Task.description, Task.issue_repo, Task.issue_number).where(
@@ -999,7 +1011,7 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
             queued_payloads = [_load_event_payload(r[1]) for r in rows]
             await ctx.db.exec(delete(TaskEvent).where(col(TaskEvent.id).in_(event_ids)))
             await ctx.db.commit()
-        worker_id_upd = data.get("workerId", "a worker")
+        worker_id_upd = msg.workerId or "a worker"
         task_uid = await _task_user_id(ctx.db, task_id)
         if queued_payloads:
             queued_summary = "\n".join(
@@ -1014,8 +1026,8 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
                 "outcome='failed' to mark it failed."
             )
         else:
-            stop_reason_upd = data.get("stopReason", "")
-            last_text_upd = data.get("lastText", "")
+            stop_reason_upd = msg.stopReason or ""
+            last_text_upd = msg.lastText or ""
             detail = f" Stop reason: {stop_reason_upd}." if stop_reason_upd else ""
             if last_text_upd:
                 detail += f' Last output: "{_format_last_output(last_text_upd)}"'
@@ -1035,15 +1047,15 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
         await ctx.db.commit()
 
 
-async def handle_task_complete(ctx: WSContext, data: dict) -> None:
-    task_id = data.get("taskId")
-    worker_id_msg = data.get("workerId", "")
-    desc = data.get("description", "")
-    branch = data.get("branch", "")
-    pr_url = data.get("prUrl", "")
-    last_text = data.get("lastText", "")
-    stop_reason = data.get("stopReason", "success")
-    session_id = data.get("sessionId") or None
+async def handle_task_complete(ctx: WSContext, msg: TaskCompleteMsg) -> None:
+    task_id = msg.taskId
+    worker_id_msg = msg.workerId or ""
+    desc = msg.description or ""
+    branch = msg.branch or ""
+    pr_url = msg.prUrl or ""
+    last_text = msg.lastText or ""
+    stop_reason = msg.stopReason
+    session_id = msg.sessionId or None
     if task_id:
         # Persist pr_url and session_id regardless of current state — the prior
         # task-update may have already moved the task to awaiting-review, so
@@ -1059,7 +1071,7 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
                 .where(col(Task.id) == task_id)
                 .values(pr_url=pr_url, pr_number=pr_number_val, pr_repo=pr_repo_val)
             )
-        reported_state = data.get("state")
+        reported_state = msg.state
         next_state = (
             reported_state
             if reported_state in {"awaiting-review", "awaiting-foreman-review"}
@@ -1072,7 +1084,7 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
         )
         await LockService(ctx.db).release(f"task:{task_id}")
         await ctx.db.commit()
-    await broadcast_msg(ctx.guild_id, TaskCompleteMsg.model_validate(data), exclude=ctx.websocket)
+    await broadcast_msg(ctx.guild_id, msg, exclude=ctx.websocket)
     if task_id:
         spawn(
             maybe_post_plan_comment(ctx.guild_id, task_id, last_text),
@@ -1156,23 +1168,23 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
     reset_foreman_poll(ctx.guild_id)
 
 
-async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
-    task_id = data.get("taskId")
-    worker_id_msg = data.get("workerId", "")
-    stop_reason = data.get("stopReason", "success")
-    last_text_fud = data.get("lastText", "")
-    session_id_fud = data.get("sessionId") or None
+async def handle_task_followup_done(ctx: WSContext, msg: TaskFollowupDoneMsg) -> None:
+    task_id = msg.taskId
+    worker_id_msg = msg.workerId or ""
+    stop_reason = msg.stopReason
+    last_text_fud = msg.lastText or ""
+    session_id_fud = msg.sessionId or None
     if task_id:
         if session_id_fud:
             await ctx.db.exec(
                 update(Task).where(col(Task.id) == task_id).values(claude_session_id=session_id_fud)
             )
-        pr_url_fud = data.get("prUrl", "")
+        pr_url_fud = msg.prUrl or ""
         pr_update: dict = {}
         if pr_url_fud:
             pr_number_val, pr_repo_val = _parse_pr_url(pr_url_fud)
             pr_update = {"pr_url": pr_url_fud, "pr_number": pr_number_val, "pr_repo": pr_repo_val}
-        reported_state_fud = data.get("state")
+        reported_state_fud = msg.state
         next_state_fud = (
             reported_state_fud
             if reported_state_fud in {"awaiting-review", "awaiting-foreman-review"}
@@ -1192,9 +1204,7 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
             )
         await LockService(ctx.db).release(f"task:{task_id}")
         await ctx.db.commit()
-    await broadcast_msg(
-        ctx.guild_id, TaskFollowupDoneMsg.model_validate(data), exclude=ctx.websocket
-    )
+    await broadcast_msg(ctx.guild_id, msg, exclude=ctx.websocket)
     if not task_id:
         return
 
@@ -1261,13 +1271,13 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
     reset_foreman_poll(ctx.guild_id)
 
 
-async def handle_needs_input(ctx: WSContext, data: dict) -> None:
-    await broadcast_msg(ctx.guild_id, NeedsInputMsg.model_validate(data), exclude=ctx.websocket)
-    wid = data.get("workerId", "a worker")
-    task_id = data.get("taskId", "")
-    description = data.get("description", "")
-    stop_reason = data.get("stopReason", "")
-    last_msg = data.get("lastMessage", "")
+async def handle_needs_input(ctx: WSContext, msg: NeedsInputMsg) -> None:
+    await broadcast_msg(ctx.guild_id, msg, exclude=ctx.websocket)
+    wid = msg.workerId or "a worker"
+    task_id = msg.taskId or ""
+    description = msg.description or ""
+    stop_reason = msg.stopReason or ""
+    last_msg = msg.lastMessage or ""
     escalation = (
         f"Worker {wid} could not complete task {task_id} and needs your help.\n"
         f"Task: {description}\n"
@@ -1285,7 +1295,7 @@ async def handle_needs_input(ctx: WSContext, data: dict) -> None:
     reset_foreman_poll(ctx.guild_id)
 
 
-async def handle_foreman_disconnect(ctx: WSContext, data: dict) -> None:
+async def handle_foreman_disconnect(ctx: WSContext, msg: ForemanDisconnectMsg) -> None:
     """External Foreman API proxy announcing a graceful shutdown.
 
     Removes the guild's foreman_connections entry and fails any pending API
@@ -1308,7 +1318,7 @@ async def handle_foreman_disconnect(ctx: WSContext, data: dict) -> None:
     )
 
 
-async def handle_foreman_api_response(ctx: WSContext, data: dict) -> None:
+async def handle_foreman_api_response(ctx: WSContext, msg: ForemanApiResponseMsg) -> None:
     """Resolve one pending LLM API request from the external proxy."""
     if foreman_connections.get(ctx.guild_id) is not ctx.websocket:
         logger.warning(
@@ -1316,19 +1326,15 @@ async def handle_foreman_api_response(ctx: WSContext, data: dict) -> None:
             ctx.guild_id,
         )
         return
-    resolve_foreman_api_response(data)
+    resolve_foreman_api_response(msg.model_dump())
 
 
-async def handle_webrtc_signal(ctx: WSContext, data: dict) -> None:
+async def handle_webrtc_signal(ctx: WSContext, msg: OfferMsg | AnswerMsg | IceCandidateMsg) -> None:
     """offer/answer/ice-candidate — forward to all peers in the guild."""
-    rtc_type = data.get("type", "offer")
-    cls = {"offer": OfferMsg, "answer": AnswerMsg, "ice-candidate": IceCandidateMsg}.get(
-        rtc_type, OfferMsg
-    )
-    await broadcast_msg(ctx.guild_id, cls.model_validate(data), exclude=ctx.websocket)
+    await broadcast_msg(ctx.guild_id, msg, exclude=ctx.websocket)
 
 
-HANDLERS: dict[str, Any] = {
+HANDLERS: dict[str, Callable[[WSContext, InboundWSMessage], Any]] = {
     "ping": handle_ping,
     "join": handle_join,
     "agent-state": handle_agent_state,
@@ -1353,24 +1359,26 @@ HANDLERS: dict[str, Any] = {
 async def dispatch(ctx: WSContext, data: dict) -> None:
     """Route an inbound WS message to its handler.
 
-    Known types are validated with Pydantic before the handler is called;
-    malformed frames are dropped with a warning. Unknown types fall through
-    to a generic broadcast (legacy pass-through behaviour).
+    Every registered handler's type is one of ``KNOWN_INBOUND_TYPES`` (a
+    ``HANDLERS.keys() == KNOWN_INBOUND_TYPES`` test enforces this), so a frame
+    is parsed into its typed model exactly once and the handler receives that
+    model — never the raw dict. Malformed frames are dropped with a warning.
+    Unhandled types fall through to a generic broadcast (legacy pass-through
+    behaviour).
     """
     msg_type = data.get("type") or ""
     handler = HANDLERS.get(msg_type)
     if handler is None:
         await broadcast(ctx.guild_id, data)
         return
-    if msg_type in KNOWN_INBOUND_TYPES:
-        try:
-            parse_inbound_message(data)
-        except ValidationError as exc:
-            logger.warning(
-                "guild=%s dropping malformed inbound WS message type=%s: %s",
-                ctx.guild_id,
-                msg_type,
-                exc,
-            )
-            return
-    await handler(ctx, data)
+    try:
+        msg = parse_inbound_message(data)
+    except ValidationError as exc:
+        logger.warning(
+            "guild=%s dropping malformed inbound WS message type=%s: %s",
+            ctx.guild_id,
+            msg_type,
+            exc,
+        )
+        return
+    await handler(ctx, msg)

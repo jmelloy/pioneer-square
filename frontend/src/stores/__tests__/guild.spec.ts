@@ -141,13 +141,35 @@ describe('useGuildStore', () => {
       expect(store.messages).toHaveLength(0)
     })
 
-    it('invokes the per-call onMessage callback', () => {
-      const onMessage = vi.fn()
+    it('dispatches known frames to every subscribeWS consumer', () => {
+      const consumer = vi.fn()
       const store = useGuildStore()
-      store.connectWebSocket('g-1', onMessage)
+      store.subscribeWS(consumer)
+      store.connectWebSocket('g-1')
       const ws = FakeWebSocket.instances[0]
-      ws.simulateMessage({ type: 'agent-state', state: 'idle' })
-      expect(onMessage).toHaveBeenCalledWith({ type: 'agent-state', state: 'idle' })
+      ws.simulateMessage({ type: 'agent-state', agentId: 'a-1', state: 'idle' })
+      expect(consumer).toHaveBeenCalledWith({ type: 'agent-state', agentId: 'a-1', state: 'idle' })
+    })
+
+    it('does not dispatch frames with an unrecognised type', () => {
+      const consumer = vi.fn()
+      const store = useGuildStore()
+      store.subscribeWS(consumer)
+      store.connectWebSocket('g-1')
+      const ws = FakeWebSocket.instances[0]
+      ws.simulateMessage({ type: 'some-future-type', foo: 'bar' })
+      expect(consumer).not.toHaveBeenCalled()
+    })
+
+    it('subscribeWS returns an unsubscribe function', () => {
+      const consumer = vi.fn()
+      const store = useGuildStore()
+      const unsubscribe = store.subscribeWS(consumer)
+      unsubscribe()
+      store.connectWebSocket('g-1')
+      const ws = FakeWebSocket.instances[0]
+      ws.simulateMessage({ type: 'agent-state', agentId: 'a-1', state: 'idle' })
+      expect(consumer).not.toHaveBeenCalled()
     })
 
     it('pushes a system message on task-complete with a PR', () => {

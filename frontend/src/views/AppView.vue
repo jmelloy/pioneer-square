@@ -115,12 +115,9 @@ async function initGuild(guildId: string) {
       )
   }
 
-  guildStore.connectWebSocket(guildId, (data) => {
-    agentsStore.handleWebSocketMessage(data)
-    tasksStore.handleWebSocketMessage(data)
-    threadsStore.handleWebSocketMessage(data)
-    usageStore.handleWebSocketMessage(data)
-  })
+  // Routing lives in guildStore: agents/tasks/threads/usage each declared
+  // their own interest via subscribeWS when their store was first used.
+  guildStore.connectWebSocket(guildId)
 
   if (ghStore.isConfigured) {
     const reposToFetch = guild.primary_repo ? [guild.primary_repo] : undefined
