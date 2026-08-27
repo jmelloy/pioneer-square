@@ -3,9 +3,17 @@ import { ref } from 'vue'
 import { useAuthStore } from './auth'
 import { useAgentsStore } from './agents'
 import { api } from '../utils/api'
-import type { ChatMessage, Guild, WSInbound, WSOutbound } from '../types'
+import type { ChatMessage, Guild, WSFrame, WSInbound, WSOutbound } from '../types'
+import { WS_INBOUND_FIELDS } from '../types'
 
-type MessageHandler = (data: WSInbound) => void
+type WSHandler = (data: WSInbound) => void
+
+// See WSFrame/UnknownWS in types.ts: everything else in this store — and
+// every consumer registered via subscribeWS — works with the closed
+// WSInbound union, narrowed here once per frame.
+function isKnownWSInbound(frame: WSFrame): frame is WSInbound {
+  return Object.prototype.hasOwnProperty.call(WS_INBOUND_FIELDS, frame.type)
+}
 
 export const useGuildStore = defineStore('guild', () => {
   const currentGuild = ref<Guild | null>(null)
@@ -18,6 +26,21 @@ export const useGuildStore = defineStore('guild', () => {
   let ws: WebSocket | null = null
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let manualClose = false
+
+  // Stores that want every inbound frame register here once (see agents.ts /
+  // tasks.ts / threads.ts / usage.ts). Persists across reconnects — unlike
+  // the old per-call `onMessage` callback, it isn't reconnect-scoped state
+  // that has to be re-threaded through connectWebSocket → _scheduleReconnect
+  // → connectWebSocket on every retry.
+  const consumers: WSHandler[] = []
+
+  function subscribeWS(handler: WSHandler): () => void {
+    consumers.push(handler)
+    return () => {
+      const idx = consumers.indexOf(handler)
+      if (idx !== -1) consumers.splice(idx, 1)
+    }
+  }
 
   const MAX_RETRIES = 10
   const BASE_DELAY_MS = 1000
@@ -75,7 +98,7 @@ export const useGuildStore = defineStore('guild', () => {
     }
   }
 
-  function connectWebSocket(guildId: string, onMessage?: MessageHandler): WebSocket {
+  function connectWebSocket(guildId: string): WebSocket {
     manualClose = false
     if (reconnectTimer !== null) {
       clearTimeout(reconnectTimer)
@@ -99,7 +122,7 @@ export const useGuildStore = defineStore('guild', () => {
       socket = new WebSocket(`${wsProto}//${window.location.host}/ws/${guildId}${tokenParam}`)
     } catch (e) {
       console.error('Failed to construct WebSocket', e)
-      _scheduleReconnect(guildId, onMessage)
+      _scheduleReconnect(guildId)
       // Return a dummy that callers won't use; the real one will be wired up on retry.
       return ws as WebSocket
     }
@@ -110,16 +133,17 @@ export const useGuildStore = defineStore('guild', () => {
       reconnectAttempt.value = 0
     }
     socket.onmessage = (event) => {
-      let data: WSInbound
+      let frame: WSFrame
       try {
-        data = JSON.parse(event.data) as WSInbound
+        frame = JSON.parse(event.data) as WSFrame
       } catch (e) {
         console.warn('Dropping non-JSON WS frame', e)
         return
       }
+      if (!isKnownWSInbound(frame)) return
       try {
-        handleWebSocketMessage(data)
-        if (onMessage) onMessage(data)
+        handleWebSocketMessage(frame)
+        for (const consumer of consumers) consumer(frame)
       } catch (e) {
         console.error('Error processing WS message', e)
       }
@@ -130,7 +154,7 @@ export const useGuildStore = defineStore('guild', () => {
       if (!event.wasClean) {
         console.warn(`WebSocket closed (code=${event.code} reason=${event.reason || 'n/a'})`)
       }
-      _scheduleReconnect(guildId, onMessage)
+      _scheduleReconnect(guildId)
     }
     socket.onerror = (event) => {
       isConnected.value = false
@@ -139,7 +163,7 @@ export const useGuildStore = defineStore('guild', () => {
     return socket
   }
 
-  function _scheduleReconnect(guildId: string, onMessage?: MessageHandler) {
+  function _scheduleReconnect(guildId: string) {
     if (manualClose) return
     if (reconnectAttempt.value >= MAX_RETRIES) {
       console.error(`WebSocket reconnect gave up after ${MAX_RETRIES} attempts`)
@@ -152,7 +176,7 @@ export const useGuildStore = defineStore('guild', () => {
     )
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null
-      connectWebSocket(guildId, onMessage)
+      connectWebSocket(guildId)
     }, delay)
   }
 
@@ -190,16 +214,15 @@ export const useGuildStore = defineStore('guild', () => {
 
   function handleWebSocketMessage(data: WSInbound) {
     if (data.type === 'chat') {
-      const chatMsg = data as ChatMessage
-      if ((chatMsg.from || chatMsg.from_agent) !== 'github') {
+      if (data.from !== 'github') {
         // Replace any matching optimistic local entry instead of duplicating
         const localIdx = messages.value.findIndex(
-          (m) => m._local && m.from === chatMsg.from && m.content === chatMsg.content,
+          (m) => m._local && m.from === data.from && m.content === data.content,
         )
         if (localIdx !== -1) {
-          messages.value.splice(localIdx, 1, chatMsg)
+          messages.value.splice(localIdx, 1, data)
         } else {
-          messages.value.push(chatMsg)
+          messages.value.push(data)
         }
       }
     } else if (data.type === 'guild-updated') {
@@ -261,5 +284,6 @@ export const useGuildStore = defineStore('guild', () => {
     disconnectWebSocket,
     sendMessage,
     handleWebSocketMessage,
+    subscribeWS,
   }
 })

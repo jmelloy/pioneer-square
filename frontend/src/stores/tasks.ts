@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import { useGuildStore } from './guild'
 import { useUiStore } from './ui'
 import { api } from '../utils/api'
 import { isVisibleLogEntry } from '../utils/logs'
@@ -191,6 +192,10 @@ export const useTasksStore = defineStore('tasks', () => {
       const task = tasks.value.find((t) => t.id === data.taskId)
       if (task) {
         if (data.state) task.state = data.state
+        // A rejected/unassigned task returns to pending with workerId=null
+        // (see handle_task_rejected in backend/ws_handlers.py) — without this
+        // branch the row kept showing the worker that just gave it back.
+        if (data.workerId !== undefined) task.worker_id = data.workerId ?? undefined
         if (data.branch) task.branch = data.branch
         if (data.prUrl) task.pr_url = data.prUrl
         if (data.worktreePath) task.worktree_path = data.worktreePath
@@ -224,6 +229,10 @@ export const useTasksStore = defineStore('tasks', () => {
       }
     }
   }
+
+  // Declare interest in every inbound WS frame — see subscribeWS in guild.ts,
+  // which owns parsing/validation/routing and dispatches here.
+  useGuildStore().subscribeWS(handleWebSocketMessage)
 
   function clearTasks() {
     tasks.value = []

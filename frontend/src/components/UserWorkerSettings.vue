@@ -225,12 +225,7 @@ import { useGitHubStore } from '../stores/github'
 import { groupAndSortRepos } from '../utils/repoGroups'
 import { useModels } from '../composables/useModels'
 import type { EnvVarRow } from '../composables/useForemanConfig'
-import {
-  SPAWN_TOOLS,
-  loadSpawnPipeline,
-  saveSpawnSettings,
-  type SpawnSettings,
-} from '../composables/useSpawnPipeline'
+import { SPAWN_TOOLS, loadSpawnPipeline, saveSpawnSettings } from '../composables/useSpawnPipeline'
 
 const AVAILABLE_TOOLS = SPAWN_TOOLS
 

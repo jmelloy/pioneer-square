@@ -202,21 +202,14 @@ export interface GitHubRepo {
 
 // ── WebSocket protocol ──────────────────────────────────────────────
 // Discriminated unions for the messages we actually inspect. Variants
-// declare only the fields we read; an open `UnknownWS` fallback keeps
-// forward-compat with backend additions we haven't typed yet.
+// declare only the fields we read. Keep in sync with backend/ws_types.py —
+// `WS_INBOUND_FIELDS` below is checked against a generated snapshot of that
+// file by frontend/src/generated/ws-protocol.spec.ts, so a phantom field (one
+// declared here but never sent) or a stale type fails that test instead of
+// silently drifting.
 
-export interface ChatWS {
+export interface ChatWS extends ChatMessage {
   type: 'chat'
-  from: string
-  to?: string
-  content: string
-  prUrl?: string | null
-  createdAt?: string
-  created_at?: string
-  role?: 'tool_use' | 'tool_result' | string
-  toolId?: string
-  toolName?: string
-  from_agent?: string
 }
 
 export interface GuildUpdatedWS {
@@ -233,7 +226,6 @@ export interface AgentJoinedWS {
   workerId?: string | null
   workerName?: string
   state?: AgentState
-  taskId?: string | null
   joinedAt?: string
 }
 
@@ -286,8 +278,11 @@ export interface TaskAssignedWS {
 export interface TaskUpdateWS {
   type: 'task-update'
   taskId: string
-  agentId?: string | null
   state?: TaskState
+  // Set (to a real id, or null) when a rejected/unassigned task is returned
+  // to pending — see handle_task_rejected in backend/ws_handlers.py. Without
+  // this the frontend row keeps showing the worker that just gave it back.
+  workerId?: string | null
   branch?: string
   prUrl?: string
   worktreePath?: string
@@ -344,6 +339,25 @@ export interface ClaudeUsageWS {
   stopReason?: string | null
 }
 
+// A Foreman-owned conversation thread was created/updated (#1167, #1169).
+export interface ThreadCreatedWS {
+  type: 'thread-created'
+  threadId: string
+  conversationId: number
+  userId?: string | null
+  name?: string | null
+  status?: ThreadStatus
+  createdAt?: string
+}
+
+export interface ThreadUpdatedWS {
+  type: 'thread-updated'
+  threadId: string
+  status?: ThreadStatus
+  discordThreadId?: string | null
+  deletedAt?: string | null
+}
+
 export type WSInbound =
   | ChatWS
   | GuildUpdatedWS
@@ -358,12 +372,108 @@ export type WSInbound =
   | NeedsInputWS
   | ForemanPollStatusWS
   | ClaudeUsageWS
+  | ThreadCreatedWS
+  | ThreadUpdatedWS
+
+// Fallback for inbound types no store has modeled yet. Deliberately NOT
+// unioned into `WSInbound` — merging a bare `{ type: string }` member into a
+// discriminated union defeats literal narrowing for every other member
+// (every `data.type === 'x'` check would keep this member too, since a plain
+// `string` overlaps every literal, collapsing typed field access back to
+// `unknown`). Instead this only appears in `WSFrame`, the raw parse-boundary
+// type — see `isKnownWSInbound` in stores/guild.ts.
+export interface UnknownWS {
+  type: string
+  [key: string]: unknown
+}
+
+// Everything a WS frame might parse to: a modeled `WSInbound` variant, or an
+// untyped catch-all for one we haven't modeled. `JSON.parse` a raw frame into
+// this, then narrow to `WSInbound` with `isKnownWSInbound` before handing it
+// to stores — that keeps `WSInbound` itself precisely typed everywhere else.
+export type WSFrame = WSInbound | UnknownWS
+
+// Runtime mirror of every WSInbound variant's field set, keyed by `type`.
+// This is the single source of truth two things are derived from:
+//   - `Object.keys(WS_INBOUND_FIELDS)` is this frontend's equivalent of the
+//     backend's derived `KNOWN_INBOUND_TYPES` (ws_types.py) — see
+//     `isKnownWSInbound` in stores/guild.ts.
+//   - the frontend/backend protocol parity test
+//     (frontend/src/generated/ws-protocol.spec.ts) diffs these field lists
+//     against a snapshot generated from ws_types.py, so a field declared here
+//     but never actually sent by the backend (a "phantom" field) fails CI
+//     instead of silently drifting — this is exactly how `TaskCompleteWS
+//     .agentId` and `TaskFollowupDoneWS.agentId` went stale for one release.
+// `{ [K in WSInbound['type']]: ... }` makes this a compile-time exhaustiveness
+// check too: adding/removing a WSInbound variant without updating this object
+// fails to compile.
+export const WS_INBOUND_FIELDS: { [K in WSInbound['type']]: readonly string[] } = {
+  chat: [
+    'from',
+    'to',
+    'content',
+    'createdAt',
+    'userId',
+    'role',
+    'toolId',
+    'toolName',
+    'toolInput',
+    'toolOutput',
+    'isError',
+    'source',
+    'taskId',
+    'threadId',
+  ],
+  'guild-updated': ['id', 'name'],
+  'agent-joined': ['agentId', 'agentName', 'agentType', 'workerId', 'workerName', 'state', 'joinedAt'],
+  'agent-state': ['agentId', 'workerId', 'taskId', 'state', 'activity'],
+  'terminal-output': ['agentId', 'workerId', 'taskId', 'line', 'timestamp', 'detail', 'level'],
+  'task-created': ['taskId', 'name', 'description', 'phase', 'taskType', 'state', 'createdAt'],
+  'task-assigned': [
+    'taskId',
+    'workerId',
+    'name',
+    'description',
+    'tool',
+    'taskType',
+    'targetAgentId',
+    'model',
+    'provider',
+    'phase',
+    'parentTaskId',
+  ],
+  'task-update': ['taskId', 'state', 'workerId', 'branch', 'prUrl', 'worktreePath', 'deletedAt'],
+  'task-complete': ['taskId', 'workerId', 'agentId', 'branch', 'prUrl'],
+  'task-followup-done': ['taskId', 'agentId'],
+  'needs-input': ['workerId', 'description'],
+  'foreman-poll-status': ['nextCheckIn'],
+  'claude-usage': [
+    'taskId',
+    'workerId',
+    'sessionId',
+    'tool',
+    'model',
+    'repo',
+    'reporter',
+    'apiCalls',
+    'summedInputTokens',
+    'summedOutputTokens',
+    'summedCacheReadTokens',
+    'summedCacheCreationTokens',
+    'reportedInputTokens',
+    'reportedOutputTokens',
+    'reportedCacheReadTokens',
+    'reportedCacheCreationTokens',
+    'costUsd',
+    'numTurns',
+    'stopReason',
+  ],
+  'thread-created': ['threadId', 'conversationId', 'userId', 'name', 'status', 'createdAt'],
+  'thread-updated': ['threadId', 'status', 'discordThreadId', 'deletedAt'],
+}
 
 // Outbound: producer-side; we accept any object with a `type`.
 export interface WSOutbound {
   type: string
   [key: string]: unknown
 }
-
-// Backwards-compatible alias used by older callers.
-export type WSMessage = WSInbound

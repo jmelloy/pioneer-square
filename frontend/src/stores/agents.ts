@@ -310,6 +310,10 @@ export const useAgentsStore = defineStore('agents', () => {
     }
   }
 
+  // Declare interest in every inbound WS frame — see subscribeWS in guild.ts,
+  // which owns parsing/validation/routing and dispatches here.
+  useGuildStore().subscribeWS(handleWebSocketMessage)
+
   return {
     agents,
     workers,

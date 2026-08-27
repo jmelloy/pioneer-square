@@ -45,7 +45,7 @@ describe('useThreadsStore', () => {
         name: 'Thread A',
         status: 'active',
         createdAt: '2025-07-01T00:00:00Z',
-      }
+      } as const
 
       store.handleWebSocketMessage(msg)
       store.handleWebSocketMessage(msg)
@@ -108,7 +108,7 @@ describe('useThreadsStore', () => {
 
     it('ignores unrelated message types', () => {
       const store = useThreadsStore()
-      store.handleWebSocketMessage({ type: 'task-created', taskId: 't-1' })
+      store.handleWebSocketMessage({ type: 'task-created', taskId: 't-1', state: 'pending' })
       expect(store.threads).toHaveLength(0)
     })
   })

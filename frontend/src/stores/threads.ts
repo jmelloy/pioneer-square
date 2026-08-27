@@ -1,8 +1,9 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { useGuildStore } from './guild'
 import { useUiStore } from './ui'
 import { api } from '../utils/api'
-import type { ChatMessage, ConversationThread, ThreadStatus } from '../types'
+import type { ChatMessage, ConversationThread, ThreadStatus, WSInbound } from '../types'
 
 const STATUS_LABELS: Record<ThreadStatus, string> = {
   active: 'active',
@@ -95,7 +96,7 @@ export const useThreadsStore = defineStore('threads', () => {
    * Mirrors the pattern used by agents.ts and tasks.ts stores.
    */
 
-  function handleWebSocketMessage(data: any) {
+  function handleWebSocketMessage(data: WSInbound) {
     switch (data.type) {
       case 'thread-created': {
         const thread: ConversationThread = {
@@ -125,6 +126,10 @@ export const useThreadsStore = defineStore('threads', () => {
       }
     }
   }
+
+  // Declare interest in every inbound WS frame — see subscribeWS in guild.ts,
+  // which owns parsing/validation/routing and dispatches here.
+  useGuildStore().subscribeWS(handleWebSocketMessage)
 
   function clearThreads() {
     threads.value = []
