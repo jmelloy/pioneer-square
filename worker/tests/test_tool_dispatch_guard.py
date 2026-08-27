@@ -47,7 +47,7 @@ async def test_pi_only_worker_never_invokes_claude_when_task_tool_omitted(tmp_pa
         patch("pioneer_worker.worker.git_ops.create_worktree", new=AsyncMock(return_value=True)),
         patch(
             "pioneer_worker.worker.pi_runner.run_pi_auto",
-            new=AsyncMock(return_value=(True, "done", "ok", None)),
+            new=AsyncMock(return_value=(True, "success", "ok", None)),
         ) as mock_pi,
         patch(
             "pioneer_worker.worker.claude_runner.run_claude_auto",
@@ -123,7 +123,7 @@ async def test_multi_tool_worker_dispatches_to_requested_pi_tool(tmp_path):
         patch("pioneer_worker.worker.git_ops.create_worktree", new=AsyncMock(return_value=True)),
         patch(
             "pioneer_worker.worker.pi_runner.run_pi_auto",
-            new=AsyncMock(return_value=(True, "done", "ok", None)),
+            new=AsyncMock(return_value=(True, "success", "ok", None)),
         ) as mock_pi,
         patch(
             "pioneer_worker.worker.claude_runner.run_claude_auto",

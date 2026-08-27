@@ -25,7 +25,7 @@ UsageFn = Callable[[dict], Awaitable[None]]  # on_usage(record: dict)
 OnProcFn = Callable[[object], None]  # on_proc(process_handle) — worker's live-handle callback
 
 
-class StopReason(enum.Enum):
+class StopReason(enum.StrEnum):
     """The closed set of reasons a run (or the task it belonged to) stopped.
 
     SUCCESS, MAX_TURNS, ERROR, INTERRUPTED, and NO_EVENTS are the reasons a

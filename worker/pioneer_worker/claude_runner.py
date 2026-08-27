@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 from collections.abc import Awaitable, Callable
 
 from .log_format import strip_worktree_prefix
-from .runner_types import RunRequest, RunResult, StopReason
+from .runner_types import RunRequest, RunResult, StopReason  # pyright: ignore[reportMissingImports]
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +46,18 @@ _STOP_REASON_MAP: dict[str, StopReason] = {
 
 def _usage_tokens(usage: dict) -> dict:
     """Extract the four token counts from a message/result ``usage`` block."""
+
+    def _int(name: str) -> int:
+        try:
+            return int(usage.get(name) or 0)
+        except (TypeError, ValueError):
+            return 0
+
     return {
-        "input_tokens": int(usage.get("input_tokens") or 0),
-        "output_tokens": int(usage.get("output_tokens") or 0),
-        "cache_read_input_tokens": int(usage.get("cache_read_input_tokens") or 0),
-        "cache_creation_input_tokens": int(usage.get("cache_creation_input_tokens") or 0),
+        "input_tokens": _int("input_tokens"),
+        "output_tokens": _int("output_tokens"),
+        "cache_read_input_tokens": _int("cache_read_input_tokens"),
+        "cache_creation_input_tokens": _int("cache_creation_input_tokens"),
     }
 
 
@@ -281,12 +289,8 @@ class ClaudeProcess:
 
     async def terminate(self) -> None:
         """Terminate the claude subprocess (SIGTERM, then SIGKILL if needed)."""
-        try:
+        with contextlib.suppress(ProcessLookupError):
             self.proc.terminate()
-        except ProcessLookupError:
-            pass
-        except Exception as exc:
-            logger.debug("terminate() error: %s", exc)
 
 
 # Allow long stream-json lines (large tool_result payloads). The asyncio default
@@ -552,7 +556,7 @@ async def run_claude_auto(
                 proc.kill()
                 await proc.wait()
             except ProcessLookupError:
-                pass
+                logger.debug("claude pid=%s already exited", proc.pid)
             except Exception as exc:  # pragma: no cover
                 logger.debug("Failed to reap claude pid=%s: %s", proc.pid, exc)
 
@@ -636,11 +640,9 @@ class ClaudeRunner:
                 "claude auth status timed out after 10s — keychain prompt? killing pid=%s",
                 proc.pid,
             )
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 proc.kill()
                 await proc.wait()
-            except ProcessLookupError:
-                pass
             return False
 
         raw = stdout.decode(errors="replace").strip()
