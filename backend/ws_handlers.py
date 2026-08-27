@@ -582,8 +582,8 @@ async def handle_agent_state(ctx: WSContext, data: dict) -> None:
 async def handle_chat(ctx: WSContext, data: dict) -> None:
     """Persist the chat message + route to foreman.
 
-    Each authenticated user gets their own foreman conversation thread (keyed
-    by ``ws_user_id``). One special case: if a worker is waiting for a Claude
+    Each user gets their own foreman conversation thread (keyed by
+    ``ws_user_id``, falling back to the guild id for anonymous sockets). One special case: if a worker is waiting for a Claude
     auth code, the next user message is captured as that code and bypasses
     the foreman AI entirely.
     """
@@ -598,8 +598,9 @@ async def handle_chat(ctx: WSContext, data: dict) -> None:
     # the get-or-create call ``_trigger_foreman`` makes further down for
     # routing purposes; both share the same idempotent entry point.
     thread_id: str | None = None
-    if from_agent == "user" and to_agent == "foreman" and content and ctx.ws_user_id:
-        thread = await ensure_conversation_thread(ctx.guild_id, ctx.ws_user_id, content)
+    conversation_user_id = ctx.ws_user_id or ctx.guild_id
+    if from_agent == "user" and to_agent == "foreman" and content:
+        thread = await ensure_conversation_thread(ctx.guild_id, conversation_user_id, content)
         thread_id = thread.id if thread else None
 
     ctx.db.add(
@@ -610,7 +611,7 @@ async def handle_chat(ctx: WSContext, data: dict) -> None:
             content=content,
             message_type="chat",
             created_at=created_at,
-            user_id=ctx.ws_user_id if from_agent == "user" else None,
+            user_id=conversation_user_id if from_agent == "user" else None,
             thread_id=thread_id,
         )
     )
@@ -622,7 +623,7 @@ async def handle_chat(ctx: WSContext, data: dict) -> None:
             to=to_agent,
             content=content,
             createdAt=created_at.isoformat(),
-            userId=ctx.ws_user_id if ctx.ws_user_id and from_agent == "user" else None,
+            userId=conversation_user_id if from_agent == "user" else None,
             threadId=thread_id,
         ),
     )
@@ -633,7 +634,7 @@ async def handle_chat(ctx: WSContext, data: dict) -> None:
         ctx.guild_id,
         "chat",
         content,
-        user_id=ctx.ws_user_id,
+        user_id=conversation_user_id,
         task_name=f"foreman.chat:{ctx.guild_id}",
     )
     reset_foreman_poll(ctx.guild_id)
