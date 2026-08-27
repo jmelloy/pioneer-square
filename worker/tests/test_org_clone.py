@@ -81,7 +81,7 @@ async def test_org_repo_cloned_on_first_task(tmp_path):
         patch("pioneer_worker.worker.git_ops.create_worktree", new=AsyncMock(return_value=True)),
         patch(
             "pioneer_worker.worker.claude_runner.run_claude_auto",
-            new=AsyncMock(return_value=(True, "end_turn", "done", None)),
+            new=AsyncMock(return_value=(True, "success", "done", None)),
         ),
         patch("pioneer_worker.worker.github_pr.push_branch", new=AsyncMock(return_value=True)),
         patch(
@@ -147,7 +147,7 @@ async def test_already_cloned_repo_skips_clone(tmp_path):
         patch("pioneer_worker.worker.git_ops.run_git", new=AsyncMock(return_value=(0, "", ""))),
         patch(
             "pioneer_worker.worker.claude_runner.run_claude_auto",
-            new=AsyncMock(return_value=(True, "end_turn", "done", None)),
+            new=AsyncMock(return_value=(True, "success", "done", None)),
         ),
         patch("pioneer_worker.worker.github_pr.push_branch", new=AsyncMock(return_value=True)),
         patch(
@@ -201,7 +201,7 @@ async def test_repos_only_worker_no_org(tmp_path):
         patch("pioneer_worker.worker.git_ops.create_worktree", new=AsyncMock(return_value=True)),
         patch(
             "pioneer_worker.worker.claude_runner.run_claude_auto",
-            new=AsyncMock(return_value=(True, "end_turn", "done", None)),
+            new=AsyncMock(return_value=(True, "success", "done", None)),
         ),
         patch("pioneer_worker.worker.github_pr.push_branch", new=AsyncMock(return_value=True)),
         patch(

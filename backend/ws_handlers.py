@@ -439,8 +439,8 @@ async def handle_join(ctx: WSContext, msg: JoinMsg) -> None:
                         reason="superseded by new foreman connection",
                     ),
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("failed to evict previous external foreman proxy: %s", exc)
         foreman_connections[ctx.guild_id] = ctx.websocket
         logger.info(
             "guild=%s external foreman API proxy registered: agentId=%s", ctx.guild_id, agent_id
@@ -1126,7 +1126,7 @@ async def handle_task_complete(ctx: WSContext, msg: TaskCompleteMsg) -> None:
             foreman_message = (
                 f"[task-complete/max-turns] Worker {worker_id_msg} task {task_id}: "
                 f'"{desc[:80]}" — branch: {branch}.{pr_line} '
-                f"Claude hit its max-turns limit before finishing. Partial work committed.{last_text_snippet} "
+                f"The runner hit its max-turns limit before finishing. Partial work committed.{last_text_snippet} "
                 "IMPORTANT: DO NOT call finalize_task — the task will be automatically "
                 "finalized when the PR is merged (or marked failed if the PR is closed without "
                 "merging). Use send_followup to continue work on the same branch/worktree."
@@ -1144,7 +1144,7 @@ async def handle_task_complete(ctx: WSContext, msg: TaskCompleteMsg) -> None:
         foreman_message = (
             f"[task-complete/max-turns] Worker {worker_id_msg} task {task_id}: "
             f'"{desc[:80]}" — branch: {branch}. '
-            f"Claude hit its max-turns limit and stopped before finishing. "
+            f"The runner hit its max-turns limit and stopped before finishing. "
             f"Partial work has been committed and the branch pushed.{last_text_snippet} "
             "Call send_followup with a continuation prompt so the worker can resume on the "
             "same branch/worktree. Only call finalize_task if the partial work is sufficient "
@@ -1239,7 +1239,7 @@ async def handle_task_followup_done(ctx: WSContext, msg: TaskFollowupDoneMsg) ->
         )
         human_msg = (
             f"[followup-done/max-turns] Worker {worker_id_msg} follow-up for task {task_id} "
-            f"hit Claude's max-turns limit before finishing. Partial work committed.{last_text_snippet} "
+            f"hit the runner's max-turns limit before finishing. Partial work committed.{last_text_snippet} "
             "Call send_followup with a continuation prompt to resume, or call finalize_task if "
             "the partial work is sufficient."
         )

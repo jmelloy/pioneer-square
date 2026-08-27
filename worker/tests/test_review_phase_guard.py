@@ -174,7 +174,7 @@ async def test_review_phase_injects_no_pr_instructions(caplog: pytest.LogCapture
 
     async def fake_run_claude(desc, *args, **kwargs):
         captured_desc.append(desc)
-        return True, "end_turn", "done", None
+        return True, "success", "done", None
 
     with (
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
@@ -230,7 +230,7 @@ async def test_review_phase_checks_out_pr_branch_via_gh(caplog: pytest.LogCaptur
     slot = worker.agents[0]
 
     async def fake_run_claude(desc, *args, **kwargs):
-        return True, "end_turn", "done", None
+        return True, "success", "done", None
 
     with (
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
@@ -297,7 +297,7 @@ async def test_review_prefers_pr_number_over_issue_number():
     slot = worker.agents[0]
 
     async def fake_run_claude(desc, *args, **kwargs):
-        return True, "end_turn", "done", None
+        return True, "success", "done", None
 
     with (
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
@@ -408,7 +408,7 @@ async def test_review_task_1758_regression_resolves_branch_from_metadata():
     slot = worker.agents[0]
 
     async def fake_run_claude(desc, *args, **kwargs):
-        return True, "end_turn", "done", None
+        return True, "success", "done", None
 
     with (
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),

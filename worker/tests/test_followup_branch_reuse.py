@@ -80,7 +80,7 @@ async def test_followup_ws_path_uses_existing_branch():
         return True
 
     async def fake_run_claude(desc, *args, **kwargs):
-        return True, "end_turn", "done", None
+        return True, "success", "done", None
 
     with (
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
@@ -150,7 +150,7 @@ async def test_followup_rest_path_uses_existing_branch():
         return True
 
     async def fake_run_claude(desc, *args, **kwargs):
-        return True, "end_turn", "done", None
+        return True, "success", "done", None
 
     with (
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
@@ -201,7 +201,7 @@ async def test_new_task_still_generates_fresh_branch():
         return True
 
     async def fake_run_claude(desc, *args, **kwargs):
-        return True, "end_turn", "done", None
+        return True, "success", "done", None
 
     with (
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
@@ -257,7 +257,7 @@ async def test_new_task_branch_contains_full_task_id_not_truncated():
         return True
 
     async def fake_run_claude(desc, *args, **kwargs):
-        return True, "end_turn", "done", None
+        return True, "success", "done", None
 
     with (
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
@@ -316,7 +316,7 @@ async def test_new_task_branch_uses_linked_issue_number_as_prefix():
         return True
 
     async def fake_run_claude(desc, *args, **kwargs):
-        return True, "end_turn", "done", None
+        return True, "success", "done", None
 
     with (
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
@@ -372,7 +372,7 @@ async def test_new_task_without_linked_issue_falls_back_to_ps_prefix():
         return True
 
     async def fake_run_claude(desc, *args, **kwargs):
-        return True, "end_turn", "done", None
+        return True, "success", "done", None
 
     with (
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
