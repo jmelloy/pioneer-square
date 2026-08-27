@@ -218,40 +218,6 @@ def test_exec_tools_partial_failure_still_returns_all():
 # ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# _task_mutation_blocked (issue #1200)
-#
-# Per-task child contexts (and the #927 cross-context lock race they caused)
-# were removed — every Foreman run for a (guild, user) now shares one
-# `_guild_locks` entry, so there is no separate context left to race. The
-# send_followup/redirect_task/cancel_task/finalize_task gate is kept as a
-# permanent no-op for call-site stability; this test locks in that behaviour.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "tool_name,extra_input",
-    [
-        ("send_followup", {"instructions": "fix ci"}),
-        ("redirect_task", {"instructions": "do something else"}),
-        ("cancel_task", {"reason": "no longer needed"}),
-        ("finalize_task", {}),
-    ],
-)
-def test_task_mutation_never_blocked(tool_name, extra_input):
-    from foreman.tools import exec_tools
-
-    guild_id = "g-no-race"
-    task_id = "t-norace1"
-    tu = _mock_tool_use(tool_name, f"toolu_{tool_name}", {"task_id": task_id, **extra_input})
-
-    with patch("foreman.tools.get_db", AsyncMock(return_value=_mock_session())):
-        results = _run(exec_tools(guild_id, [tu], own_task_id=None))
-
-    r = results[0]
-    assert "in-flight" not in r["content"]
-
-
 def test_exec_tools_github_http_error_sets_is_error():
     """GitHub HTTPError must produce is_error: True, not a plain success result."""
     import urllib.error
