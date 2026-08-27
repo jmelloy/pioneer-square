@@ -102,6 +102,17 @@ async def scrub_remote_credentials(repo_path: str) -> bool:
     return False
 
 
+def repo_cache_path(repos_dir: str, repo_full: str) -> str:
+    """Local clone path for *repo_full* under the shared repo cache.
+
+    The canonical place this layout is computed — callers that need to find
+    an already-cloned repo (rather than clone/fetch it, see ``ensure_repo``)
+    should use this instead of re-deriving ``owner/name`` splitting.
+    """
+    owner, name = repo_full.split("/", 1)
+    return os.path.join(repos_dir, owner, name)
+
+
 async def ensure_repo(repos_dir: str, repo_full: str, token: str | None = None) -> str | None:
     """Clone repo if absent, otherwise fast-forward to origin/HEAD. Returns local path.
 
@@ -115,8 +126,7 @@ async def ensure_repo(repos_dir: str, repo_full: str, token: str | None = None) 
     if len(parts) != 2:
         logger.error("ensure_repo: malformed repo name %r", repo_full)
         return None
-    owner, name = parts
-    local_path = os.path.join(repos_dir, owner, name)
+    local_path = repo_cache_path(repos_dir, repo_full)
 
     remote_url = f"https://github.com/{repo_full}.git"
 
