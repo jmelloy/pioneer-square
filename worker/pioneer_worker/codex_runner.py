@@ -12,10 +12,21 @@ import tempfile
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+from .runner_types import RunRequest, RunResult, StopReason
+
 logger = logging.getLogger(__name__)
 
 EmitFn = Callable[..., Awaitable[None]]  # emit(line: str, detail: dict | None = None)
 OnProcFn = Callable[["CodexProcess"], None]
+
+# Codex's own vocabulary is already small and closed (see _run_codex_once), but
+# it is still codex's, not Pioneer Square's — map it explicitly rather than
+# assuming it'll never grow a fourth value.
+_STOP_REASON_MAP: dict[str, StopReason] = {
+    "success": StopReason.SUCCESS,
+    "error_during_execution": StopReason.ERROR,
+    "no_events": StopReason.NO_EVENTS,
+}
 
 
 class CodexProcess:

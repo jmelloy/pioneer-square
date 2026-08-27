@@ -9,11 +9,38 @@ import os
 from collections.abc import Awaitable, Callable
 
 from .log_format import strip_worktree_prefix
+from .runner_types import RunRequest, RunResult, StopReason
 
 logger = logging.getLogger(__name__)
 
 EmitFn = Callable[..., Awaitable[None]]  # emit(line: str, detail: dict | None = None)
 UsageFn = Callable[[dict], Awaitable[None]]  # on_usage(record: dict)
+
+# Env vars that mean "claude has a way to authenticate". A direct key, an OAuth
+# token, a proxy auth token, or a gateway flag that makes claude authenticate
+# through the cloud provider's own credentials instead (this deployment runs
+# claude on Bedrock, so the flag alone is a valid configuration). A tool with
+# none of these and no logged-in CLI is dropped from the available list rather
+# than launched per-task and failed.
+CLAUDE_CREDENTIAL_KEYS = (
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+)
+
+# Claude Code's result-event `subtype` is the tool's own vocabulary, not
+# Pioneer Square's — mapping it here (rather than passing it through
+# verbatim) means a subtype Anthropic hasn't shipped yet surfaces as a loud
+# construction error instead of silently becoming a new backend stop reason.
+_STOP_REASON_MAP: dict[str, StopReason] = {
+    "success": StopReason.SUCCESS,
+    "max_turns": StopReason.MAX_TURNS,
+    "error_during_execution": StopReason.ERROR,
+    "interrupted": StopReason.INTERRUPTED,
+    "no_events": StopReason.NO_EVENTS,
+}
 
 
 def _usage_tokens(usage: dict) -> dict:
@@ -528,3 +555,116 @@ async def run_claude_auto(
                 pass
             except Exception as exc:  # pragma: no cover
                 logger.debug("Failed to reap claude pid=%s: %s", proc.pid, exc)
+
+
+def _map_stop_reason(raw: str) -> StopReason:
+    try:
+        return _STOP_REASON_MAP[raw]
+    except KeyError:
+        raise ValueError(
+            f"claude runner produced stop_reason {raw!r}, which is not in the closed "
+            f"StopReason vocabulary {sorted(_STOP_REASON_MAP)} — either Claude Code shipped "
+            "a new result subtype (add it to _STOP_REASON_MAP) or a caller/test faked an "
+            "invalid value"
+        ) from None
+
+
+class ClaudeRunner:
+    """The claude adapter's seam: owns its path, max-turns budget, and auth probe."""
+
+    def __init__(self, *, claude_path: str = "claude", max_turns: int | None = None) -> None:
+        self.claude_path = claude_path
+        self.max_turns = max_turns
+
+    async def run(self, req: RunRequest) -> RunResult:
+        success, stop_reason, last_text, session_id = await run_claude_auto(
+            req.description,
+            req.cwd,
+            max_turns=self.max_turns,
+            emit=req.emit,
+            on_proc=req.on_proc,
+            on_usage=req.on_usage,
+            claude_path=self.claude_path,
+            resume_session_id=req.resume_session_id,
+            model=req.model,
+            env=req.env,
+        )
+        return RunResult(
+            success=success,
+            stop_reason=_map_stop_reason(stop_reason),
+            final_message=last_text,
+            session_id=session_id,
+            raw_stop_reason=stop_reason,
+        )
+
+    async def probe_credentials(self, env: dict[str, str]) -> bool:
+        """True if *env* has a direct credential, else fall back to a logged-in CLI."""
+        if any(env.get(k) for k in CLAUDE_CREDENTIAL_KEYS):
+            return True
+        return await self.is_authenticated(env)
+
+    async def is_authenticated(self, env: dict[str, str] | None = None) -> bool:
+        """Return True if `claude auth status --json` reports loggedIn=true.
+
+        Works on macOS keychain and Linux. The exit code alone is unreliable
+        (the CLI returns 0 even when not logged in, just emits ``loggedIn:
+        false``), so we parse the JSON. A timeout guards against macOS keychain
+        access prompts that can hang the subprocess indefinitely when invoked
+        without a controlling TTY.
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self.claude_path,
+                "auth",
+                "status",
+                "--json",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env=env,
+            )
+        except FileNotFoundError as exc:
+            logger.warning("claude binary not found at %r: %s", self.claude_path, exc)
+            return False
+        except Exception as exc:
+            logger.warning("claude auth status spawn failed: %s", exc)
+            return False
+
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+        except TimeoutError:
+            logger.warning(
+                "claude auth status timed out after 10s — keychain prompt? killing pid=%s",
+                proc.pid,
+            )
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
+            return False
+
+        raw = stdout.decode(errors="replace").strip()
+        logger.info("claude auth status rc=%s output=%s", proc.returncode, raw[:200])
+        if proc.returncode != 0:
+            return False
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            # Older claude versions returned plain text; fall back to rc=0 == authed.
+            logger.info("claude auth status output is not JSON; treating rc=0 as authed")
+            return True
+        logged_in = bool(parsed.get("loggedIn"))
+        if logged_in:
+            logger.info(
+                "Claude auth detected (method=%s provider=%s)",
+                parsed.get("authMethod"),
+                parsed.get("apiProvider"),
+            )
+        else:
+            logger.info("claude auth status reports loggedIn=false")
+        return logged_in
+
+    async def list_models(self, env: dict[str, str]) -> list[dict]:
+        """Claude has no live model-catalog probe; the static /api/models catalog covers it."""
+        del env
+        return []
