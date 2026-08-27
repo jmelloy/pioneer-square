@@ -21,6 +21,18 @@ _LEVEL = "worker"
 _CREDENTIALED_URL_RE = re.compile(r"^(https?://)[^/@]+@")
 
 
+def _mkdir_parent(path: str) -> bool:
+    parent = os.path.dirname(path)
+    if not parent:
+        return True
+    try:
+        os.makedirs(parent, exist_ok=True)
+    except OSError as exc:
+        logger.error("Could not create parent directory for %s: %s", path, exc)
+        return False
+    return True
+
+
 def _auth_env(token: str | None) -> dict[str, str] | None:
     """Per-invocation git config carrying *token*, or None when there is none.
 
@@ -132,7 +144,8 @@ async def ensure_repo(repos_dir: str, repo_full: str, token: str | None = None) 
 
     if not os.path.exists(os.path.join(local_path, ".git")):
         logger.info("Cloning %s into %s", repo_full, local_path)
-        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        if not _mkdir_parent(local_path):
+            return None
         rc, _, _ = await run_git(["clone", remote_url, local_path], token=token)
         if rc != 0:
             logger.error("Clone failed for %s (rc=%d)", repo_full, rc)
@@ -151,7 +164,8 @@ async def create_worktree(
     repo_path: str, wt_path: str, branch: str, token: str | None = None
 ) -> bool:
     logger.info("Creating worktree at %s on branch %s (from %s)", wt_path, branch, repo_path)
-    os.makedirs(os.path.dirname(wt_path), exist_ok=True)
+    if not _mkdir_parent(wt_path):
+        return False
     await run_git(["fetch", "origin"], cwd=repo_path, token=token)
     rc, _, _ = await run_git(
         ["worktree", "add", "-b", branch, wt_path, "origin/HEAD"],
@@ -175,16 +189,26 @@ async def attach_worktree(
     logger.info(
         "Attaching worktree at %s to existing branch %s (from %s)", wt_path, branch, repo_path
     )
-    os.makedirs(os.path.dirname(wt_path), exist_ok=True)
+    if not _mkdir_parent(wt_path):
+        return False
     await run_git(["fetch", "origin", branch], cwd=repo_path, token=token)
     # Prefer attaching to the local branch ref if it exists; otherwise fall
-    # back to creating a tracking branch from origin/<branch>.
+    # back to creating a tracking branch from origin/<branch>. If another
+    # worktree already has that branch checked out, attach detached at the
+    # remote branch; push_branch pushes HEAD back to branch.
     rc, _, _ = await run_git(["worktree", "add", wt_path, branch], cwd=repo_path)
     if rc != 0:
         rc, _, _ = await run_git(
             ["worktree", "add", "-B", branch, wt_path, f"origin/{branch}"],
             cwd=repo_path,
         )
+    if rc != 0:
+        rc_ref, _, _ = await run_git(["rev-parse", "--verify", f"origin/{branch}"], cwd=repo_path)
+        if rc_ref == 0:
+            rc, _, _ = await run_git(
+                ["worktree", "add", "--detach", wt_path, f"origin/{branch}"],
+                cwd=repo_path,
+            )
     if rc != 0:
         logger.error("Worktree attach failed at %s for branch %s (rc=%d)", wt_path, branch, rc)
     return rc == 0
@@ -256,8 +280,8 @@ async def checkout_pr_worktree(
     (including cross-fork PRs) and checks it out in place.
     """
     logger.info("Checking out PR #%s (%s) into worktree %s", pr_number, repo_full, wt_path)
-    if parent := os.path.dirname(wt_path):
-        os.makedirs(parent, exist_ok=True)
+    if not _mkdir_parent(wt_path):
+        return False
     await run_git(["fetch", "origin"], cwd=repo_path, token=token)
     rc, _, _ = await run_git(["worktree", "add", "--detach", wt_path, "origin/HEAD"], cwd=repo_path)
     if rc != 0:

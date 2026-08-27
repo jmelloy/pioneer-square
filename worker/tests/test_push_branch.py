@@ -60,6 +60,28 @@ async def test_pushes_when_commits_ahead():
 
 
 @pytest.mark.asyncio
+async def test_detached_followup_compares_and_pushes_head_to_branch():
+    seen = []
+
+    async def _run_git(args, cwd=None):  # noqa: ANN001
+        seen.append(args)
+        if args[:3] == ["rev-parse", "--verify", "origin/feat/x"]:
+            return 0, "", ""
+        if args[:2] == ["rev-list", "--count"]:
+            return 0, "1\n", ""
+        return 128 if args[:2] == ["rev-parse", "--abbrev-ref"] else 0, "", ""
+
+    with patch.object(github_pr.git_ops, "run_git", new=_run_git):
+        result = await github_pr.push_branch(
+            branch="feat/x", worktree_path="/wt", token=None, emit=_noop_emit
+        )
+
+    assert result == "pushed"
+    assert ["rev-list", "--count", "origin/feat/x..HEAD"] in seen
+    assert ["push", "-u", "origin", "HEAD:feat/x"] in seen
+
+
+@pytest.mark.asyncio
 async def test_returns_failed_on_push_failure():
     responses = {
         ("status", "--porcelain"): (0, "", ""),

@@ -22,6 +22,13 @@ logger = logging.getLogger(__name__)
 _LEVEL = "worker"
 
 
+def _read_json(resp):  # noqa: ANN001
+    try:
+        return json.loads(resp.read())
+    except ValueError as exc:
+        raise ValueError("invalid JSON response") from exc
+
+
 # GitHub webhook events the foreman cares about — kept narrow so a single
 # repo's hook doesn't fan out the firehose. ``status`` is the legacy
 # pre-checks API; we subscribe so older repos still surface CI signals.
@@ -52,7 +59,7 @@ async def fetch_accessible_repos(token: str) -> list[str]:
             },
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read())
+            return _read_json(resp)
 
     all_repos: list[str] = []
     for page in range(1, 3):  # cap at 200 repos (2 pages × 100)
@@ -104,12 +111,20 @@ async def push_branch(
     # Skip the push when the branch has no commits beyond what's already
     # published — avoids creating empty remote branches / PRs when the agent
     # did nothing (e.g. bailed on a permission prompt). Compare against the
-    # upstream if one exists (continued task), else the base (origin/HEAD).
+    # upstream if one exists, else origin/<branch> (detached follow-up), else
+    # the base (new branch).
     rc_up, upstream, _ = await git_ops.run_git(
         ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
         cwd=worktree_path,
     )
-    base_ref = upstream.strip() if rc_up == 0 and upstream.strip() else "origin/HEAD"
+    if rc_up == 0 and upstream.strip():
+        base_ref = upstream.strip()
+    else:
+        remote_branch = f"origin/{branch}"
+        rc_ref, _, _ = await git_ops.run_git(
+            ["rev-parse", "--verify", remote_branch], cwd=worktree_path
+        )
+        base_ref = remote_branch if rc_ref == 0 else "origin/HEAD"
     rc_cnt, ahead, _ = await git_ops.run_git(
         ["rev-list", "--count", f"{base_ref}..HEAD"], cwd=worktree_path
     )
@@ -120,7 +135,7 @@ async def push_branch(
     await emit(f"Pushing {branch}...", level=_LEVEL)
     # ponytail: token in argv is visible via `ps`/DEBUG logs; acceptable for a
     # single-tenant worker. Upgrade to a stdin credential helper if that changes.
-    push_args = ["push", "-u", "origin", branch]
+    push_args = ["push", "-u", "origin", f"HEAD:{branch}"]
     if token:
         rc_u, origin_url, _ = await git_ops.run_git(
             ["remote", "get-url", "origin"], cwd=worktree_path
@@ -132,7 +147,7 @@ async def push_branch(
         )
         if m:
             authed = f"https://x-access-token:{token}@github.com/{m.group(1)}.git"
-            push_args = ["push", authed, f"{branch}:{branch}"]
+            push_args = ["push", authed, f"HEAD:{branch}"]
     rc, _, err = await git_ops.run_git(push_args, cwd=worktree_path)
     if rc != 0:
         await emit(f"✗ Push failed for {branch}: {err.strip()[:120]}", level=_LEVEL)
@@ -171,7 +186,7 @@ async def find_existing_pr(
             },
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read())
+            return _read_json(resp)
 
     try:
         pulls = await asyncio.to_thread(_list_prs)
@@ -235,7 +250,7 @@ async def open_pr(
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read())
+            return _read_json(resp)
 
     try:
         result = await asyncio.to_thread(_create_pr)
@@ -278,7 +293,7 @@ async def _fetch_webhook_secret(*, http_url: str, guild_id: str, auth_token: str
             headers={"Authorization": f"Bearer {auth_token}"},
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read())
+            return _read_json(resp)
 
     try:
         data = await asyncio.to_thread(_get)
@@ -342,7 +357,7 @@ async def ensure_webhook(
             },
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read())
+            return _read_json(resp)
 
     def _create_hook() -> dict:
         body = json.dumps(
@@ -369,7 +384,7 @@ async def ensure_webhook(
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read())
+            return _read_json(resp)
 
     def _patch_hook(hook_id: int) -> dict:
         body = json.dumps(
@@ -395,7 +410,7 @@ async def ensure_webhook(
             method="PATCH",
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read())
+            return _read_json(resp)
 
     try:
         hooks = await asyncio.to_thread(_list_hooks)

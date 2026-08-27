@@ -170,6 +170,23 @@ async def test_acquire_followup_attaches_existing_branch(tmp_path, origin, repo_
     assert (Path(_primary(result)) / "feature.txt").read_text() == "v1"
 
 
+async def test_acquire_followup_attaches_when_branch_checked_out_elsewhere(
+    tmp_path, origin, repo_path
+):
+    _push_new_branch(origin, "feature/shared", "feature.txt", "v1")
+    tw = _tw(tmp_path)
+    first = await tw.acquire(
+        "t-a", [("acme/widgets", str(repo_path))], mode="followup", branch="feature/shared"
+    )
+    second = await tw.acquire(
+        "t-b", [("acme/widgets", str(repo_path))], mode="followup", branch="feature/shared"
+    )
+
+    assert first.failed == []
+    assert second.failed == []
+    assert (Path(_primary(second)) / "feature.txt").read_text() == "v1"
+
+
 async def test_acquire_followup_falls_back_to_create_when_branch_missing(tmp_path, repo_path):
     tw = _tw(tmp_path)
     result = await tw.acquire(
