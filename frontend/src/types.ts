@@ -208,23 +208,8 @@ export interface GitHubRepo {
 // declared here but never sent) or a stale type fails that test instead of
 // silently drifting.
 
-export interface ChatWS {
+export interface ChatWS extends ChatMessage {
   type: 'chat'
-  from: string
-  to?: string
-  content: string
-  createdAt?: string
-  userId?: string | null
-  role?: 'tool_use' | 'tool_result' | string
-  toolId?: string
-  toolName?: string
-  toolInput?: Record<string, unknown>
-  toolOutput?: string
-  isError?: boolean
-  // Origin of the message: "web", "discord", "api". Missing means "web".
-  source?: string
-  taskId?: string | null
-  threadId?: string | null
 }
 
 export interface GuildUpdatedWS {
@@ -359,6 +344,7 @@ export interface ThreadCreatedWS {
   type: 'thread-created'
   threadId: string
   conversationId: number
+  userId?: string | null
   name?: string | null
   status?: ThreadStatus
   createdAt?: string
@@ -369,6 +355,7 @@ export interface ThreadUpdatedWS {
   threadId: string
   status?: ThreadStatus
   discordThreadId?: string | null
+  deletedAt?: string | null
 }
 
 export type WSInbound =
@@ -481,8 +468,8 @@ export const WS_INBOUND_FIELDS: { [K in WSInbound['type']]: readonly string[] } 
     'numTurns',
     'stopReason',
   ],
-  'thread-created': ['threadId', 'conversationId', 'name', 'status', 'createdAt'],
-  'thread-updated': ['threadId', 'status', 'discordThreadId'],
+  'thread-created': ['threadId', 'conversationId', 'userId', 'name', 'status', 'createdAt'],
+  'thread-updated': ['threadId', 'status', 'discordThreadId', 'deletedAt'],
 }
 
 // Outbound: producer-side; we accept any object with a `type`.
