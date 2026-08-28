@@ -25,6 +25,7 @@ import httpx
 import pytest
 from pioneer_worker.config import Config
 from pioneer_worker.mock_worker import MockWorker, _extract_script
+from pioneer_worker.runner_types import StopReason  # pyright: ignore[reportMissingImports]
 
 
 def _make_cfg() -> Config:
@@ -165,31 +166,41 @@ async def test_execute_task_followup_sends_followup_done():
     assert done["success"] is True
 
 
+async def _drive_fail(worker: MockWorker, task_id: str, stop_reason: str) -> None:
+    """Resolve *task_id*'s pending HTTP outcome as a failure with *stop_reason*."""
+    for _ in range(50):
+        if task_id in worker._task_outcomes:
+            break
+        await asyncio.sleep(0.005)
+    worker._resolve_task_outcome(
+        task_id,
+        {"kind": "fail", "stopReason": stop_reason, "lastMessage": "stuck"},
+    )
+
+
 @pytest.mark.asyncio
-async def test_execute_task_http_fail_emits_needs_input_and_error():
+async def test_execute_task_http_fail_emits_error_not_needs_input():
+    """An ordinary failure is a plain error task-update, not a human escalation.
+
+    The mock used to send type="needs-input" on *every* failure, which made the
+    backend's handle_needs_input look exercised while the branch production
+    actually takes went untested (#1238).
+    """
     worker = _make_worker()
     worker._loop = asyncio.get_running_loop()
     slot = worker.agents[0]
     task = {"id": "t-fail1", "description": "Will fail"}
 
-    async def _drive() -> None:
-        for _ in range(50):
-            if "t-fail1" in worker._task_outcomes:
-                break
-            await asyncio.sleep(0.005)
-        worker._resolve_task_outcome(
-            "t-fail1",
-            {"kind": "fail", "stopReason": "max_turns", "lastMessage": "stuck"},
-        )
-
-    driver = asyncio.create_task(_drive())
+    driver = asyncio.create_task(_drive_fail(worker, "t-fail1", "max_turns"))
     await worker._execute_task(task, slot)
     await driver
 
-    needs = _last_send_of(worker, "needs-input")
-    assert needs is not None
-    assert needs["stopReason"] == "max_turns"
-    assert needs["lastMessage"] == "stuck"
+    assert _last_send_of(worker, "needs-input") is None
+    update = _last_send_of(worker, "task-update")
+    assert update is not None
+    assert update["state"] == "error"
+    assert update["stopReason"] == "max_turns"
+    assert update["lastMessage"] == "stuck"
 
     # Slot went through error before settling on idle.
     states_seen = [
@@ -199,6 +210,24 @@ async def test_execute_task_http_fail_emits_needs_input_and_error():
     ]
     assert "error" in states_seen
     assert states_seen[-1] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_execute_task_needs_input_escalates_to_human():
+    """Only a NEEDS_INPUT stop reason reaches the backend's escalation handler."""
+    worker = _make_worker()
+    worker._loop = asyncio.get_running_loop()
+    slot = worker.agents[0]
+    task = {"id": "t-fail2", "description": "Will ask"}
+
+    driver = asyncio.create_task(_drive_fail(worker, "t-fail2", StopReason.NEEDS_INPUT))
+    await worker._execute_task(task, slot)
+    await driver
+
+    needs = _last_send_of(worker, "needs-input")
+    assert needs is not None
+    assert needs["stopReason"] == StopReason.NEEDS_INPUT
+    assert needs["lastMessage"] == "stuck"
 
 
 # ── Scripted execution ─────────────────────────────────────────────────────
@@ -258,9 +287,11 @@ async def test_scripted_task_can_fail():
 
     await worker._execute_task(task, slot)
 
-    needs = _last_send_of(worker, "needs-input")
-    assert needs is not None
-    assert needs["stopReason"] == "boom"
+    assert _last_send_of(worker, "needs-input") is None
+    update = _last_send_of(worker, "task-update")
+    assert update is not None
+    assert update["state"] == "error"
+    assert update["stopReason"] == "boom"
 
 
 # ── HTTP server integration ────────────────────────────────────────────────

@@ -97,19 +97,10 @@ REPO_REFRESH_INTERVAL_SECONDS = 20 * 60
 # already re-fetched fresh per task by _task_github_token.
 GITHUB_TOKEN_REFRESH_INTERVAL_SECONDS = 45 * 60
 
-# Env vars that mean "claude has a way to authenticate". A direct key, an OAuth
-# token, a proxy auth token, or a gateway flag that makes claude authenticate
-# through the cloud provider's own credentials instead (this deployment runs
-# claude on Bedrock, so the flag alone is a valid configuration). A tool with
-# none of these and no logged-in CLI is dropped from the available list rather
-# than launched per-task and failed.
-_CLAUDE_CREDENTIAL_KEYS = (
-    "ANTHROPIC_API_KEY",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "ANTHROPIC_AUTH_TOKEN",
-    "CLAUDE_CODE_USE_BEDROCK",
-    "CLAUDE_CODE_USE_VERTEX",
-)
+# Cancelled ids linger only until the cancellation is honoured (see
+# _clear_cancelled); this caps the residual entries for cancels that never
+# match a dispatch, so the set can't grow for the worker's whole lifetime.
+_MAX_CANCELLED_TASKS = 512
 
 
 class Agent:
@@ -192,8 +183,12 @@ class Worker:
         self.task_queue: asyncio.Queue[object] = asyncio.Queue()
         # Guards against re-queueing the same task-id on reconnect or poll.
         self._known_task_ids: set[str] = set()
-        # Tasks cancelled by the foreman or a human; checked before/during execution.
-        self._cancelled_tasks: set[str] = set()
+        # Tasks cancelled by the foreman or a human; checked before/during
+        # execution and cleared once the cancellation has been honoured, so a
+        # later re-assignment of the same id can still run here. Insertion-
+        # ordered (a dict used as an ordered set) so _mark_cancelled can evict
+        # the oldest entry rather than growing for the worker's lifetime.
+        self._cancelled_tasks: dict[str, None] = {}
         # Per-task redirect-instruction queues (SIGTERM + --resume flow).
         self._redirect_queues: dict[str, asyncio.Queue] = {}
         self._interactive_queues: dict[str, asyncio.Queue] = {}
@@ -560,6 +555,10 @@ class Worker:
             self._tool_models.pop(name, None)
         return await runner.probe_credentials(env)
 
+    def _tool_paths(self) -> dict[str, str]:
+        """Each registered runner's configured binary path, keyed by tool name."""
+        return {name: runner.binary_path for name, runner in self._runners.items()}
+
     async def _ensure_tools_installed(self) -> None:
         """Install any missing AI coding CLIs before probing PATH for them.
 
@@ -577,12 +576,7 @@ class Worker:
         )
         if not targets:
             return
-        tool_paths = {
-            "claude": self.cfg.claude_path,
-            "codex": self.cfg.codex_path,
-            "pi": self.cfg.pi_path,
-        }
-        await tool_installer.ensure_tools_installed(targets, tool_paths=tool_paths)
+        await tool_installer.ensure_tools_installed(targets, tool_paths=self._tool_paths())
 
     async def _detect_available_tools(self) -> None:
         """Populate self._available_tools from runner binaries on PATH + credentials.
@@ -611,23 +605,15 @@ class Worker:
                     return False
             return False
 
-        tool_paths = {
-            "claude": self.cfg.claude_path,
-            "codex": self.cfg.codex_path,
-            "pi": self.cfg.pi_path,
-        }
-        cred_hint = {
-            "claude": " or ".join(_CLAUDE_CREDENTIAL_KEYS),
-            "codex": "OPENAI_API_KEY",
-        }
         candidates = self.cfg.tools if self.cfg.tools is not None else list(self._runners)
 
         tools: list[str] = []
         for name in candidates:
-            binary = tool_paths.get(name)
-            if binary is None:
+            runner = self._runners.get(name)
+            if runner is None:
                 logger.warning("Unknown tool %r in --tools list; skipping", name)
                 continue
+            binary = runner.binary_path
             if not _is_executable(binary):
                 logger.warning(
                     "Tool %r not found on PATH (checked %r); excluding from available tools",
@@ -640,145 +626,12 @@ class Worker:
                     "Tool %r has no credentials (set %s in the guild env vars); "
                     "excluding from available tools",
                     name,
-                    cred_hint.get(name, "the required credentials"),
+                    runner.credential_hint,
                 )
                 continue
             tools.append(name)
         self._available_tools = tools
         logger.info("Available tools: %s", tools or ["(none)"])
-
-    async def _claude_is_authenticated(self, env: dict[str, str] | None = None) -> bool:
-        """Return True if `claude auth status --json` reports loggedIn=true.
-
-        Works on macOS keychain and Linux. The exit code alone is unreliable
-        (the CLI returns 0 even when not logged in, just emits ``loggedIn:
-        false``), so we parse the JSON. A timeout guards against macOS keychain
-        access prompts that can hang the subprocess indefinitely when invoked
-        without a controlling TTY.
-
-        *env* is claude's scoped environment (see _env_for_tool). Passing it
-        matters: the codex and pi probes already do, and without it a per-tool
-        override that configures claude's auth is invisible to the probe, so a
-        correctly configured tool reads as unauthenticated and gets dropped.
-        """
-        import json as _json
-
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                self.cfg.claude_path,
-                "auth",
-                "status",
-                "--json",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                env=env if env is not None else self._env_for_tool("claude"),
-            )
-        except FileNotFoundError as exc:
-            logger.warning("claude binary not found at %r: %s", self.cfg.claude_path, exc)
-            return False
-        except Exception as exc:
-            logger.warning("claude auth status spawn failed: %s", exc)
-            return False
-
-        try:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
-        except TimeoutError:
-            logger.warning(
-                "claude auth status timed out after 10s — keychain prompt? killing pid=%s",
-                proc.pid,
-            )
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-                await proc.wait()
-            return False
-
-        raw = stdout.decode(errors="replace").strip()
-        logger.info("claude auth status rc=%s output=%s", proc.returncode, raw[:200])
-        if proc.returncode != 0:
-            return False
-        try:
-            parsed = _json.loads(raw)
-        except _json.JSONDecodeError:
-            # Older claude versions returned plain text; fall back to rc=0 == authed.
-            logger.info("claude auth status output is not JSON; treating rc=0 as authed")
-            return True
-        logged_in = bool(parsed.get("loggedIn"))
-        if logged_in:
-            logger.info(
-                "Claude auth detected (method=%s provider=%s)",
-                parsed.get("authMethod"),
-                parsed.get("apiProvider"),
-            )
-        else:
-            logger.info("claude auth status reports loggedIn=false")
-        return logged_in
-
-    async def _codex_is_authenticated(self) -> bool:
-        """Return True if `codex doctor --json --summary` reports auth configured.
-
-        Mirrors _claude_is_authenticated: the exit code alone doesn't isolate
-        auth (doctor returns 0 with unrelated warnings), so we parse the JSON
-        and read the auth.credentials check's status. A timeout guards against a
-        hung subprocess.
-        """
-        import json as _json
-
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                self.cfg.codex_path,
-                "doctor",
-                "--json",
-                "--summary",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                env=self._env_for_tool("codex"),
-            )
-        except FileNotFoundError as exc:
-            logger.warning("codex binary not found at %r: %s", self.cfg.codex_path, exc)
-            return False
-        except Exception as exc:
-            logger.warning("codex doctor spawn failed: %s", exc)
-            return False
-
-        try:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=20.0)
-        except TimeoutError:
-            logger.warning("codex doctor timed out after 20s; killing pid=%s", proc.pid)
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-                await proc.wait()
-            return False
-
-        raw = stdout.decode(errors="replace").strip()
-        try:
-            parsed = _json.loads(raw)
-        except _json.JSONDecodeError:
-            logger.warning("codex doctor output is not JSON: %s", raw[:200])
-            return False
-        status = parsed.get("checks", {}).get("auth.credentials", {}).get("status")
-        logger.info("codex doctor auth.credentials status=%s", status)
-        return status == "ok"
-
-    async def _pi_has_models(self) -> bool:
-        """Load the live pi model catalog and return True if any model is usable."""
-        try:
-            models = await pi_runner.list_pi_models(
-                pi_path=self.cfg.pi_path,
-                env=self._env_for_tool("pi"),
-                timeout=20.0,
-            )
-        except FileNotFoundError as exc:
-            logger.warning("pi binary not found at %r: %s", self.cfg.pi_path, exc)
-            return False
-        except Exception as exc:
-            logger.warning("pi --list-models spawn failed: %s", exc)
-            return False
-        if models:
-            self._tool_models["pi"] = models
-        else:
-            self._tool_models.pop("pi", None)
-        logger.info("pi --list-models returned %d model rows", len(models))
-        return bool(models)
 
     # ------------------------------------------------------------------ Control API
     def _status_snapshot(self) -> dict:
@@ -852,6 +705,22 @@ class Worker:
         if task_id in self._cancelled_tasks:
             return f"task {task_id} is cancelled"
         return None
+
+    def _mark_cancelled(self, task_id: str) -> None:
+        """Record *task_id* as cancelled, evicting the oldest entry past the cap."""
+        self._cancelled_tasks.pop(task_id, None)
+        self._cancelled_tasks[task_id] = None
+        while len(self._cancelled_tasks) > _MAX_CANCELLED_TASKS:
+            self._cancelled_tasks.pop(next(iter(self._cancelled_tasks)))
+
+    def _clear_cancelled(self, task_id: str) -> None:
+        """Drop *task_id*'s cancellation once it has been acted on.
+
+        Cancellation applies to the dispatch in flight, not to the task id
+        forever: leaving the entry in place made the worker refuse that task
+        permanently, even on a fresh foreman re-assignment.
+        """
+        self._cancelled_tasks.pop(task_id, None)
 
     async def _reject_assignment(self, task_id: str, reason: str) -> None:
         logger.warning("Rejecting task %s: %s", task_id, reason)
@@ -1530,6 +1399,7 @@ class Worker:
                     if not task_id:
                         continue
                     logger.info("Finalize signal for task %s — releasing worktree", task_id)
+                    self._clear_cancelled(task_id)
                     await self._release_task_worktrees(task_id)
 
                 elif mtype == "task-cancel":
@@ -1539,7 +1409,7 @@ class Worker:
                     if not task_id:
                         continue
                     logger.info("Cancel signal for task %s", task_id)
-                    self._cancelled_tasks.add(task_id)
+                    self._mark_cancelled(task_id)
                     # Kill subprocess if this task is currently running
                     active = next((s for s in self.agents if s.current_task_id == task_id), None)
                     if active and active.current_claude:
@@ -1845,7 +1715,12 @@ class Worker:
                 await asyncio.sleep(0.1)
                 continue
             if task_id in self._cancelled_tasks:
+                # Dropping this silently left the backend's task in whatever
+                # state it was dispatched in, with no task-rejected to tell the
+                # foreman the work never started.
                 logger.info("Skipping cancelled task %s", task_id)
+                self._clear_cancelled(task_id)
+                await self._reject_assignment(task_id, "task was cancelled before it started")
                 continue
 
             logger.info(
@@ -2259,10 +2134,12 @@ class Worker:
                             lastText=last_msg,
                         )
                         if task_id in self._cancelled_tasks:
+                            self._clear_cancelled(task_id)
                             break
                         await emit(f"[{tool}] Waiting for your next message…", level=LEVEL_WORKER)
                         next_msg = await interactive_q.get()
                         if next_msg is _CANCEL_SENTINEL:
+                            self._clear_cancelled(task_id)
                             break
                         current_desc = str(next_msg)
 
@@ -2298,6 +2175,7 @@ class Worker:
                 )
 
                 if task_id in self._cancelled_tasks:
+                    self._clear_cancelled(task_id)
                     await emit("Task cancelled.", level=LEVEL_WORKER)
                     await self._task_update(
                         task_id, agent=agent, state="cancelled", finishedAt=_now_iso()
@@ -2312,6 +2190,7 @@ class Worker:
                     redirect_instr = None
 
                 if redirect_instr is _CANCEL_SENTINEL:
+                    self._clear_cancelled(task_id)
                     await emit("Task cancelled.", level=LEVEL_WORKER)
                     await self._task_update(
                         task_id, agent=agent, state="cancelled", finishedAt=_now_iso()

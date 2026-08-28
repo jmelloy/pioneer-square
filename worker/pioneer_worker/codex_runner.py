@@ -306,6 +306,8 @@ async def _run_codex_once(
 class CodexRunner:
     """Codex adapter for the shared Runner seam."""
 
+    credential_hint = "OPENAI_API_KEY"
+
     def __init__(
         self,
         *,
@@ -316,6 +318,10 @@ class CodexRunner:
         self.codex_path = codex_path
         self.codex_args = codex_args
         self.openai_api_key = openai_api_key
+
+    @property
+    def binary_path(self) -> str:
+        return self.codex_path
 
     async def run(self, req: RunRequest) -> RunResult:
         success, stop_reason, last_text, session_id = await run_codex_auto(

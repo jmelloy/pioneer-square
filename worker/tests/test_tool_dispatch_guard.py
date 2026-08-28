@@ -53,7 +53,7 @@ async def test_pi_only_worker_never_invokes_claude_when_task_tool_omitted(tmp_pa
             "pioneer_worker.worker.claude_runner.run_claude_auto",
             new=AsyncMock(side_effect=AssertionError("claude must not be invoked")),
         ),
-        patch("pioneer_worker.worker.github_pr.push_branch", new=AsyncMock(return_value=False)),
+        patch("pioneer_worker.worker.github_pr.push_branch", new=AsyncMock(return_value="pushed")),
     ):
         await worker._execute_task(task, agent)
 
@@ -129,7 +129,7 @@ async def test_multi_tool_worker_dispatches_to_requested_pi_tool(tmp_path):
             "pioneer_worker.worker.claude_runner.run_claude_auto",
             new=AsyncMock(side_effect=AssertionError("claude must not be invoked")),
         ),
-        patch("pioneer_worker.worker.github_pr.push_branch", new=AsyncMock(return_value=False)),
+        patch("pioneer_worker.worker.github_pr.push_branch", new=AsyncMock(return_value="pushed")),
     ):
         await worker._execute_task(task, agent)
 

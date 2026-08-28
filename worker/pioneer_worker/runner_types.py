@@ -131,6 +131,15 @@ class Runner(Protocol):
     writing a new module and registering it, not editing the dispatcher.
     """
 
+    #: Env var(s) an operator must set for this tool, named in the
+    #: "excluded from available tools" warning when ``probe_credentials`` fails.
+    credential_hint: str
+
+    @property
+    def binary_path(self) -> str:
+        """Path (or bare name) of this tool's CLI, as configured."""
+        ...
+
     async def run(self, req: RunRequest) -> RunResult: ...
 
     async def probe_credentials(self, env: dict[str, str]) -> bool:

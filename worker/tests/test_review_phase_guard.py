@@ -180,7 +180,7 @@ async def test_review_phase_injects_no_pr_instructions(caplog: pytest.LogCapture
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
         patch("pioneer_worker.worker.git_ops.get_pr_head_branch", return_value="pr-42-branch"),
         patch("pioneer_worker.worker.git_ops.checkout_pr_worktree", return_value=True),
-        patch("pioneer_worker.worker.github_pr.push_branch", return_value=True),
+        patch("pioneer_worker.worker.github_pr.push_branch", return_value="pushed"),
         patch("pioneer_worker.worker.github_pr.find_existing_pr", return_value=None),
         patch("pioneer_worker.worker.claude_runner.run_claude_auto", side_effect=fake_run_claude),
         patch.dict(os.environ, {}),

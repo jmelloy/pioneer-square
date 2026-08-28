@@ -366,41 +366,6 @@ async def run_pi_auto(
     return success, stop_reason, last_text, session_id
 
 
-async def run_pi_interactive(
-    description: str,
-    cwd: str,
-    *,
-    emit: EmitFn,
-    on_usage: UsageFn | None = None,
-    on_proc: OnProcFn | None = None,
-    pi_path: str = "pi",
-    model: str | None = None,
-    provider: str | None = None,
-    resume_session_id: str | None = None,
-    env: dict[str, str] | None = None,
-) -> tuple[bool, str, str, str | None]:
-    """Run pi RPC as a long-lived interactive session.
-
-    Unlike run_pi_auto, this keeps the RPC process open after ``agent_end`` so
-    callers can send additional prompts via the PiProcess returned to
-    ``on_proc``. It returns only when stdin is closed, the process exits, or the
-    caller terminates the process.
-    """
-    return await _run_pi_once(
-        description,
-        cwd,
-        emit=emit,
-        on_usage=on_usage,
-        on_proc=on_proc,
-        pi_path=pi_path,
-        model=model,
-        provider=provider,
-        resume_session_id=resume_session_id,
-        env=env,
-        interactive=True,
-    )
-
-
 async def _run_pi_once(
     description: str,
     cwd: str,
@@ -700,6 +665,9 @@ def _map_stop_reason(raw: str) -> StopReason:
 class PiRunner:
     """Pi adapter for the shared Runner seam."""
 
+    # pi resolves credentials per provider, so there is no single env var to name.
+    credential_hint = "a provider credential pi recognises"
+
     def __init__(
         self,
         *,
@@ -710,6 +678,10 @@ class PiRunner:
         self.pi_path = pi_path
         self.model = model
         self.provider = provider
+
+    @property
+    def binary_path(self) -> str:
+        return self.pi_path
 
     async def run(self, req: RunRequest) -> RunResult:
         success, stop_reason, last_text, session_id = await run_pi_auto(
@@ -736,4 +708,17 @@ class PiRunner:
         return bool(await self.list_models(env))
 
     async def list_models(self, env: dict[str, str]) -> list[dict]:
-        return await list_pi_models(pi_path=self.pi_path, env=env, timeout=20.0)
+        """Live pi catalog, or [] when the binary is missing or won't spawn.
+
+        Tool detection calls this before every credential probe, so a spawn
+        failure has to read as "no models" rather than propagate and abort the
+        whole detection pass.
+        """
+        try:
+            return await list_pi_models(pi_path=self.pi_path, env=env, timeout=20.0)
+        except FileNotFoundError as exc:
+            logger.warning("pi binary not found at %r: %s", self.pi_path, exc)
+            return []
+        except Exception as exc:
+            logger.warning("pi --list-models spawn failed: %s", exc)
+            return []

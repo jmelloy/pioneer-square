@@ -576,9 +576,15 @@ def _map_stop_reason(raw: str) -> StopReason:
 class ClaudeRunner:
     """The claude adapter's seam: owns its path, max-turns budget, and auth probe."""
 
+    credential_hint = " or ".join(CLAUDE_CREDENTIAL_KEYS)
+
     def __init__(self, *, claude_path: str = "claude", max_turns: int | None = None) -> None:
         self.claude_path = claude_path
         self.max_turns = max_turns
+
+    @property
+    def binary_path(self) -> str:
+        return self.claude_path
 
     async def run(self, req: RunRequest) -> RunResult:
         success, stop_reason, last_text, session_id = await run_claude_auto(

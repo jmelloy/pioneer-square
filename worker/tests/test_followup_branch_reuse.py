@@ -85,7 +85,7 @@ async def test_followup_ws_path_uses_existing_branch():
     with (
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
         patch("pioneer_worker.worker.git_ops.attach_worktree", side_effect=fake_attach),
-        patch("pioneer_worker.worker.github_pr.push_branch", return_value=True),
+        patch("pioneer_worker.worker.github_pr.push_branch", return_value="pushed"),
         patch("pioneer_worker.worker.github_pr.find_existing_pr", return_value=None),
         patch("pioneer_worker.worker.claude_runner.run_claude_auto", side_effect=fake_run_claude),
         tempfile.TemporaryDirectory() as tmp,
@@ -155,7 +155,7 @@ async def test_followup_rest_path_uses_existing_branch():
     with (
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
         patch("pioneer_worker.worker.git_ops.attach_worktree", side_effect=fake_attach),
-        patch("pioneer_worker.worker.github_pr.push_branch", return_value=True),
+        patch("pioneer_worker.worker.github_pr.push_branch", return_value="pushed"),
         patch("pioneer_worker.worker.github_pr.find_existing_pr", return_value=None),
         patch("pioneer_worker.worker.claude_runner.run_claude_auto", side_effect=fake_run_claude),
         tempfile.TemporaryDirectory() as tmp,
@@ -206,7 +206,7 @@ async def test_new_task_still_generates_fresh_branch():
     with (
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
         patch("pioneer_worker.worker.git_ops.create_worktree", side_effect=fake_create),
-        patch("pioneer_worker.worker.github_pr.push_branch", return_value=True),
+        patch("pioneer_worker.worker.github_pr.push_branch", return_value="pushed"),
         patch(
             "pioneer_worker.worker.github_pr.open_pr",
             return_value="https://github.com/o/r/pull/1",
@@ -262,7 +262,7 @@ async def test_new_task_branch_contains_full_task_id_not_truncated():
     with (
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
         patch("pioneer_worker.worker.git_ops.create_worktree", side_effect=fake_create),
-        patch("pioneer_worker.worker.github_pr.push_branch", return_value=True),
+        patch("pioneer_worker.worker.github_pr.push_branch", return_value="pushed"),
         patch(
             "pioneer_worker.worker.github_pr.open_pr",
             return_value="https://github.com/o/r/pull/1",
@@ -321,7 +321,7 @@ async def test_new_task_branch_uses_linked_issue_number_as_prefix():
     with (
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
         patch("pioneer_worker.worker.git_ops.create_worktree", side_effect=fake_create),
-        patch("pioneer_worker.worker.github_pr.push_branch", return_value=True),
+        patch("pioneer_worker.worker.github_pr.push_branch", return_value="pushed"),
         patch(
             "pioneer_worker.worker.github_pr.open_pr",
             return_value="https://github.com/o/r/pull/1",
@@ -377,7 +377,7 @@ async def test_new_task_without_linked_issue_falls_back_to_ps_prefix():
     with (
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
         patch("pioneer_worker.worker.git_ops.create_worktree", side_effect=fake_create),
-        patch("pioneer_worker.worker.github_pr.push_branch", return_value=True),
+        patch("pioneer_worker.worker.github_pr.push_branch", return_value="pushed"),
         patch(
             "pioneer_worker.worker.github_pr.open_pr",
             return_value="https://github.com/o/r/pull/1",

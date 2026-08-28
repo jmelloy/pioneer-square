@@ -196,14 +196,19 @@ class TestCredentialGating:
 
     async def test_codex_env_key_skips_cli_check(self, monkeypatch):
         # An env OPENAI_API_KEY is a fast-path: codex is included without
-        # running `codex doctor`.
+        # running `codex doctor`. Asserted against the spawn itself rather than
+        # a mocked-out probe method, so the fast path is verified where it now
+        # lives — inside CodexRunner.probe_credentials.
         monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
         worker = Worker(_make_cfg(tools=["codex"], codex_path="codex"))
-        worker._codex_is_authenticated = AsyncMock(return_value=False)
-        with patch("shutil.which", return_value="codex"):
+        spawn = AsyncMock()
+        with (
+            patch("shutil.which", return_value="codex"),
+            patch("asyncio.create_subprocess_exec", spawn),
+        ):
             await worker._detect_available_tools()
         assert "codex" in worker._available_tools
-        worker._codex_is_authenticated.assert_not_awaited()
+        spawn.assert_not_awaited()
 
     async def test_codex_without_key_falls_back_to_cli(self, monkeypatch):
         # No env key → gated on `codex doctor` auth status.
@@ -273,7 +278,7 @@ class TestPerToolEnvScoping:
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         cfg = _make_cfg(tools=["claude"], claude_path="claude")
         worker = Worker(cfg)
-        worker._claude_is_authenticated = AsyncMock(return_value=False)
+        worker._runners["claude"].is_authenticated = AsyncMock(return_value=False)
         # Credential present only in the claude-scoped env (never os.environ).
         worker._tool_env = {"claude": {"CLAUDE_CODE_OAUTH_TOKEN": "claude-tok"}}
         with patch("shutil.which", return_value="claude"):

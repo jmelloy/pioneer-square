@@ -46,7 +46,7 @@ async def test_cancelled_task_releases_worktrees_immediately(tmp_path):
     worker._release_task_worktrees = tracking_release  # type: ignore[assignment]
 
     # Mark the task cancelled so the post-run check fires immediately.
-    worker._cancelled_tasks.add(task_id)
+    worker._mark_cancelled(task_id)
 
     task = {"id": task_id, "description": "do something", "name": "do something"}
 
@@ -60,7 +60,7 @@ async def test_cancelled_task_releases_worktrees_immediately(tmp_path):
             "pioneer_worker.worker.claude_runner.run_claude_auto",
             new=AsyncMock(return_value=(False, "interrupted", "", None)),
         ),
-        patch("pioneer_worker.worker.github_pr.push_branch", new=AsyncMock(return_value=False)),
+        patch("pioneer_worker.worker.github_pr.push_branch", new=AsyncMock(return_value="pushed")),
     ):
         await worker._execute_task(task, agent)
 
@@ -103,9 +103,58 @@ async def test_cancel_sentinel_releases_worktrees_immediately(tmp_path):
         ),
         patch("pioneer_worker.worker.git_ops.create_worktree", new=AsyncMock(return_value=True)),
         patch("pioneer_worker.worker.claude_runner.run_claude_auto", new=mock_run),
-        patch("pioneer_worker.worker.github_pr.push_branch", new=AsyncMock(return_value=False)),
+        patch("pioneer_worker.worker.github_pr.push_branch", new=AsyncMock(return_value="pushed")),
     ):
         await worker._execute_task(task, slot)
 
     assert task_id in released, "worktrees must be released immediately on cancel sentinel"
     assert slot.state == "idle", "slot must return to idle after cancel sentinel"
+
+
+@pytest.mark.asyncio
+async def test_cancellation_is_cleared_once_honoured(tmp_path):
+    """A cancelled id must not stay cancelled forever (#1238).
+
+    _cancelled_tasks used to be add-only: after one cancellation the worker
+    refused that task id for the rest of its lifetime, even on a fresh foreman
+    re-assignment, and the set grew without bound.
+    """
+    worker = Worker(_make_cfg(work_dir=str(tmp_path), repos=["org/myrepo"]))
+    worker._send = AsyncMock()
+    worker._task_update = AsyncMock()
+    worker._release_task_worktrees = AsyncMock()  # type: ignore[assignment]
+
+    task_id = "t-cancel-clear"
+    task = {"id": task_id, "description": "do something", "name": "do something"}
+    worker._mark_cancelled(task_id)
+    assert worker._assignment_capacity_reason(task) == f"task {task_id} is cancelled"
+
+    with (
+        patch(
+            "pioneer_worker.worker.git_ops.ensure_repo",
+            new=AsyncMock(return_value=str(tmp_path / "repo")),
+        ),
+        patch("pioneer_worker.worker.git_ops.create_worktree", new=AsyncMock(return_value=True)),
+        patch(
+            "pioneer_worker.worker.claude_runner.run_claude_auto",
+            new=AsyncMock(return_value=(False, "interrupted", "", None)),
+        ),
+        patch("pioneer_worker.worker.github_pr.push_branch", new=AsyncMock(return_value="pushed")),
+    ):
+        await worker._execute_task(task, worker.agents[0])
+
+    assert task_id not in worker._cancelled_tasks
+    assert worker._assignment_capacity_reason(task) is None, "a re-assignment must be accepted"
+
+
+def test_mark_cancelled_evicts_oldest_past_the_cap():
+    """The residual set is bounded, so a long-lived worker can't leak it."""
+    from pioneer_worker.worker import _MAX_CANCELLED_TASKS
+
+    worker = Worker(_make_cfg())
+    for i in range(_MAX_CANCELLED_TASKS + 10):
+        worker._mark_cancelled(f"t-{i}")
+
+    assert len(worker._cancelled_tasks) == _MAX_CANCELLED_TASKS
+    assert "t-0" not in worker._cancelled_tasks, "oldest entries must be evicted"
+    assert f"t-{_MAX_CANCELLED_TASKS + 9}" in worker._cancelled_tasks

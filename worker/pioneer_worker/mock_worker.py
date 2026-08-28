@@ -33,6 +33,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import config as config_mod
+from .runner_types import StopReason  # pyright: ignore[reportMissingImports]
 from .worker import Worker, _now_iso
 
 logger = logging.getLogger(__name__)
@@ -297,15 +298,22 @@ class MockWorker(Worker):
             stop_reason = outcome.get("stopReason", "mock_failure")
             last_message = outcome.get("lastMessage", "mock failure")
             await self._task_update(task_id, agent=agent, branch=branch, state="failed")
+            # Mirror the real worker (_execute_task): only a NEEDS_INPUT outcome
+            # escalates to a human via type="needs-input". Sending it on every
+            # failure made handle_needs_input look exercised while the branch
+            # production actually takes — a plain error task-update — was not.
             await self._send(
                 {
-                    "type": "needs-input",
+                    "type": (
+                        "needs-input" if stop_reason == StopReason.NEEDS_INPUT else "task-update"
+                    ),
                     "workerId": self.cfg.worker_id,
                     "agentId": agent.agent_id,
                     "taskId": task_id,
                     "description": desc,
                     "branch": branch,
                     "sessionId": "",
+                    "state": "error",
                     "stopReason": stop_reason,
                     "lastMessage": last_message,
                 }
