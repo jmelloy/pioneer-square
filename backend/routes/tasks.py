@@ -15,8 +15,7 @@ from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException
-from foreman.classify import is_human_event
-from foreman.runner import run_foreman_ai
+from foreman import triggers
 from lock_service import LockService
 from models import (
     GithubIssue,
@@ -31,7 +30,6 @@ from sqlalchemy import tuple_, update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from task_lifecycle import TERMINAL_STATES, finalize_task
-from util.tasks import spawn
 from ws_types import (
     TaskCancelMsg,
     TaskRedirectMsg,
@@ -219,24 +217,13 @@ async def create_task_followup(
         raise HTTPException(status_code=404, detail="Task not found")
     _worker_id, state, branch = row
 
-    branch_ctx = f" on branch `{branch}`" if branch else ""
-    spawn(
-        run_foreman_ai(
-            guild_id,
-            f"[user-followup] User requested follow-up on task {task_id}{branch_ctx} "
-            f'(currently {state}): "{data.instructions}". '
-            "Call send_followup to dispatch this work — it will pick the "
-            "original worker if idle, otherwise any idle worker pulls the "
-            "branch from GitHub.",
-            user_id=github_user_id,
-            task_id=task_id,
-            # See foreman.classify — REST follow-ups have no dispatch "event"
-            # string of their own, so they tag "user-followup" purely to
-            # share the same human/automated classifier as ws_handlers.
-            is_human=is_human_event("user-followup"),
-            trigger="user-followup",
-        ),
-        name=f"foreman.user-followup:{task_id}",
+    await triggers.trigger_foreman(
+        guild_id,
+        "user-followup",
+        triggers.format_user_followup_message(task_id, state, branch, data.instructions),
+        user_id=github_user_id,
+        task_id=task_id,
+        task_name=f"foreman.user-followup:{task_id}",
     )
     return {"status": "queued_for_foreman", "taskId": task_id}
 

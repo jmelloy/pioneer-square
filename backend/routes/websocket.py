@@ -23,6 +23,7 @@ from events import (
     pending_worker_probes,
 )
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from foreman import triggers
 from foreman.proxy import fail_pending_for_websocket
 from models import Agent, Guild, UserSession, Worker
 from sqlalchemy import update
@@ -247,14 +248,10 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 # worker-disconnect message to avoid double-firing.
                 abrupt_worker_ids = stale_worker_ids - ctx.gracefully_disconnected_workers
                 if abrupt_worker_ids:
-                    offline_lines = "\n".join(
-                        f"[worker-offline] worker_id={wid} reason=disconnect"
-                        for wid in sorted(abrupt_worker_ids)
-                    )
-                    await ws_handlers._trigger_foreman(
+                    await triggers.trigger_foreman(
                         guild_id,
                         "worker-offline",
-                        offline_lines,
+                        triggers.format_worker_offline_batch_message(abrupt_worker_ids),
                         task_name="foreman.worker-offline:disconnect-batch",
                     )
             finally:

@@ -4,9 +4,9 @@ Issue #1200 removed the per-task child Foreman context introduced by #649:
 every run for a (guild, user) now shares one lock and one ``ForemanTurn``
 history, and ``task_id`` is metadata on a turn rather than a separate context
 selector. These tests cover the lock-key unification in ``run_foreman_ai``,
-the (now child-free) trigger routing in ``ws_handlers._trigger_foreman``, and
-``_emit_foreman_chat``'s badge-vs-Discord-routing behaviour. The actual Claude
-turn (``_run_foreman_ai``) is patched out — these exercise routing/
+the (now child-free) trigger routing in ``foreman.triggers.trigger_foreman``,
+and ``_emit_foreman_chat``'s badge-vs-Discord-routing behaviour. The actual
+Claude turn (``_run_foreman_ai``) is patched out — these exercise routing/
 serialization plumbing, not the LLM loop.
 """
 
@@ -98,7 +98,7 @@ async def test_different_users_run_concurrently(monkeypatch):
     assert overlap["value"] is True
 
 
-# ── _trigger_foreman routing ──────────────────────────────────────────────────
+# ── trigger_foreman routing ───────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -108,7 +108,7 @@ async def test_different_users_run_concurrently(monkeypatch):
 async def test_trigger_foreman_never_passes_child(monkeypatch, event):
     """No trigger event selects a separate child context anymore — `child`
     must not appear in the kwargs run_foreman_ai is called with."""
-    import ws_handlers
+    import foreman.triggers as triggers
 
     captured = {}
 
@@ -125,21 +125,17 @@ async def test_trigger_foreman_never_passes_child(monkeypatch, event):
 
         return _coro()
 
-    monkeypatch.setattr(ws_handlers, "foreman_connections", {})
-    monkeypatch.setattr(ws_handlers, "spawn", fake_spawn)
-    monkeypatch.setattr(ws_handlers, "run_foreman_ai", capturing_run)
+    monkeypatch.setattr(triggers, "spawn", fake_spawn)
+    monkeypatch.setattr(triggers, "run_foreman_ai", capturing_run)
 
-    await ws_handlers._trigger_foreman("g1", event, "msg", user_id="u-1", task_id="t-xyz")
+    await triggers.trigger_foreman("g1", event, "msg", user_id="u-1", task_id="t-xyz")
 
     assert "child" not in captured["kwargs"]
     assert captured["kwargs"].get("task_id") == "t-xyz"
 
 
 async def test_trigger_foreman_runs_embedded_even_when_proxy_connected(monkeypatch):
-    import ws_handlers
-
-    class FakeWS:
-        pass
+    import foreman.triggers as triggers
 
     captured = {}
 
@@ -158,11 +154,10 @@ async def test_trigger_foreman_runs_embedded_even_when_proxy_connected(monkeypat
 
         return _coro()
 
-    monkeypatch.setattr(ws_handlers, "foreman_connections", {"g1": FakeWS()})
-    monkeypatch.setattr(ws_handlers, "spawn", fake_spawn)
-    monkeypatch.setattr(ws_handlers, "run_foreman_ai", capturing_run)
+    monkeypatch.setattr(triggers, "spawn", fake_spawn)
+    monkeypatch.setattr(triggers, "run_foreman_ai", capturing_run)
 
-    await ws_handlers._trigger_foreman("g1", "chat", "hello", user_id="u-1")
+    await triggers.trigger_foreman("g1", "chat", "hello", user_id="u-1")
 
     assert captured["guild_id"] == "g1"
     assert captured["human_message"] == "hello"

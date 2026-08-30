@@ -29,10 +29,10 @@ from events import (
     send_ws_message,
 )
 from fastapi import WebSocket
-from foreman.classify import is_human_event
+from foreman import triggers
 from foreman.github_url_parser import parse_github_urls
 from foreman.proxy import fail_pending_for_websocket, resolve_foreman_api_response
-from foreman.runner import ensure_poll_loop, reset_foreman_poll, run_foreman_ai
+from foreman.runner import ensure_poll_loop, reset_foreman_poll
 from foreman.thread_service import ensure_conversation_thread
 from foreman.tools import maybe_post_plan_comment
 from lock_service import LockService
@@ -122,37 +122,12 @@ def _parse_pr_url(pr_url: str | None) -> tuple[int | None, str | None]:
     return number, f"{owner}/{repo}"
 
 
-def _format_queued_followup(index: int, payload: dict) -> str:
-    """Render one queued pending-followup payload for a foreman trigger message.
-
-    Includes tool/model/provider overrides (when present) so the foreman can
-    reissue an equivalent send_followup call instead of losing the override.
-    """
-    overrides = ", ".join(
-        f"{key}={payload[key]}" for key in ("tool", "model", "provider") if payload.get(key)
-    )
-    suffix = f" [{overrides}]" if overrides else ""
-    return f"  {index + 1}. {payload.get('instructions', '')}{suffix}"
-
-
 def _load_event_payload(raw: str | None) -> dict:
     try:
         value = json.loads(raw or "{}")
     except json.JSONDecodeError:
         return {}
     return value if isinstance(value, dict) else {}
-
-
-def _format_last_output(text: str, max_chars: int = 4000) -> str:
-    """Truncate worker output before it's embedded in a Foreman trigger message.
-
-    Foreman messages are delivered over the WebSocket and fed into the LLM's
-    context, so we still cap length — just far more generously than the old
-    200-char slice, which was cutting off Discord message content.
-    """
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars] + "... [truncated]"
 
 
 async def _resolve_user_identifier(db, identifier: str) -> str | None:
@@ -181,64 +156,6 @@ async def _task_user_id(db, task_id: str | None) -> str | None:
         return None
     res = await db.exec(select(col(Task.user_id)).where(col(Task.id) == task_id))
     return res.one_or_none()
-
-
-# ---------------------------------------------------------------------------
-# Foreman trigger dispatch helper
-# ---------------------------------------------------------------------------
-
-
-async def _trigger_foreman(
-    guild_id: str,
-    event: str,
-    human_message: str,
-    *,
-    user_id: str | None = None,
-    task_id: str | None = None,
-    task_name: str = "foreman.unknown",
-    reply_channel_id: str | None = None,
-) -> None:
-    """Dispatch a trigger into the embedded Foreman runner.
-
-    The standalone process no longer receives trigger events. It is only an API
-    proxy used by ``backend.foreman.runner`` at the LLM-call boundary.
-
-    ``event`` mirrors the trigger-type vocabulary:
-    ``chat``, ``task-complete``, ``followup-done``, ``needs-input``,
-    ``claude-auth``, ``periodic-check``, ``worker-online``,
-    ``worker-offline``.
-
-    ``reply_channel_id`` pins the Discord destination for this run's narration
-    to a specific channel — set by ``discord/router.py`` so a reply to an
-    @-mention lands back where it was asked. None (every other caller) keeps
-    the default routing in ``discord_notifier.notify_foreman_chat``.
-    """
-    # See foreman.classify for the human/automated event classification shared
-    # with routes.tasks.create_task_followup's REST follow-up path.
-    is_human = is_human_event(event)
-
-    # Foreman-owned thread lifecycle (#1167): a brand-new human message with
-    # no task_id yet is the start (or continuation) of a conversation — the
-    # Foreman creates/reuses that conversation's Thread here, as a side
-    # effect of handling the message, never something Discord or the
-    # frontend originates. Worker-driven events (task-complete, etc.) already
-    # carry an existing task_id whose Thread was stamped at task-creation
-    # time (see foreman.tools' create_task/assign_task), so nothing to do here.
-    if is_human and task_id is None and user_id:
-        await ensure_conversation_thread(guild_id, user_id, human_message)
-
-    spawn(
-        run_foreman_ai(
-            guild_id,
-            human_message,
-            user_id=user_id,
-            task_id=task_id,
-            is_human=is_human,
-            reply_channel_id=reply_channel_id,
-            trigger=event,
-        ),
-        name=task_name,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -656,12 +573,16 @@ async def handle_chat(ctx: WSContext, msg: ChatMsg) -> None:
     if not is_foreman_chat:
         return
 
-    await _trigger_foreman(
+    await triggers.trigger_foreman(
         ctx.guild_id,
         "chat",
         content,
         user_id=ctx.ws_user_id,
         task_name=f"foreman.chat:{ctx.guild_id}",
+        # thread_id was already resolved (and the thread created if needed)
+        # above so it could be stamped onto the Message row — skip the
+        # dispatcher's own ensure_conversation_thread to avoid doing it twice.
+        skip_thread_ensure=True,
     )
     reset_foreman_poll(ctx.guild_id)
 
@@ -755,8 +676,6 @@ async def handle_worker_register(ctx: WSContext, msg: WorkerRegisterMsg) -> None
         .values(**update_vals)
     )
     await ctx.db.commit()
-    repos_str = ",".join(repos) if repos else ""
-    tools_str = ",".join(tools) if tools else ""
     # Query the DB for agents belonging to this specific worker so the count
     # is accurate even when multiple workers share the same WS connection or
     # agents from previous sessions are still tracked in joined_agents.
@@ -768,19 +687,12 @@ async def handle_worker_register(ctx: WSContext, msg: WorkerRegisterMsg) -> None
         )
     )
     agent_count = count_res.one()
-    tools_suffix = f" tools={tools_str}" if tools_str else ""
-    provider_suffix = f" provider={provider}" if provider else ""
-    model_suffix = ""
-    if isinstance(models, dict) and models:
-        counts = {
-            tool_name: len(rows) for tool_name, rows in models.items() if isinstance(rows, list)
-        }
-        if counts:
-            model_suffix = " models=" + ",".join(f"{k}:{v}" for k, v in sorted(counts.items()))
-    await _trigger_foreman(
+    await triggers.trigger_foreman(
         ctx.guild_id,
         "worker-online",
-        f"[worker-online] worker_id={worker_id} repos={repos_str} agent_count={agent_count}{tools_suffix}{provider_suffix}{model_suffix}",
+        triggers.format_worker_online_message(
+            worker_id, repos, tools, agent_count, provider, models
+        ),
         task_name=f"foreman.worker-online:{worker_id}",
     )
 
@@ -815,10 +727,10 @@ async def handle_worker_disconnect(ctx: WSContext, msg: WorkerDisconnectMsg) -> 
         # during handle_join (avoids a redundant DB round-trip and is immune
         # to session state after the commit above).
         if worker_id in ctx.registered_worker_ids:
-            await _trigger_foreman(
+            await triggers.trigger_foreman(
                 ctx.guild_id,
                 "worker-offline",
-                f"[worker-offline] worker_id={worker_id} reason={reason}",
+                triggers.format_worker_offline_message(worker_id, reason),
                 task_name=f"foreman.worker-offline:{worker_id}",
             )
         else:
@@ -888,11 +800,10 @@ async def handle_task_rejected(ctx: WSContext, msg: TaskRejectedMsg) -> None:
         exclude=ctx.websocket,
     )
     task_uid = await _task_user_id(ctx.db, task_id)
-    await _trigger_foreman(
+    await triggers.trigger_foreman(
         ctx.guild_id,
         "task-rejected",
-        f"[task-rejected] Worker {worker_id} rejected task {task_id}: {reason}. "
-        "The task was returned to pending/unassigned. Pick another idle worker or spawn one.",
+        triggers.format_task_rejected_message(worker_id, task_id, reason),
         user_id=task_uid,
         task_id=task_id,
         task_name=f"foreman.task-rejected:{task_id}",
@@ -976,7 +887,9 @@ async def handle_task_update(ctx: WSContext, msg: TaskUpdateMsg) -> None:
         if stop_reason_msg:
             description_parts.append(f"Stop reason: {stop_reason_msg}.")
         if last_text_msg:
-            description_parts.append(f'Last output: "{_format_last_output(last_text_msg, 500)}"')
+            description_parts.append(
+                f'Last output: "{triggers.format_last_output(last_text_msg, 500)}"'
+            )
         if update_values.get("branch"):
             description_parts.append(f"Branch: {update_values['branch']}.")
         if pr_url_msg:
@@ -1013,30 +926,14 @@ async def handle_task_update(ctx: WSContext, msg: TaskUpdateMsg) -> None:
             await ctx.db.commit()
         worker_id_upd = msg.workerId or "a worker"
         task_uid = await _task_user_id(ctx.db, task_id)
-        if queued_payloads:
-            queued_summary = "\n".join(
-                _format_queued_followup(i, p) for i, p in enumerate(queued_payloads)
-            )
-            human_msg = (
-                f"[task-error] Worker {worker_id_upd} reported task {task_id} as errored. "
-                f"While the task was locked, {len(queued_payloads)} follow-up request(s) were queued:\n"
-                f"{queued_summary}\n"
-                "The queued follow-ups were NOT dispatched because the task errored. "
-                "Decide: call send_followup to retry, or call finalize_task with "
-                "outcome='failed' to mark it failed."
-            )
-        else:
-            stop_reason_upd = msg.stopReason or ""
-            last_text_upd = msg.lastText or ""
-            detail = f" Stop reason: {stop_reason_upd}." if stop_reason_upd else ""
-            if last_text_upd:
-                detail += f' Last output: "{_format_last_output(last_text_upd)}"'
-            human_msg = (
-                f"[task-error] Worker {worker_id_upd} reported task {task_id} as errored.{detail} "
-                "Decide: call send_followup to retry the task, or call finalize_task with "
-                "outcome='failed' to mark it failed."
-            )
-        await _trigger_foreman(
+        human_msg = triggers.format_task_error_message(
+            worker_id_upd,
+            task_id,
+            queued_payloads=queued_payloads,
+            stop_reason=msg.stopReason or "",
+            last_text=msg.lastText or "",
+        )
+        await triggers.trigger_foreman(
             ctx.guild_id,
             "task-error",
             human_msg,
@@ -1117,47 +1014,10 @@ async def handle_task_complete(ctx: WSContext, msg: TaskCompleteMsg) -> None:
         return
 
     task_uid = await _task_user_id(ctx.db, task_id)
-    pr_line = f" PR: {pr_url}." if pr_url else ""
-    last_text_snippet = f' Last output: "{_format_last_output(last_text)}".' if last_text else ""
-    if pr_url:
-        # PR exists: lifecycle is driven by GitHub webhooks, not the foreman.
-        # The task will be auto-finalized on merge or auto-failed on close without merge.
-        if stop_reason == "max_turns":
-            foreman_message = (
-                f"[task-complete/max-turns] Worker {worker_id_msg} task {task_id}: "
-                f'"{desc[:80]}" — branch: {branch}.{pr_line} '
-                f"The runner hit its max-turns limit before finishing. Partial work committed.{last_text_snippet} "
-                "IMPORTANT: DO NOT call finalize_task — the task will be automatically "
-                "finalized when the PR is merged (or marked failed if the PR is closed without "
-                "merging). Use send_followup to continue work on the same branch/worktree."
-            )
-        else:
-            foreman_message = (
-                f"[task-complete] Worker {worker_id_msg} finished task {task_id}: "
-                f'"{desc[:80]}" — branch: {branch}.{pr_line} '
-                "IMPORTANT: DO NOT call finalize_task now. The task will be automatically "
-                "finalized when the PR is merged (or automatically marked failed if the PR "
-                "is closed without merging). Only call send_followup if CI fails or reviewers "
-                "request changes."
-            )
-    elif stop_reason == "max_turns":
-        foreman_message = (
-            f"[task-complete/max-turns] Worker {worker_id_msg} task {task_id}: "
-            f'"{desc[:80]}" — branch: {branch}. '
-            f"The runner hit its max-turns limit and stopped before finishing. "
-            f"Partial work has been committed and the branch pushed.{last_text_snippet} "
-            "Call send_followup with a continuation prompt so the worker can resume on the "
-            "same branch/worktree. Only call finalize_task if the partial work is sufficient "
-            "or the task should be abandoned."
-        )
-    else:
-        foreman_message = (
-            f"[task-complete] Worker {worker_id_msg} finished task {task_id}: "
-            f'"{desc[:80]}" — branch: {branch}. '
-            "No PR was opened. Call send_followup for more work, or finalize_task to close "
-            "this task (use outcome='failed' if the task did not succeed)."
-        )
-    await _trigger_foreman(
+    foreman_message = triggers.format_task_complete_message(
+        worker_id_msg, task_id, desc, branch, pr_url, stop_reason, last_text
+    )
+    await triggers.trigger_foreman(
         ctx.guild_id,
         "task-complete",
         foreman_message,
@@ -1233,34 +1093,15 @@ async def handle_task_followup_done(ctx: WSContext, msg: TaskFollowupDoneMsg) ->
 
     task_uid = await _task_user_id(ctx.db, task_id)
 
-    if stop_reason == "max_turns":
-        last_text_snippet = (
-            f' Last output: "{_format_last_output(last_text_fud)}".' if last_text_fud else ""
-        )
-        human_msg = (
-            f"[followup-done/max-turns] Worker {worker_id_msg} follow-up for task {task_id} "
-            f"hit the runner's max-turns limit before finishing. Partial work committed.{last_text_snippet} "
-            "Call send_followup with a continuation prompt to resume, or call finalize_task if "
-            "the partial work is sufficient."
-        )
-    elif queued_payloads:
-        queued_summary = "\n".join(
-            _format_queued_followup(i, p) for i, p in enumerate(queued_payloads)
-        )
-        human_msg = (
-            f"[followup-done] Worker {worker_id_msg} completed a follow-up for task {task_id}. "
-            f"While the task was locked, {len(queued_payloads)} follow-up request(s) were queued:\n"
-            f"{queued_summary}\n"
-            "Review the queued instructions and call send_followup with the relevant ones "
-            "(or a combined version), or call finalize_task if the work is done."
-        )
-    else:
-        human_msg = (
-            f"[followup-done] Worker {worker_id_msg} completed a follow-up for task {task_id}. "
-            "Decide: call send_followup for more work, or call finalize_task to mark it done."
-        )
+    human_msg = triggers.format_followup_done_message(
+        worker_id_msg,
+        task_id,
+        stop_reason=stop_reason,
+        last_text=last_text_fud,
+        queued_payloads=queued_payloads,
+    )
 
-    await _trigger_foreman(
+    await triggers.trigger_foreman(
         ctx.guild_id,
         "followup-done",
         human_msg,
@@ -1278,13 +1119,11 @@ async def handle_needs_input(ctx: WSContext, msg: NeedsInputMsg) -> None:
     description = msg.description or ""
     stop_reason = msg.stopReason or ""
     last_msg = msg.lastMessage or ""
-    escalation = (
-        f"Worker {wid} could not complete task {task_id} and needs your help.\n"
-        f"Task: {description}\n"
-        f"Stop reason: {stop_reason}" + (f"\nLast message: {last_msg}" if last_msg else "")
+    escalation = triggers.format_needs_input_message(
+        wid, task_id, description, stop_reason, last_msg
     )
     task_uid = await _task_user_id(ctx.db, task_id) if task_id else None
-    await _trigger_foreman(
+    await triggers.trigger_foreman(
         ctx.guild_id,
         "needs-input",
         escalation,

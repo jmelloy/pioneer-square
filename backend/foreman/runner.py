@@ -852,7 +852,7 @@ async def _poll_loop(guild_id: str) -> None:
     Interval doubles each cycle from POLL_MIN_SECS up to POLL_MAX_SECS (or per-guild
     overrides). Cancelled (via reset_foreman_poll) whenever a significant event arrives.
     Runs for every guild regardless of whether an external foreman is connected —
-    each tick is dispatched through ``_trigger_foreman``, which routes it to whichever
+    each tick is dispatched through ``run_foreman_ai``, which routes it to whichever
     foreman (embedded or external) currently owns this guild. The foreman-poll-status
     broadcast is sent after each poll so the UI can display the countdown to the
     *next* check.
@@ -1011,23 +1011,28 @@ async def _poll_loop(guild_id: str) -> None:
                     "assigned to someone else."
                 )
 
-            # Deferred import: ws_handlers imports from the foreman package at
-            # module load time, so importing it back at module scope here would
-            # create a circular import.
-            from ws_handlers import _trigger_foreman
-
+            # periodic-check is never a human-originated event (see
+            # foreman.classify.is_human_event), so it never needs
+            # foreman.triggers.trigger_foreman's thread-ensure side effect —
+            # call run_foreman_ai directly instead of routing through the
+            # trigger dispatcher, which lives in foreman.triggers and imports
+            # run_foreman_ai from this module; importing it back here would
+            # recreate a circular import.
             if conversation_user_ids:
                 for user_id in conversation_user_ids:
-                    await _trigger_foreman(
-                        guild_id,
-                        "periodic-check",
-                        msg,
-                        user_id=user_id,
-                        task_name=f"foreman.poll:{guild_id}:{user_id}",
+                    spawn(
+                        run_foreman_ai(
+                            guild_id,
+                            msg,
+                            user_id=user_id,
+                            trigger="periodic-check",
+                        ),
+                        name=f"foreman.poll:{guild_id}:{user_id}",
                     )
             else:
-                await _trigger_foreman(
-                    guild_id, "periodic-check", msg, task_name=f"foreman.poll:{guild_id}"
+                spawn(
+                    run_foreman_ai(guild_id, msg, trigger="periodic-check"),
+                    name=f"foreman.poll:{guild_id}",
                 )
 
             # Announce next check interval so the UI can display a countdown.
@@ -1065,8 +1070,8 @@ def reset_foreman_poll(guild_id: str) -> None:
     not spam the Claude API by repeatedly resetting the timer to 60 s.
 
     If a foreman run is already in-flight for this guild, the call is a no-op:
-    the in-flight run was already triggered by _trigger_foreman and the poll loop
-    will re-fire on its next tick anyway.
+    the in-flight run was already triggered by foreman.triggers.trigger_foreman
+    and the poll loop will re-fire on its next tick anyway.
     """
     # Debounce: any in-flight run for this guild (regardless of user_id) means we
     # skip the reset entirely.  The run was already dispatched; another timer reset

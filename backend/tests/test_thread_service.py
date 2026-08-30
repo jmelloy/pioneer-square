@@ -5,7 +5,7 @@ non-goals), a :class:`models.Thread` is a Foreman construct: created/reused
 as a side effect of the Foreman handling a message, never something Discord
 or the frontend originates. These tests cover ``thread_service.py``'s
 get-or-create semantics, the ``ensure_conversation_thread`` entry point
-``ws_handlers._trigger_foreman`` calls, and ``Task.thread_id`` stamping.
+``foreman.triggers.trigger_foreman`` calls, and ``Task.thread_id`` stamping.
 """
 
 from __future__ import annotations

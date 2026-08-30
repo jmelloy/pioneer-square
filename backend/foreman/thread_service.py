@@ -10,7 +10,7 @@ surface this module keeps current — they never drive thread creation or
 status transitions themselves.
 
 ``ensure_conversation_thread`` is the single thread-creation entry point,
-called from ``ws_handlers._trigger_foreman`` for every human-originated
+called from ``foreman.triggers.trigger_foreman`` for every human-originated
 message that isn't already scoped to an existing task. ``get_or_create_active_thread``
 is the lower-level, session-scoped version used both there and from
 ``foreman/tools.py`` (to stamp ``Task.thread_id`` at task-creation time) —
@@ -220,7 +220,7 @@ async def ensure_conversation_thread(
 ) -> Thread | None:
     """Get-or-create the active thread for (guild_slug, user_id).
 
-    The entry point ``ws_handlers._trigger_foreman`` calls for every
+    The entry point ``foreman.triggers.trigger_foreman`` calls for every
     human-originated message with no ``task_id`` yet — the "sending the
     Foreman a message automatically creates a new thread" side effect
     (#1167). Broadcasts ``thread-created`` the first time a thread is

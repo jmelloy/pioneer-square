@@ -627,8 +627,9 @@ class ApiRequestLog(SQLModel, table=True):
     # github_user_id of the human this call was made on behalf of; NULL for
     # system/worker-driven calls. No FK, matching tasks.user_id / messages.user_id.
     user_id: str | None = None
-    # What triggered the foreman run this call belongs to — the _trigger_foreman
-    # event vocabulary (periodic-check, chat, task-complete, followup-done,
+    # What triggered the foreman run this call belongs to — the
+    # foreman.triggers.trigger_foreman event vocabulary (periodic-check, chat,
+    # task-complete, followup-done,
     # needs-input, worker-online/offline, claude-auth) plus github-event and
     # user-followup. Lets usage be attributed by trigger source. Nullable:
     # pre-existing rows and any run whose entry point didn't pass one stay NULL.
