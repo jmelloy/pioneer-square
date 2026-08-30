@@ -201,6 +201,30 @@ async def test_acquire_followup_falls_back_to_create_when_branch_missing(tmp_pat
     assert result.primary is not None
 
 
+async def test_acquire_followup_uses_local_branch_checked_out_elsewhere(tmp_path, repo_path):
+    tw = _tw(tmp_path)
+    first = await tw.acquire(
+        "t-old",
+        [("acme/widgets", str(repo_path))],
+        mode="fresh",
+        branch="feature/local-only",
+    )
+    marker = Path(_primary(first)) / "local.txt"
+    marker.write_text("local change\n")
+    _git(["add", "local.txt"], cwd=_primary(first))
+    _git(["commit", "-m", "local only"], cwd=_primary(first))
+
+    second = await tw.acquire(
+        "t-new",
+        [("acme/widgets", str(repo_path))],
+        mode="followup",
+        branch="feature/local-only",
+    )
+
+    assert second.failed == []
+    assert (Path(_primary(second)) / "local.txt").read_text() == "local change\n"
+
+
 async def test_acquire_followup_reuse_pulls_latest_from_origin(tmp_path, origin, repo_path):
     _push_new_branch(origin, "feature/bar", "feature.txt", "v1")
     tw = _tw(tmp_path)

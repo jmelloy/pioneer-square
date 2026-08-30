@@ -172,6 +172,13 @@ async def create_worktree(
         cwd=repo_path,
     )
     if rc != 0:
+        rc_ref, _, _ = await run_git(["rev-parse", "--verify", branch], cwd=repo_path)
+        if rc_ref == 0:
+            rc, _, _ = await run_git(
+                ["worktree", "add", "--detach", wt_path, branch],
+                cwd=repo_path,
+            )
+    if rc != 0:
         logger.error("Worktree add failed at %s (rc=%d)", wt_path, rc)
     return rc == 0
 
@@ -192,11 +199,16 @@ async def attach_worktree(
     if not _mkdir_parent(wt_path):
         return False
     await run_git(["fetch", "origin", branch], cwd=repo_path, token=token)
-    # Prefer attaching to the local branch ref if it exists; otherwise fall
-    # back to creating a tracking branch from origin/<branch>. If another
-    # worktree already has that branch checked out, attach detached at the
-    # remote branch; push_branch pushes HEAD back to branch.
+    # Prefer the local branch. If another worktree already has it checked out,
+    # attach detached at the same commit; push_branch pushes HEAD back to branch.
     rc, _, _ = await run_git(["worktree", "add", wt_path, branch], cwd=repo_path)
+    if rc != 0:
+        rc_ref, _, _ = await run_git(["rev-parse", "--verify", branch], cwd=repo_path)
+        if rc_ref == 0:
+            rc, _, _ = await run_git(
+                ["worktree", "add", "--detach", wt_path, branch],
+                cwd=repo_path,
+            )
     if rc != 0:
         rc, _, _ = await run_git(
             ["worktree", "add", "-B", branch, wt_path, f"origin/{branch}"],
