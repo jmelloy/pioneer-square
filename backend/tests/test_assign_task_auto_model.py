@@ -199,7 +199,9 @@ class TestAssignTaskAutoModelSelection:
         task = await _get_task(worker_id)
         assert task is not None
         # tier=standard for execute phase → sonnet is the standard-tier model
-        assert task.model == "claude-sonnet-4-6", "Tier-driven auto-selection must resolve correctly"
+        assert task.model == "claude-sonnet-4-6", (
+            "Tier-driven auto-selection must resolve correctly"
+        )
 
     @pytest.mark.asyncio
     async def test_auto_selected_model_persisted_on_task_row(self, db_session):
