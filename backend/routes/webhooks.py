@@ -27,7 +27,6 @@ from database import get_db_dep
 from db import github_cache
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from foreman.constants import _TERMINAL_STATES
 from foreman.runner import ensure_poll_loop, run_foreman_ai
 from lock_service import LockService
 from models import (
@@ -37,17 +36,16 @@ from models import (
     GuildMember,
     Message,
     Task,
-    TaskEvent,
-    finalize_soft_delete_at,
 )
 from pydantic import BaseModel
-from sqlalchemy import delete, update
+from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from task_lifecycle import TERMINAL_STATES, finalize_closed_issue, finalize_task
 from util.tasks import spawn
-from ws_types import ChatMsg, GithubEventMsg, TaskFinalizeMsg, TaskUpdateMsg
+from ws_types import ChatMsg, GithubEventMsg
 
 logger = logging.getLogger(__name__)
 
@@ -309,122 +307,6 @@ class DebounceQueue:
 
 
 _debounce_queue = DebounceQueue()
-
-
-async def _auto_finalize_task_on_pr_merge(
-    db: AsyncSession,
-    guild_pk: int,
-    guild_id: str,
-    task_id: str,
-) -> bool:
-    """Directly transition a task to 'done' when its PR is merged.
-
-    Uses a single conditional UPDATE to prevent TOCTOU races with concurrent
-    state transitions. Returns True if finalization occurred.
-    Releases any in-progress lock, discards queued follow-up events, and broadcasts
-    TaskFinalizeMsg + TaskUpdateMsg so the frontend reflects the change immediately.
-    """
-    # Fetch worker_id + issue link for the broadcast and the keep-alive decision;
-    # state filtering is delegated entirely to the conditional UPDATE to eliminate
-    # the SELECT→UPDATE TOCTOU.
-    row_result = await db.exec(
-        select(col(Task.worker_id), col(Task.issue_number), col(Task.issue_state)).where(
-            col(Task.id) == task_id, col(Task.guild_id) == guild_pk
-        )
-    )
-    task_row = row_result.one_or_none()
-    if task_row is None:
-        return False
-    worker_id, issue_number, issue_state = task_row
-
-    # done + still-open issue ⇒ stay live (deleted_at NULL) until the issue closes.
-    deleted_at = finalize_soft_delete_at("done", issue_number, issue_state)
-
-    # Single conditional UPDATE — only fires if task is not already in a terminal
-    # state, eliminating the race between two concurrent state transitions.
-    upd = await db.exec(
-        update(Task)
-        .where(
-            col(Task.id) == task_id,
-            col(Task.guild_id) == guild_pk,
-            col(Task.state).notin_(list(_TERMINAL_STATES)),
-        )
-        .values(state="done", deleted_at=deleted_at)
-    )
-    if (getattr(upd, "rowcount", 0) or 0) == 0:
-        return False
-
-    await LockService(db).release(f"task:{task_id}")
-    await db.exec(delete(TaskEvent).where(col(TaskEvent.task_id) == task_id))
-    await db.commit()
-
-    await broadcast_msg(guild_id, TaskFinalizeMsg(workerId=worker_id, taskId=task_id))
-    await broadcast_msg(
-        guild_id,
-        TaskUpdateMsg(
-            taskId=task_id,
-            state="done",
-            deletedAt=deleted_at.isoformat() if deleted_at else None,
-        ),
-    )
-    return True
-
-
-async def _auto_fail_task_on_pr_close(
-    db: AsyncSession,
-    guild_pk: int,
-    guild_id: str,
-    task_id: str,
-) -> bool:
-    """Directly transition a task to 'failed' when its PR is closed without merging.
-
-    Uses a single conditional UPDATE to prevent TOCTOU races with concurrent
-    state transitions. Returns True if the transition occurred.
-    Releases any in-progress lock, discards queued follow-up events, and broadcasts
-    TaskFinalizeMsg + TaskUpdateMsg so the frontend updates.
-    """
-    # Fetch worker_id for TaskFinalizeMsg; state filtering is delegated to the
-    # conditional UPDATE to eliminate the SELECT→UPDATE TOCTOU.
-    row_result = await db.exec(
-        select(col(Task.id), col(Task.worker_id)).where(
-            col(Task.id) == task_id, col(Task.guild_id) == guild_pk
-        )
-    )
-    task_row = row_result.one_or_none()
-    if task_row is None:
-        return False
-    worker_id = task_row[1]
-
-    deleted_at = datetime.now(UTC)  # failures are stamped immediately
-
-    # Single conditional UPDATE — only fires if task is not already in a terminal
-    # state, eliminating the race between two concurrent state transitions.
-    upd = await db.exec(
-        update(Task)
-        .where(
-            col(Task.id) == task_id,
-            col(Task.guild_id) == guild_pk,
-            col(Task.state).notin_(list(_TERMINAL_STATES)),
-        )
-        .values(state="failed", deleted_at=deleted_at)
-    )
-    if (getattr(upd, "rowcount", 0) or 0) == 0:
-        return False
-
-    await LockService(db).release(f"task:{task_id}")
-    await db.exec(delete(TaskEvent).where(col(TaskEvent.task_id) == task_id))
-    await db.commit()
-
-    await broadcast_msg(guild_id, TaskFinalizeMsg(workerId=worker_id, taskId=task_id))
-    await broadcast_msg(
-        guild_id,
-        TaskUpdateMsg(
-            taskId=task_id,
-            state="failed",
-            deletedAt=deleted_at.isoformat(),
-        ),
-    )
-    return True
 
 
 async def shutdown_debouncer() -> None:
@@ -931,7 +813,7 @@ async def github_webhook(
                     col(Task.guild_id) == guild_pk,
                     col(Task.branch) == head_ref,
                     col(Task.pr_url).is_(None),
-                    col(Task.state).notin_(list(_TERMINAL_STATES)),
+                    col(Task.state).notin_(list(TERMINAL_STATES)),
                 )
             )
             branch_matched_task_ids = branch_match_result.all()
@@ -990,8 +872,6 @@ async def github_webhook(
             # foreman.runner._sweep_closed_issues is a safety net for missed
             # deliveries; this is the primary (near-instant) path.
             if action == "closed":
-                from foreman.tools import finalize_closed_issue
-
                 finalized_ids = await finalize_closed_issue(db, guild_pk, guild_id, repo, issue_num)
                 if finalized_ids:
                     logger.info(
@@ -1004,25 +884,21 @@ async def github_webhook(
 
     # Deterministic lifecycle transitions: finalize on merge, fail on close-without-merge.
     # These happen directly — no AI decision needed for these clear-cut outcomes.
+    # finalize_task's conditional UPDATE is what keeps a task that raced to a
+    # terminal state elsewhere from being overwritten here.
     if task_id and event_type == "pull_request" and action == "closed":
         pr = payload.get("pull_request") or {}
-        merged = pr.get("merged")
-        if merged:
-            finalized = await _auto_finalize_task_on_pr_merge(db, guild_pk, guild_id, task_id)
-            if finalized:
-                logger.info(
-                    "github webhook auto-finalized task=%s on PR merge guild=%s",
-                    task_id,
-                    guild_id,
-                )
-        else:
-            failed = await _auto_fail_task_on_pr_close(db, guild_pk, guild_id, task_id)
-            if failed:
-                logger.info(
-                    "github webhook auto-failed task=%s on unmerged PR close guild=%s",
-                    task_id,
-                    guild_id,
-                )
+        outcome = "done" if pr.get("merged") else "failed"
+        res = await finalize_task(
+            db, guild_pk=guild_pk, guild_id=guild_id, task_id=task_id, outcome=outcome
+        )
+        if res.finalized:
+            logger.info(
+                "github webhook auto-finalized task=%s as %s on PR close guild=%s",
+                task_id,
+                outcome,
+                guild_id,
+            )
 
     logger.info(
         "github webhook accepted guild=%s delivery=%s event=%s action=%s repo=%s pr=%s task=%s",

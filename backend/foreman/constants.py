@@ -10,5 +10,4 @@ _HUMAN_TURN_WINDOW = 3  # how many non-tool-response user turns to load from DB
 # ponytail: lowered 5→3 to cut per-run parent-context tokens (~40% less history
 # on every round). Periodic checks are near-stateless so recall loss is minor;
 # raise back toward 5 if the foreman starts losing conversational thread.
-_TERMINAL_STATES = frozenset({"done", "failed", "cancelled", "error"})
 _24H_SECS = 86_400

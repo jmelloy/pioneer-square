@@ -202,6 +202,14 @@ calls `send_followup` (worker re-runs Claude in the same worktree on the same br
 Independently, a GitHub webhook auto-finalizes a task to `done` when its PR is merged, without
 waiting on the foreman.
 
+Every path that ends a task — the foreman's `finalize_task` tool, the closed-issue sweep, the PR
+merged/closed webhooks, and the UI's finalize button — goes through
+`backend/task_lifecycle.py::finalize_task`. It owns the terminal-state guard (a conditional UPDATE,
+not a read-then-write), the task-lock release, the queued follow-up purge, the `phase='issue'`
+cascade to already-finished descendants, and the `task-finalize`/`task-update` broadcasts. Callers
+add only their own side effects (Discord pings, GitHub comments). `TERMINAL_STATES` lives there too
+— import it, never re-spell the state tuple inline.
+
 ### Foreman AI
 
 Lives in `backend/foreman/` — key modules are `runner.py` (the Claude SDK loop), `tools.py` (tool

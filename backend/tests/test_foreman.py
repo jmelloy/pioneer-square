@@ -2214,7 +2214,7 @@ class TestDiscordTaskAssignedNotification:
 
 
 class TestFinalizeClosedIssueAtomicity:
-    """finalize_closed_issue (backend/foreman/tools.py) guards against a lost-update
+    """finalize_closed_issue (backend/task_lifecycle.py) guards against a lost-update
     race (jmelloy/pioneer-square#851, PR #848 review) by making the terminal-state
     check and the state='done' write on legacy phase='issue' rows a single
     conditional UPDATE...RETURNING instead of a SELECT followed by an UPDATE. A
@@ -2225,7 +2225,7 @@ class TestFinalizeClosedIssueAtomicity:
     row and only the first to commit can win."""
 
     async def test_concurrent_finalize_only_one_caller_wins(self, db_session):
-        from foreman.tools import finalize_closed_issue
+        from task_lifecycle import finalize_closed_issue
 
         insert_guild(db_session, "g-race")
         _insert_worker(db_session, "g-race", "w-race")

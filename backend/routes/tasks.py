@@ -24,17 +24,16 @@ from models import (
     Guild,
     Task,
     TaskLog,
-    finalize_soft_delete_at,
     live_tasks_filter,
 )
 from pydantic import BaseModel
 from sqlalchemy import tuple_, update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from task_lifecycle import TERMINAL_STATES, finalize_task
 from util.tasks import spawn
 from ws_types import (
     TaskCancelMsg,
-    TaskFinalizeMsg,
     TaskRedirectMsg,
     TaskUpdateMsg,
     WorkerMessageMsg,
@@ -249,7 +248,12 @@ async def finalize_task_endpoint(
     github_user_id: str = Depends(require_member()),
     db: AsyncSession = Depends(get_db_dep),
 ):
-    """Signal a worker to finalize a task — no more follow-ups.
+    """Finalize a task from the UI — no more follow-ups.
+
+    Delegates to ``task_lifecycle.finalize_task``, the same TOCTOU-safe path the
+    foreman tool and the PR webhooks use: the task lock is released, queued
+    follow-up events are discarded, and a ``phase='issue'`` root cascades its
+    soft-delete to already-finished descendants.
 
     Soft-deletes the task now, unless it is tied to a still-open issue: then
     ``deleted_at`` stays NULL until the issue closes (see
@@ -258,34 +262,15 @@ async def finalize_task_endpoint(
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")
-    result = await db.exec(
-        select(
-            col(Task.worker_id),
-            col(Task.issue_number),
-            col(Task.issue_state),
-            col(Task.phase),
-        ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
+    res = await finalize_task(
+        db, guild_pk=guild_pk, guild_id=guild_id, task_id=task_id, outcome="done"
     )
-    row = result.one_or_none()
-    if not row:
+    if res.status == "not_found":
         raise HTTPException(status_code=404, detail="Task not found")
-    worker_id, issue_number, issue_state, phase = row
-    deleted_at = finalize_soft_delete_at("done", issue_number, issue_state, phase)
-    await db.exec(
-        update(Task).where(col(Task.id) == task_id).values(state="done", deleted_at=deleted_at)
-    )
-    await db.commit()
-    await broadcast_msg(guild_id, TaskFinalizeMsg(workerId=worker_id, taskId=task_id))
-    await broadcast_msg(
-        guild_id,
-        TaskUpdateMsg(
-            taskId=task_id,
-            state="done",
-            deletedAt=deleted_at.isoformat() if deleted_at else None,
-        ),
-    )
+    if res.status == "already_terminal":
+        raise HTTPException(status_code=409, detail=f"Task is already {res.task.state}")
     # Return raw datetime — FastAPI's jsonable_encoder handles ISO-8601 serialisation.
-    return {"status": "finalized", "taskId": task_id, "deletedAt": deleted_at}
+    return {"status": "finalized", "taskId": task_id, "deletedAt": res.deleted_at}
 
 
 @router.post("/guilds/{guild_id}/tasks/{task_id}/message")
@@ -343,7 +328,7 @@ async def cancel_task_endpoint(
     if not row:
         raise HTTPException(status_code=404, detail="Task not found")
     worker_id, state = row
-    if state in ("done", "failed", "cancelled"):
+    if state in TERMINAL_STATES:
         raise HTTPException(status_code=409, detail=f"Task is already {state}")
     deleted_at = datetime.now(UTC)
     await db.exec(
@@ -569,7 +554,7 @@ async def redirect_task_endpoint(
     if not row:
         raise HTTPException(status_code=404, detail="Task not found")
     worker_id, state = row
-    if state in ("done", "failed", "cancelled"):
+    if state in TERMINAL_STATES:
         raise HTTPException(status_code=409, detail=f"Task is already {state}")
     await db.exec(update(Task).where(col(Task.id) == task_id).values(state="working"))
     await db.commit()

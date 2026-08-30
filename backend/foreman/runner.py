@@ -19,7 +19,6 @@ from events import broadcast_msg
 from foreman.constants import (
     _24H_SECS,
     _HUMAN_TURN_WINDOW,
-    _TERMINAL_STATES,
     MAX_FOREMAN_ROUNDS,
 )
 from foreman.github_url_parser import annotate_message as _annotate_github_urls
@@ -67,6 +66,7 @@ from models import (
 )
 from sqlalchemy import delete, func, tuple_
 from sqlmodel import col, select
+from task_lifecycle import TERMINAL_STATES
 from util.tasks import spawn
 from ws_types import ChatMsg, ForemanPollStatusMsg
 
@@ -699,7 +699,8 @@ async def _sweep_closed_issues(guild_id: str, linked_issues: set[tuple[str, int]
     if not linked_issues:
         return
 
-    from foreman.tools import _guild_github_token, fetch_issue_state, finalize_closed_issue
+    from foreman.tools import _guild_github_token, fetch_issue_state
+    from task_lifecycle import finalize_closed_issue  # noqa: PLC0415
 
     creds = await _guild_github_token(guild_id)
     if not creds:
@@ -888,7 +889,7 @@ async def _poll_loop(guild_id: str) -> None:
                         col(Task.issue_number),
                     ).where(
                         col(Task.guild_id) == guild_pk_val,
-                        ~col(Task.state).in_(list(_TERMINAL_STATES)),
+                        ~col(Task.state).in_(list(TERMINAL_STATES)),
                         live_tasks_filter(),
                     )
                 )
@@ -917,7 +918,7 @@ async def _poll_loop(guild_id: str) -> None:
                     select(col(Task.issue_repo), col(Task.issue_number))
                     .where(
                         col(Task.guild_id) == guild_pk_val,
-                        col(Task.state).in_(list(_TERMINAL_STATES)),
+                        col(Task.state).in_(list(TERMINAL_STATES)),
                         col(Task.deleted_at).is_(None),
                         col(Task.issue_number).is_not(None),
                     )
