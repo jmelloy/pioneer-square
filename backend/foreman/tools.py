@@ -1588,9 +1588,7 @@ async def _handle_create_task(
     name = (inp.get("name") or "")[:80]
     desc = inp.get("description", name)
     phase = inp.get("phase", "execute")
-    task_id = "t-" + "".join(
-        random.choices(string.ascii_lowercase + string.digits, k=6)
-    )
+    task_id = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
     created_at = datetime.now(UTC)
     # Route this task back to the conversation thread it was
     # created from (#1167) — reuses the thread
@@ -1599,9 +1597,7 @@ async def _handle_create_task(
     # work with no human user_id.
     thread_id: str | None = None
     if guild_pk is not None and user_id:
-        thread, _created = await get_or_create_active_thread(
-            db, guild_pk, user_id, name_hint=name
-        )
+        thread, _created = await get_or_create_active_thread(db, guild_pk, user_id, name_hint=name)
         thread_id = thread.id
     db.add(
         Task(
@@ -1656,8 +1652,7 @@ async def _handle_assign_task(
     result_text = ""
     is_error = False
     existing_linkage: (
-        tuple[int | None, str | None, int | None, str | None, str | None, str | None]
-        | None
+        tuple[int | None, str | None, int | None, str | None, str | None, str | None] | None
     ) = None
     if existing_task_id:
         existing_linkage_result = await db.exec(
@@ -1701,9 +1696,7 @@ async def _handle_assign_task(
         if not effective_pr_url:
             effective_pr_url = existing_pr_url
 
-    guild_result = await db.exec(
-        select(col(Guild.primary_repo)).where(col(Guild.id) == guild_pk)
-    )
+    guild_result = await db.exec(select(col(Guild.primary_repo)).where(col(Guild.id) == guild_pk))
     primary_repo: str | None = guild_result.one_or_none()
     target_repo = effective_pr_repo or effective_issue_repo
     repos: list[str] = inp.get("repos") or ([target_repo] if target_repo else [])
@@ -1736,8 +1729,7 @@ async def _handle_assign_task(
     elif worker_tools and requested_tool not in worker_tools:
         available = ", ".join(worker_tools)
         result_text = (
-            f"Worker {wid} does not support tool {requested_tool!r}. "
-            f"Available tools: {available}"
+            f"Worker {wid} does not support tool {requested_tool!r}. Available tools: {available}"
         )
         is_error = True
         tool = requested_tool
@@ -1797,8 +1789,7 @@ async def _handle_assign_task(
         unreachable = [
             r
             for r in repos
-            if r not in worker_repos
-            and not (worker_org and r.startswith(f"{worker_org}/"))
+            if r not in worker_repos and not (worker_org and r.startswith(f"{worker_org}/"))
         ]
         if unreachable:
             result_text = (
@@ -1814,9 +1805,7 @@ async def _handle_assign_task(
         # the same idle worker.  Lock covers the window from worker
         # selection through task row written + worker notified.
         assign_lock_key = f"assign_task:{wid}"
-        assign_lock_id = "".join(
-            random.choices(string.ascii_lowercase + string.digits, k=8)
-        )
+        assign_lock_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
         lock_acquired = await LockService(db).acquire(
             assign_lock_key, owner=assign_lock_id, ttl_seconds=60
         )
@@ -2127,32 +2116,20 @@ async def _handle_send_followup(
             True,
         )
     followup_worker_result = await db.exec(
-        select(
-            col(Worker.tools), col(Worker.provider), col(Worker.user_id)
-        ).where(col(Worker.id) == target_worker_id)
+        select(col(Worker.tools), col(Worker.provider), col(Worker.user_id)).where(
+            col(Worker.id) == target_worker_id
+        )
     )
     followup_worker_row = followup_worker_result.one_or_none()
-    followup_worker_tools_json = (
-        followup_worker_row[0] if followup_worker_row else None
-    )
-    followup_worker_provider = (
-        followup_worker_row[1] if followup_worker_row else None
-    )
-    followup_worker_user_id = (
-        followup_worker_row[2] if followup_worker_row else None
-    )
+    followup_worker_tools_json = followup_worker_row[0] if followup_worker_row else None
+    followup_worker_provider = followup_worker_row[1] if followup_worker_row else None
+    followup_worker_user_id = followup_worker_row[2] if followup_worker_row else None
     if isinstance(followup_worker_tools_json, str):
-        followup_worker_tools: list[str] = json.loads(
-            followup_worker_tools_json or "[]"
-        )
+        followup_worker_tools: list[str] = json.loads(followup_worker_tools_json or "[]")
     else:
         followup_worker_tools = followup_worker_tools_json or []
 
-    if (
-        requested_tool
-        and followup_worker_tools
-        and requested_tool not in followup_worker_tools
-    ):
+    if requested_tool and followup_worker_tools and requested_tool not in followup_worker_tools:
         available = ", ".join(followup_worker_tools)
         return (
             f"Worker {target_worker_id} does not support tool "
@@ -2205,20 +2182,13 @@ async def _handle_send_followup(
     )
 
     if requested_tier:
-        effective_tier = _select_tier(
-            "followup", complexity_hint=requested_tier
-        )
+        effective_tier = _select_tier("followup", complexity_hint=requested_tier)
     elif requested_tool and requested_tool != task_tool:
         effective_tier = _select_tier("followup")
     else:
         effective_tier = task_model_tier or _select_tier("followup")
 
-    if (
-        requested_tier
-        and effective_tool != "pi"
-        and effective_provider
-        and not is_error
-    ):
+    if requested_tier and effective_tool != "pi" and effective_provider and not is_error:
         from util.model_tiers import (  # noqa: PLC0415
             get_model_for_tier as _get_model_for_tier,
         )
@@ -2227,9 +2197,7 @@ async def _handle_send_followup(
         )
 
         _catalog = await _get_providers_from_db(db)
-        effective_model = _get_model_for_tier(
-            effective_tier, effective_provider, _catalog
-        )
+        effective_model = _get_model_for_tier(effective_tier, effective_provider, _catalog)
     if effective_tool != "pi" and effective_model and effective_provider:
         from models import ModelCatalog  # noqa: PLC0415
 
@@ -2250,19 +2218,13 @@ async def _handle_send_followup(
     # swap to the Bedrock inference-profile ARN only after
     # it passes (no-op for non-Bedrock providers).
     if not is_error and effective_tool != "pi":
-        effective_model = await _resolve_bedrock_model_id(
-            db, effective_provider, effective_model
-        )
+        effective_model = await _resolve_bedrock_model_id(db, effective_provider, effective_model)
 
     if not is_error:
         # Atomically acquire the follow-up lock to prevent two
         # concurrent foreman runs from both dispatching a worker.
-        lock_id = "".join(
-            random.choices(string.ascii_lowercase + string.digits, k=8)
-        )
-        lock_acquired = await LockService(db).acquire(
-            f"task:{task_id}", owner=lock_id
-        )
+        lock_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        lock_acquired = await LockService(db).acquire(f"task:{task_id}", owner=lock_id)
         await db.commit()
         if not lock_acquired:
             # Task already locked by a concurrent follow-up —
@@ -2304,11 +2266,7 @@ async def _handle_send_followup(
                 # Re-opening a terminal task: clear soft-delete so it
                 # reappears in the live task list and isn't auto-purged.
                 update_vals["deleted_at"] = None
-            await db.exec(
-                update(Task)
-                .where(col(Task.id) == task_id)
-                .values(**update_vals)
-            )
+            await db.exec(update(Task).where(col(Task.id) == task_id).values(**update_vals))
             await db.commit()
             await broadcast(
                 guild_id,
@@ -2323,9 +2281,7 @@ async def _handle_send_followup(
             # stays on the same worker — a different machine won't
             # have the session data on disk (see _select_followup_worker).
             followup_session_id = (
-                task_session_id
-                if target_worker_id == original_worker_id
-                else None
+                task_session_id if target_worker_id == original_worker_id else None
             )
             await broadcast(
                 guild_id,
@@ -2361,8 +2317,7 @@ async def _handle_send_followup(
                 )
             else:
                 result_text = (
-                    f"Follow-up sent to {target_worker_id} for task {task_id} "
-                    f"on branch {branch}."
+                    f"Follow-up sent to {target_worker_id} for task {task_id} on branch {branch}."
                 )
 
     return result_text, is_error
@@ -2375,9 +2330,7 @@ async def _handle_finalize_task(
     raw_outcome = inp.get("outcome", "done")
     outcome = raw_outcome if raw_outcome in ("done", "failed") else "done"
     if outcome != raw_outcome:
-        logger.warning(
-            "finalize_task: unknown outcome %r, defaulting to 'done'", raw_outcome
-        )
+        logger.warning("finalize_task: unknown outcome %r, defaulting to 'done'", raw_outcome)
     res = await finalize_task(
         db,
         guild_pk=guild_pk,
@@ -2396,9 +2349,7 @@ async def _handle_finalize_task(
         )
     if outcome == "failed":
         spawn(
-            notify_discord_task_finalized(
-                task.issue_repo, task.issue_number, task_id, "failed"
-            ),
+            notify_discord_task_finalized(task.issue_repo, task.issue_number, task_id, "failed"),
             name=f"discord.finalize:{task_id}",
         )
     result_text = f"Task {task_id} finalized as {outcome}; " + (
@@ -2448,9 +2399,7 @@ async def _handle_redirect_task(
     worker_id_val, state, redirect_issue_number, redirect_issue_repo = row
     if state in TERMINAL_STATES:
         return f"Task {task_id} is {state} — cannot redirect.", False
-    await db.exec(
-        update(Task).where(col(Task.id) == task_id).values(state="working")
-    )
+    await db.exec(update(Task).where(col(Task.id) == task_id).values(state="working"))
     await db.commit()
     await broadcast_msg(
         guild_id,
@@ -2460,9 +2409,7 @@ async def _handle_redirect_task(
             instructions=instructions,
         ),
     )
-    await broadcast_msg(
-        guild_id, TaskUpdateMsg(taskId=task_id, state="working")
-    )
+    await broadcast_msg(guild_id, TaskUpdateMsg(taskId=task_id, state="working"))
     if redirect_issue_number is not None and redirect_issue_repo:
         spawn(
             notify_discord_redirect(
@@ -2528,9 +2475,7 @@ async def _handle_cancel_task(
         ),
         name=f"discord.cancel:{task_id}",
     )
-    result_text = f"Task {task_id} cancelled." + (
-        f" Reason: {reason}" if reason else ""
-    )
+    result_text = f"Task {task_id} cancelled." + (f" Reason: {reason}" if reason else "")
     return result_text, False
 
 
@@ -2540,15 +2485,11 @@ async def _handle_shutdown_worker(
     wid = inp["worker_id"]
     reason = inp.get("reason", "")
     worker_result = await db.exec(
-        select(col(Worker.id)).where(
-            col(Worker.id) == wid, col(Worker.guild_id) == guild_pk
-        )
+        select(col(Worker.id)).where(col(Worker.id) == wid, col(Worker.guild_id) == guild_pk)
     )
     if worker_result.one_or_none() is None:
         return f"Worker {wid} not found.", False
-    await broadcast_msg(
-        guild_id, WorkerShutdownMsg(workerId=wid, reason=reason or None)
-    )
+    await broadcast_msg(guild_id, WorkerShutdownMsg(workerId=wid, reason=reason or None))
     await db.exec(update(Worker).where(col(Worker.id) == wid).values(disabled=True))
     await db.commit()
     # Graceful signal only: give the worker a chance to finish any
@@ -2563,9 +2504,7 @@ async def _handle_shutdown_worker(
         _force_kill_if_unresponsive(wid),
         name=f"shutdown-escalate:{wid}",
     )
-    result_text = f"Shutdown signal sent to {wid}." + (
-        f" Reason: {reason}" if reason else ""
-    )
+    result_text = f"Shutdown signal sent to {wid}." + (f" Reason: {reason}" if reason else "")
     return result_text, False
 
 
@@ -2582,9 +2521,7 @@ async def _handle_spawn_worker(
     # from the baseline. Human-initiated spawns (Discord
     # /worker-spawn, the REST endpoint) do pass a user and get that
     # user's layer.
-    result_text, is_error = await spawn_worker(
-        inp, guild_id, guild_pk, db, user_id=None
-    )
+    result_text, is_error = await spawn_worker(inp, guild_id, guild_pk, db, user_id=None)
     return result_text, is_error
 
 
@@ -2743,9 +2680,7 @@ async def _handle_list_github_prs(
 ) -> tuple[str, bool]:
     repo = inp["repo"]
     state = inp.get("state", "open")
-    prs = await _to_thread(
-        _gh_api, f"/repos/{repo}/pulls?state={state}&per_page=20", token
-    )
+    prs = await _to_thread(_gh_api, f"/repos/{repo}/pulls?state={state}&per_page=20", token)
     result_text = json.dumps(
         [
             {
@@ -2782,9 +2717,7 @@ async def _handle_create_github_issue(
     payload: dict = {"title": inp["title"], "body": inp.get("body", "")}
     if inp.get("labels"):
         payload["labels"] = inp["labels"]
-    issue = await _to_thread(
-        _gh_api_post, f"/repos/{repo}/issues", token, payload
-    )
+    issue = await _to_thread(_gh_api_post, f"/repos/{repo}/issues", token, payload)
     result_text = json.dumps(
         {
             "number": issue["number"],
@@ -2896,8 +2829,7 @@ async def _handle_review_pr_internal(
     pr_match = _PR_URL_RE.match(pr_url.rstrip("/"))
     if not pr_match:
         return (
-            f"Invalid GitHub PR URL: {pr_url!r}. "
-            "Expected https://github.com/owner/repo/pull/N",
+            f"Invalid GitHub PR URL: {pr_url!r}. Expected https://github.com/owner/repo/pull/N",
             True,
         )
     pr_repo = pr_match.group(1)
@@ -2981,9 +2913,7 @@ async def _handle_review_pr_internal(
             messages=[{"role": "user", "content": review_prompt}],
             tools=[],
         )
-        review_json = _parse_review_from_claude(
-            llm_result.response.content[0].text
-        )
+        review_json = _parse_review_from_claude(llm_result.response.content[0].text)
     except Exception as exc:
         logger.error(
             "guild=%s review_pr_internal: ai generation failed: %s",
@@ -2994,8 +2924,7 @@ async def _handle_review_pr_internal(
         review_json = {
             "verdict": "COMMENT",
             "summary": (
-                "Review could not be generated by the AI agent "
-                f"({type(exc).__name__}: {exc})."
+                f"Review could not be generated by the AI agent ({type(exc).__name__}: {exc})."
             ),
             "comments": [],
         }
@@ -3013,9 +2942,7 @@ async def _handle_review_pr_internal(
         if c.get("path") and c.get("line") and c.get("body")
     ]
 
-    recommended_verdict = str(
-        review_json.get("verdict") or "COMMENT"
-    ).upper()
+    recommended_verdict = str(review_json.get("verdict") or "COMMENT").upper()
     if recommended_verdict not in (
         "APPROVE",
         "REQUEST_CHANGES",
@@ -3024,8 +2951,7 @@ async def _handle_review_pr_internal(
         recommended_verdict = "COMMENT"
     action = explicit_action or recommended_verdict
     logger.info(
-        "guild=%s review_pr_internal: pr_url=%s action=%s"
-        " (explicit=%s recommended=%s)",
+        "guild=%s review_pr_internal: pr_url=%s action=%s (explicit=%s recommended=%s)",
         guild_id,
         pr_url,
         action,
@@ -3034,13 +2960,10 @@ async def _handle_review_pr_internal(
     )
 
     try:
-        threads_resolved = await _supersede_prior_bot_reviews(
-            pr_repo, pr_number, username, token
-        )
+        threads_resolved = await _supersede_prior_bot_reviews(pr_repo, pr_number, username, token)
         if threads_resolved:
             logger.info(
-                "guild=%s review_pr_internal: resolved %d thread(s)"
-                " from prior review(s) on %s#%d",
+                "guild=%s review_pr_internal: resolved %d thread(s) from prior review(s) on %s#%d",
                 guild_id,
                 threads_resolved,
                 pr_repo,
@@ -3048,8 +2971,7 @@ async def _handle_review_pr_internal(
             )
     except Exception as _sup_exc:
         logger.warning(
-            "guild=%s review_pr_internal: thread resolution step failed"
-            " (non-fatal): %s",
+            "guild=%s review_pr_internal: thread resolution step failed (non-fatal): %s",
             guild_id,
             _sup_exc,
         )
@@ -3066,8 +2988,7 @@ async def _handle_review_pr_internal(
         )
     except urllib.error.HTTPError:
         logger.warning(
-            "guild=%s review_pr_internal: inline comments rejected, "
-            "retrying without them",
+            "guild=%s review_pr_internal: inline comments rejected, retrying without them",
             guild_id,
         )
         review_data = await _to_thread(
@@ -3125,9 +3046,7 @@ async def _handle_analyze_epic(
                 if created:
                     from datetime import datetime as dt  # noqa: PLC0415
 
-                    report_time = dt.fromisoformat(
-                        created.replace("Z", "+00:00")
-                    )
+                    report_time = dt.fromisoformat(created.replace("Z", "+00:00"))
                     if (datetime.now(UTC) - report_time) < timedelta(days=7):
                         recent_report = True
                 break
@@ -3178,9 +3097,7 @@ async def _handle_analyze_epic(
 
     # Analyze completeness
     total_subs = len(sub_issue_details)
-    closed_subs = sum(
-        1 for s in sub_issue_details if s["state"] == "closed"
-    )
+    closed_subs = sum(1 for s in sub_issue_details if s["state"] == "closed")
     open_subs = total_subs - closed_subs
 
     # Identify basic inconsistencies (no API calls needed)
@@ -3188,17 +3105,14 @@ async def _handle_analyze_epic(
     for s in sub_issue_details:
         # Closed issue — note it for potential verification
         if s["state"] == "closed" and not any(
-            f"#{s['number']}" in (p.get("title", "") + p.get("body", ""))
-            for p in all_prs
+            f"#{s['number']}" in (p.get("title", "") + p.get("body", "")) for p in all_prs
         ):
             gaps.append(
                 f"Sub-issue #{s['number']} ({s['title']}) is closed but no PR references it"
             )
 
     # Determine if deep analysis is recommended
-    recommend_deep = len(gaps) >= 2 or (
-        total_subs > 0 and open_subs == 0 and len(all_prs) > 0
-    )
+    recommend_deep = len(gaps) >= 2 or (total_subs > 0 and open_subs == 0 and len(all_prs) > 0)
 
     # Build concise status summary
     pct = int((closed_subs / total_subs) * 100) if total_subs > 0 else 0
@@ -3224,13 +3138,10 @@ async def _handle_analyze_epic(
 
     report_lines.append("")
     if total_subs > 0 and open_subs == 0:
-        report_lines.append(
-            "✅ All sub-issues closed. Epic may be ready to finalize."
-        )
+        report_lines.append("✅ All sub-issues closed. Epic may be ready to finalize.")
     report_lines.append("")
     report_lines.append(
-        "*Level 1 status check. Use `trigger_deep_analysis` for "
-        "code-level review.*"
+        "*Level 1 status check. Use `trigger_deep_analysis` for code-level review.*"
     )
 
     report_body = "\n".join(report_lines)
@@ -3356,9 +3267,7 @@ async def _handle_call_agent(inp: dict, guild_id: str) -> tuple[str, bool]:
                 "method": "tasks/send",
                 "params": {
                     "skill_id": skill_id,
-                    "message": {
-                        "parts": [{"type": "text", "text": json.dumps(params)}]
-                    },
+                    "message": {"parts": [{"type": "text", "text": json.dumps(params)}]},
                 },
                 "id": 1,
             }
@@ -3430,8 +3339,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
             "type": "tool_result",
             "tool_use_id": tu.id,
             "content": (
-                f"Unknown tool: {tu.name!r}. "
-                f"Available: {', '.join(sorted(_TOOL_REGISTRY))}"
+                f"Unknown tool: {tu.name!r}. Available: {', '.join(sorted(_TOOL_REGISTRY))}"
             ),
             "is_error": True,
         }
@@ -3445,9 +3353,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 from auth_deps import get_guild_pk  # noqa: PLC0415
 
                 guild_pk = await get_guild_pk(db, guild_id)
-                result_text, is_error = await tool.handler(
-                    inp, guild_id, guild_pk, db, user_id
-                )
+                result_text, is_error = await tool.handler(inp, guild_id, guild_pk, db, user_id)
             finally:
                 await db.close()
 
@@ -3462,9 +3368,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
             else:
                 token, username = creds
                 try:
-                    result_text, is_error = await tool.handler(
-                        inp, guild_id, token, username
-                    )
+                    result_text, is_error = await tool.handler(inp, guild_id, token, username)
                 except urllib.error.HTTPError as exc:
                     result_text = f"GitHub API error: {exc.code} {exc.reason}"
                     is_error = True
@@ -3486,11 +3390,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
     # Surface GitHub request IDs in error responses so failures can be correlated
     # with provider-side logs without digging through the database.
     if is_error and _api_call_log:
-        req_ids = [
-            c["x_github_request_id"]
-            for c in _api_call_log
-            if c.get("x_github_request_id")
-        ]
+        req_ids = [c["x_github_request_id"] for c in _api_call_log if c.get("x_github_request_id")]
         if req_ids:
             result_text = f"{result_text}\n[x-github-request-id: {', '.join(req_ids)}]"
 
