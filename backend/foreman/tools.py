@@ -1545,1081 +1545,1913 @@ async def _resolve_bedrock_model_id(db, provider: str | None, model: str | None)
     return model
 
 
-async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
-    """Execute a single tool call and return its tool_result block."""
-    inp = tu.input
+# ---------------------------------------------------------------------------
+# ForemanTool registry
+# ---------------------------------------------------------------------------
+
+
+class ForemanTool:
+    """Binding of a tool name, its required execution context, and its handler.
+
+    Handlers return ``(result_text, is_error)`` and receive arguments
+    determined by the context type:
+
+    * ``_CTX_DB``     – ``(inp, guild_id, guild_pk, db, user_id)``
+    * ``_CTX_GITHUB`` – ``(inp, guild_id, token, username)``
+    * ``_CTX_NONE``   – ``(inp, guild_id)``
+    """
+
+    __slots__ = ("name", "context", "handler")
+
+    def __init__(self, name: str, context: str, handler) -> None:
+        self.name = name
+        self.context = context
+        self.handler = handler
+
+
+_CTX_DB = "db"
+_CTX_GITHUB = "github"
+_CTX_NONE = "none"
+
+
+# ---------------------------------------------------------------------------
+# DB tool handlers
+# ---------------------------------------------------------------------------
+
+
+async def _handle_create_task(
+    inp: dict, guild_id: str, guild_pk: int | None, db, user_id: str | None
+) -> tuple[str, bool]:
+    # No lock needed: creates an unassigned task (worker_id=None) so
+    # there is no worker state to race on. Task ID collisions are
+    # statistically negligible and caught by the DB unique constraint.
+    name = (inp.get("name") or "")[:80]
+    desc = inp.get("description", name)
+    phase = inp.get("phase", "execute")
+    task_id = "t-" + "".join(
+        random.choices(string.ascii_lowercase + string.digits, k=6)
+    )
+    created_at = datetime.now(UTC)
+    # Route this task back to the conversation thread it was
+    # created from (#1167) — reuses the thread
+    # foreman.triggers.trigger_foreman already created/touched for
+    # this message; falls back to None for system/webhook-triggered
+    # work with no human user_id.
+    thread_id: str | None = None
+    if guild_pk is not None and user_id:
+        thread, _created = await get_or_create_active_thread(
+            db, guild_pk, user_id, name_hint=name
+        )
+        thread_id = thread.id
+    db.add(
+        Task(
+            id=task_id,
+            worker_id=None,
+            guild_id=guild_pk or 0,
+            name=name,
+            description=desc,
+            tool="claude",
+            state="pending",
+            phase=phase,
+            issue_number=inp.get("issue_number"),
+            issue_repo=inp.get("issue_repo"),
+            pr_number=inp.get("pr_number"),
+            pr_repo=inp.get("pr_repo"),
+            created_at=created_at,
+            user_id=user_id,
+            thread_id=thread_id,
+        )
+    )
+    await db.commit()
+    await broadcast(
+        guild_id,
+        TaskCreatedMsg(
+            taskId=task_id,
+            name=name,
+            description=desc,
+            phase=phase,
+            state="pending",
+            createdAt=created_at.isoformat(),
+            threadId=thread_id,
+        ).model_dump(by_alias=True, exclude_none=True),
+    )
+    return (
+        f"Task {task_id} created: '{name}'. Reference this task_id in assign_task.",
+        False,
+    )
+
+
+async def _handle_assign_task(
+    inp: dict, guild_id: str, guild_pk: int | None, db, user_id: str | None
+) -> tuple[str, bool]:
+    wid = inp["worker_id"]
+    desc = inp.get("description", "")
+    phase = inp.get("phase", "execute")
+    requested_tool: str | None = inp.get("tool")
+    # model is resolved from tier, never read from inp (not in schema).
+    model: str | None = None
+    requested_tier: str | None = inp.get("tier") or None
+    provider = inp.get("provider") or None
+    existing_task_id = inp.get("task_id")
     result_text = ""
     is_error = False
-    _ctx_token = _api_calls_ctx.set([])
-    try:
-        db = await get_db()
-        try:
-            from auth_deps import get_guild_pk
+    existing_linkage: (
+        tuple[int | None, str | None, int | None, str | None, str | None, str | None]
+        | None
+    ) = None
+    if existing_task_id:
+        existing_linkage_result = await db.exec(
+            select(
+                col(Task.issue_number),
+                col(Task.issue_repo),
+                col(Task.pr_number),
+                col(Task.pr_repo),
+                col(Task.branch),
+                col(Task.pr_url),
+            ).where(col(Task.id) == existing_task_id, col(Task.guild_id) == guild_pk)
+        )
+        existing_linkage = existing_linkage_result.one_or_none()
 
-            guild_pk = await get_guild_pk(db, guild_id)
-            if tu.name == "create_task":
-                # No lock needed: creates an unassigned task (worker_id=None) so
-                # there is no worker state to race on. Task ID collisions are
-                # statistically negligible and caught by the DB unique constraint.
-                name = (inp.get("name") or "")[:80]
-                desc = inp.get("description", name)
-                phase = inp.get("phase", "execute")
+    effective_issue_number = inp.get("issue_number")
+    effective_issue_repo = inp.get("issue_repo")
+    effective_pr_number = inp.get("pr_number")
+    effective_pr_repo = inp.get("pr_repo")
+    effective_branch = inp.get("branch")
+    effective_pr_url = inp.get("pr_url")
+    effective_head_sha = inp.get("head_sha")
+    if existing_linkage:
+        (
+            existing_issue_number,
+            existing_issue_repo,
+            existing_pr_number,
+            existing_pr_repo,
+            existing_branch,
+            existing_pr_url,
+        ) = existing_linkage
+        if effective_issue_number is None:
+            effective_issue_number = existing_issue_number
+        if not effective_issue_repo:
+            effective_issue_repo = existing_issue_repo
+        if effective_pr_number is None:
+            effective_pr_number = existing_pr_number
+        if not effective_pr_repo:
+            effective_pr_repo = existing_pr_repo
+        if not effective_branch:
+            effective_branch = existing_branch
+        if not effective_pr_url:
+            effective_pr_url = existing_pr_url
+
+    guild_result = await db.exec(
+        select(col(Guild.primary_repo)).where(col(Guild.id) == guild_pk)
+    )
+    primary_repo: str | None = guild_result.one_or_none()
+    target_repo = effective_pr_repo or effective_issue_repo
+    repos: list[str] = inp.get("repos") or ([target_repo] if target_repo else [])
+    if not repos and primary_repo:
+        repos = [primary_repo]
+    worker_result = await db.exec(
+        select(
+            col(Worker.id),
+            col(Worker.repos),
+            col(Worker.org),
+            col(Worker.tools),
+            col(Worker.provider),
+            col(Worker.user_id),
+        ).where(col(Worker.id) == wid, col(Worker.guild_id) == guild_pk)
+    )
+    worker_row = worker_result.one_or_none()
+    if not worker_row:
+        return f"Worker {wid} not found — task NOT queued.", True
+
+    worker_tools: list[str] = json.loads(worker_row.tools or "[]")
+    worker_provider: str | None = worker_row.provider
+    worker_user_id: str | None = worker_row.user_id
+
+    # Resolve the tool FIRST — before computing the model tier or
+    # auto-selecting a model — so both are derived from the tool the
+    # worker actually has, never from a "claude" placeholder. A worker
+    # with tools=["pi"] must never end up with a claude model_tier.
+    if requested_tool is None:
+        tool = worker_tools[0] if worker_tools else "claude"
+    elif worker_tools and requested_tool not in worker_tools:
+        available = ", ".join(worker_tools)
+        result_text = (
+            f"Worker {wid} does not support tool {requested_tool!r}. "
+            f"Available tools: {available}"
+        )
+        is_error = True
+        tool = requested_tool
+    else:
+        # requested_tool is set and either matches worker_tools or the
+        # worker is legacy (no tools registered) — accept it as-is.
+        tool = requested_tool
+
+    # Worker-tool defaults live in spawn_settings, not foreman_config.
+    if tool in {"pi", "codex"} and (provider is None or model is None):
+        provider, model = await _apply_spawn_tool_defaults(
+            db,
+            guild_pk=guild_pk,
+            user_id=worker_user_id,
+            tool=tool,
+            provider=provider,
+            model=model,
+        )
+
+    from util.model_tiers import select_model_tier as _select_tier  # noqa: PLC0415
+
+    model_tier = _select_tier(phase, complexity_hint=requested_tier)
+
+    # Filter model selection to only provider-compatible models.
+    # Pi already has its own default model/provider selection; don't second-guess it.
+    if worker_provider and tool != "pi" and not is_error:
+        from models import ModelCatalog  # noqa: PLC0415
+
+        if model:
+            catalog_check = await db.exec(
+                select(col(ModelCatalog.model_id)).where(
+                    col(ModelCatalog.provider) == worker_provider,
+                    col(ModelCatalog.model_id) == model,
+                )
+            )
+            if catalog_check.one_or_none() is None:
+                result_text = (
+                    f"Model {model!r} is not available for provider "
+                    f"{worker_provider!r}. Use GET /api/models to see "
+                    "available models for each provider."
+                )
+                is_error = True
+        else:
+            # Auto-select: use pre-computed model_tier → best model from catalog.
+            from util.model_tiers import get_model_for_tier  # noqa: PLC0415
+            from util.models_dev import get_providers_from_db  # noqa: PLC0415
+
+            catalog = await get_providers_from_db(db)
+            model = get_model_for_tier(model_tier, worker_provider, catalog)
+    # For Bedrock workers, resolve the short model ID to the
+    # canonical inference-profile ARN the Claude CLI requires.
+    if not is_error and tool != "pi":
+        model = await _resolve_bedrock_model_id(db, worker_provider, model)
+    if not is_error and repos:
+        worker_repos: list[str] = json.loads(worker_row.repos or "[]")
+        worker_org: str | None = worker_row.org
+        unreachable = [
+            r
+            for r in repos
+            if r not in worker_repos
+            and not (worker_org and r.startswith(f"{worker_org}/"))
+        ]
+        if unreachable:
+            result_text = (
+                f"Worker {wid} cannot access repo(s) {unreachable} — "
+                f"task NOT queued. Worker has {len(worker_repos)} registered "
+                f"repo(s) and org={worker_org!r}. Choose a worker that has "
+                f"access to these repos, or omit repos to use the worker's "
+                f"full configured list."
+            )
+            is_error = True
+    if not is_error:
+        # Prevent two concurrent foreman runs from double-assigning
+        # the same idle worker.  Lock covers the window from worker
+        # selection through task row written + worker notified.
+        assign_lock_key = f"assign_task:{wid}"
+        assign_lock_id = "".join(
+            random.choices(string.ascii_lowercase + string.digits, k=8)
+        )
+        lock_acquired = await LockService(db).acquire(
+            assign_lock_key, owner=assign_lock_id, ttl_seconds=60
+        )
+        await db.commit()
+        if not lock_acquired:
+            return (
+                f"Worker {wid} is already being assigned a task by a concurrent "
+                "foreman run. Retry after the current assignment completes.",
+                True,
+            )
+        try:
+            # Re-check worker availability inside the lock to close the
+            # TOCTOU window: two concurrent foremen may have both seen the
+            # worker as available before either acquired the lock.
+            worker_recheck = await db.exec(
+                select(col(Worker.id))
+                .where(
+                    col(Worker.id) == wid,
+                    col(Worker.state) != "offline",
+                    col(Worker.disabled).is_(False),
+                    col(Worker.drain_requested_at).is_(None),
+                )
+                .limit(1)
+            )
+            parent_task_id = inp.get("parent_task_id")
+            if not worker_recheck.one_or_none():
+                result_text = (
+                    f"Worker {wid} went offline — task NOT assigned. "
+                    "Pick a different worker and retry."
+                )
+                is_error = True
+            else:
+                can_accept, capacity_reason = await _worker_can_accept_task(
+                    db,
+                    guild_pk=guild_pk,
+                    worker_id=wid,
+                    exclude_task_id=existing_task_id,
+                )
+                if not can_accept:
+                    result_text = (
+                        f"Worker {wid} cannot accept work right now: "
+                        f"{capacity_reason}. Task NOT assigned; pick an idle "
+                        "worker or retry after this worker reports idle."
+                    )
+                    is_error = True
+            if is_error:
+                pass
+            elif existing_task_id:
+                name_override = inp.get("name")
+                update_values: dict = {
+                    "worker_id": wid,
+                    "description": desc,
+                    "tool": tool,
+                    "model": model,
+                    "model_tier": model_tier,
+                    "provider": provider,
+                    "phase": phase,
+                    "state": "pending",
+                }
+                if name_override:
+                    update_values["name"] = name_override
+                if effective_issue_number is not None:
+                    update_values["issue_number"] = effective_issue_number
+                if effective_issue_repo:
+                    update_values["issue_repo"] = effective_issue_repo
+                if effective_pr_number is not None:
+                    update_values["pr_number"] = effective_pr_number
+                if effective_pr_repo:
+                    update_values["pr_repo"] = effective_pr_repo
+                if effective_branch:
+                    update_values["branch"] = effective_branch
+                if effective_pr_url:
+                    update_values["pr_url"] = effective_pr_url
+                if parent_task_id is not None:
+                    update_values["parent_task_id"] = parent_task_id
+                await db.exec(
+                    update(Task)
+                    .where(
+                        col(Task.id) == existing_task_id,
+                        col(Task.guild_id) == guild_pk,
+                    )
+                    .values(**update_values)
+                )
+                await db.commit()
+                name_result = await db.exec(
+                    select(col(Task.name), col(Task.thread_id)).where(
+                        col(Task.id) == existing_task_id
+                    )
+                )
+                name_row = name_result.first()
+                task_name = (name_row[0] if name_row else None) or desc[:60]
+                existing_thread_id = name_row[1] if name_row else None
+                task_id = existing_task_id
+                logger.info(
+                    "assign_task enqueue guild=%s task=%s worker=%s phase=%s "
+                    "issue_repo=%s pr_number=%s pr_repo=%s branch=%s pr_url=%s "
+                    "head_sha=%s",
+                    guild_id,
+                    task_id,
+                    wid,
+                    phase,
+                    effective_issue_repo,
+                    effective_pr_number,
+                    effective_pr_repo,
+                    effective_branch,
+                    effective_pr_url,
+                    effective_head_sha,
+                )
+                await broadcast(
+                    guild_id,
+                    TaskAssignedMsg(
+                        workerId=wid,
+                        taskId=task_id,
+                        name=task_name,
+                        description=desc,
+                        tool=tool,
+                        model=model,
+                        modelTier=model_tier,
+                        provider=provider,
+                        phase=phase,
+                        parentTaskId=parent_task_id,
+                        issueNumber=effective_issue_number,
+                        issueRepo=effective_issue_repo,
+                        prNumber=effective_pr_number,
+                        prRepo=effective_pr_repo,
+                        branch=effective_branch,
+                        prUrl=effective_pr_url,
+                        headSha=effective_head_sha,
+                        repos=repos,
+                        threadId=existing_thread_id,
+                    ).model_dump(by_alias=True, exclude_none=True),
+                )
+                _spawn_discord_task_assigned(
+                    guild_id,
+                    {
+                        **inp,
+                        "issue_number": effective_issue_number,
+                        "issue_repo": effective_issue_repo,
+                        "pr_number": effective_pr_number,
+                        "pr_repo": effective_pr_repo,
+                    },
+                    task_id,
+                    task_name,
+                )
+                result_text = f"Task {task_id} assigned to {wid}."
+            else:
+                name = inp.get("name") or desc[:60]
                 task_id = "t-" + "".join(
                     random.choices(string.ascii_lowercase + string.digits, k=6)
                 )
                 created_at = datetime.now(UTC)
-                # Route this task back to the conversation thread it was
-                # created from (#1167) — reuses the thread
-                # foreman.triggers.trigger_foreman already created/touched for
-                # this message; falls back to None for system/webhook-triggered
-                # work with no human user_id.
+                # Route this task back to the conversation
+                # thread it was created from (#1167).
                 thread_id: str | None = None
                 if guild_pk is not None and user_id:
-                    thread, _created = await get_or_create_active_thread(
+                    assign_thread, _created = await get_or_create_active_thread(
                         db, guild_pk, user_id, name_hint=name
                     )
-                    thread_id = thread.id
+                    thread_id = assign_thread.id
                 db.add(
                     Task(
                         id=task_id,
-                        worker_id=None,
+                        worker_id=wid,
                         guild_id=guild_pk or 0,
                         name=name,
                         description=desc,
-                        tool="claude",
+                        tool=tool,
+                        model=model,
+                        model_tier=model_tier,
+                        provider=provider,
+                        issue_number=effective_issue_number,
+                        issue_repo=effective_issue_repo,
+                        pr_number=effective_pr_number,
+                        pr_repo=effective_pr_repo,
+                        branch=effective_branch,
+                        pr_url=effective_pr_url,
                         state="pending",
                         phase=phase,
-                        issue_number=inp.get("issue_number"),
-                        issue_repo=inp.get("issue_repo"),
-                        pr_number=inp.get("pr_number"),
-                        pr_repo=inp.get("pr_repo"),
+                        parent_task_id=parent_task_id,
                         created_at=created_at,
                         user_id=user_id,
                         thread_id=thread_id,
                     )
                 )
                 await db.commit()
+                logger.info(
+                    "assign_task enqueue guild=%s task=%s worker=%s phase=%s "
+                    "issue_repo=%s pr_number=%s pr_repo=%s branch=%s pr_url=%s "
+                    "head_sha=%s",
+                    guild_id,
+                    task_id,
+                    wid,
+                    phase,
+                    effective_issue_repo,
+                    effective_pr_number,
+                    effective_pr_repo,
+                    effective_branch,
+                    effective_pr_url,
+                    effective_head_sha,
+                )
                 await broadcast(
                     guild_id,
-                    TaskCreatedMsg(
+                    TaskAssignedMsg(
+                        workerId=wid,
                         taskId=task_id,
                         name=name,
                         description=desc,
+                        tool=tool,
+                        model=model,
+                        modelTier=model_tier,
+                        provider=provider,
                         phase=phase,
-                        state="pending",
-                        createdAt=created_at.isoformat(),
+                        parentTaskId=parent_task_id,
+                        issueNumber=effective_issue_number,
+                        issueRepo=effective_issue_repo,
+                        prNumber=effective_pr_number,
+                        prRepo=effective_pr_repo,
+                        branch=effective_branch,
+                        prUrl=effective_pr_url,
+                        headSha=effective_head_sha,
+                        repos=repos,
                         threadId=thread_id,
                     ).model_dump(by_alias=True, exclude_none=True),
                 )
-                result_text = (
-                    f"Task {task_id} created: '{name}'. Reference this task_id in assign_task."
-                )
-
-            elif tu.name == "assign_task":
-                wid = inp["worker_id"]
-                desc = inp.get("description", "")
-                phase = inp.get("phase", "execute")
-                requested_tool: str | None = inp.get("tool")
-                model = inp.get("model") or None
-                requested_tier: str | None = inp.get("tier") or None
-                provider = inp.get("provider") or None
-                existing_task_id = inp.get("task_id")
-                existing_linkage: (
-                    tuple[int | None, str | None, int | None, str | None, str | None, str | None]
-                    | None
-                ) = None
-                if existing_task_id:
-                    existing_linkage_result = await db.exec(
-                        select(
-                            col(Task.issue_number),
-                            col(Task.issue_repo),
-                            col(Task.pr_number),
-                            col(Task.pr_repo),
-                            col(Task.branch),
-                            col(Task.pr_url),
-                        ).where(col(Task.id) == existing_task_id, col(Task.guild_id) == guild_pk)
-                    )
-                    existing_linkage = existing_linkage_result.one_or_none()
-
-                effective_issue_number = inp.get("issue_number")
-                effective_issue_repo = inp.get("issue_repo")
-                effective_pr_number = inp.get("pr_number")
-                effective_pr_repo = inp.get("pr_repo")
-                effective_branch = inp.get("branch")
-                effective_pr_url = inp.get("pr_url")
-                effective_head_sha = inp.get("head_sha")
-                if existing_linkage:
-                    (
-                        existing_issue_number,
-                        existing_issue_repo,
-                        existing_pr_number,
-                        existing_pr_repo,
-                        existing_branch,
-                        existing_pr_url,
-                    ) = existing_linkage
-                    if effective_issue_number is None:
-                        effective_issue_number = existing_issue_number
-                    if not effective_issue_repo:
-                        effective_issue_repo = existing_issue_repo
-                    if effective_pr_number is None:
-                        effective_pr_number = existing_pr_number
-                    if not effective_pr_repo:
-                        effective_pr_repo = existing_pr_repo
-                    if not effective_branch:
-                        effective_branch = existing_branch
-                    if not effective_pr_url:
-                        effective_pr_url = existing_pr_url
-
-                guild_result = await db.exec(
-                    select(col(Guild.primary_repo)).where(col(Guild.id) == guild_pk)
-                )
-                primary_repo: str | None = guild_result.one_or_none()
-                target_repo = effective_pr_repo or effective_issue_repo
-                repos: list[str] = inp.get("repos") or ([target_repo] if target_repo else [])
-                if not repos and primary_repo:
-                    repos = [primary_repo]
-                worker_result = await db.exec(
-                    select(
-                        col(Worker.id),
-                        col(Worker.repos),
-                        col(Worker.org),
-                        col(Worker.tools),
-                        col(Worker.provider),
-                        col(Worker.user_id),
-                    ).where(col(Worker.id) == wid, col(Worker.guild_id) == guild_pk)
-                )
-                worker_row = worker_result.one_or_none()
-                if not worker_row:
-                    result_text = f"Worker {wid} not found — task NOT queued."
-                    is_error = True
-                else:
-                    worker_tools: list[str] = json.loads(worker_row.tools or "[]")
-                    worker_provider: str | None = worker_row.provider
-                    worker_user_id: str | None = worker_row.user_id
-
-                    # Resolve the tool FIRST — before computing the model tier or
-                    # auto-selecting a model — so both are derived from the tool the
-                    # worker actually has, never from a "claude" placeholder. A worker
-                    # with tools=["pi"] must never end up with a claude model_tier.
-                    if requested_tool is None:
-                        tool = worker_tools[0] if worker_tools else "claude"
-                    elif worker_tools and requested_tool not in worker_tools:
-                        available = ", ".join(worker_tools)
-                        result_text = (
-                            f"Worker {wid} does not support tool {requested_tool!r}. "
-                            f"Available tools: {available}"
-                        )
-                        is_error = True
-                        tool = requested_tool
-                    else:
-                        # requested_tool is set and either matches worker_tools or the
-                        # worker is legacy (no tools registered) — accept it as-is.
-                        tool = requested_tool
-
-                    # Worker-tool defaults live in spawn_settings, not foreman_config.
-                    if tool in {"pi", "codex"} and (provider is None or model is None):
-                        provider, model = await _apply_spawn_tool_defaults(
-                            db,
-                            guild_pk=guild_pk,
-                            user_id=worker_user_id,
-                            tool=tool,
-                            provider=provider,
-                            model=model,
-                        )
-
-                    from util.model_tiers import select_model_tier as _select_tier  # noqa: PLC0415
-
-                    model_tier = _select_tier(phase, complexity_hint=requested_tier)
-
-                    # Filter model selection to only provider-compatible models.
-                    # Pi already has its own default model/provider selection; don't second-guess it.
-                    if worker_provider and tool != "pi" and not is_error:
-                        from models import ModelCatalog  # noqa: PLC0415
-
-                        if model:
-                            catalog_check = await db.exec(
-                                select(col(ModelCatalog.model_id)).where(
-                                    col(ModelCatalog.provider) == worker_provider,
-                                    col(ModelCatalog.model_id) == model,
-                                )
-                            )
-                            if catalog_check.one_or_none() is None:
-                                result_text = (
-                                    f"Model {model!r} is not available for provider "
-                                    f"{worker_provider!r}. Use GET /api/models to see "
-                                    "available models for each provider."
-                                )
-                                is_error = True
-                        else:
-                            # Auto-select: use pre-computed model_tier → best model from catalog.
-                            from util.model_tiers import get_model_for_tier  # noqa: PLC0415
-                            from util.models_dev import get_providers_from_db  # noqa: PLC0415
-
-                            catalog = await get_providers_from_db(db)
-                            model = get_model_for_tier(model_tier, worker_provider, catalog)
-                    # For Bedrock workers, resolve the short model ID to the
-                    # canonical inference-profile ARN the Claude CLI requires.
-                    if not is_error and tool != "pi":
-                        model = await _resolve_bedrock_model_id(db, worker_provider, model)
-                    if not is_error and repos:
-                        worker_repos: list[str] = json.loads(worker_row.repos or "[]")
-                        worker_org: str | None = worker_row.org
-                        unreachable = [
-                            r
-                            for r in repos
-                            if r not in worker_repos
-                            and not (worker_org and r.startswith(f"{worker_org}/"))
-                        ]
-                        if unreachable:
-                            result_text = (
-                                f"Worker {wid} cannot access repo(s) {unreachable} — "
-                                f"task NOT queued. Worker has {len(worker_repos)} registered "
-                                f"repo(s) and org={worker_org!r}. Choose a worker that has "
-                                f"access to these repos, or omit repos to use the worker's "
-                                f"full configured list."
-                            )
-                            is_error = True
-                if not is_error:
-                    # Prevent two concurrent foreman runs from double-assigning
-                    # the same idle worker.  Lock covers the window from worker
-                    # selection through task row written + worker notified.
-                    assign_lock_key = f"assign_task:{wid}"
-                    assign_lock_id = "".join(
-                        random.choices(string.ascii_lowercase + string.digits, k=8)
-                    )
-                    lock_acquired = await LockService(db).acquire(
-                        assign_lock_key, owner=assign_lock_id, ttl_seconds=60
-                    )
-                    await db.commit()
-                    if not lock_acquired:
-                        result_text = (
-                            f"Worker {wid} is already being assigned a task by a concurrent "
-                            "foreman run. Retry after the current assignment completes."
-                        )
-                        is_error = True
-                    else:
-                        try:
-                            # Re-check worker availability inside the lock to close the
-                            # TOCTOU window: two concurrent foremen may have both seen the
-                            # worker as available before either acquired the lock.
-                            worker_recheck = await db.exec(
-                                select(col(Worker.id))
-                                .where(
-                                    col(Worker.id) == wid,
-                                    col(Worker.state) != "offline",
-                                    col(Worker.disabled).is_(False),
-                                    col(Worker.drain_requested_at).is_(None),
-                                )
-                                .limit(1)
-                            )
-                            parent_task_id = inp.get("parent_task_id")
-                            if not worker_recheck.one_or_none():
-                                result_text = (
-                                    f"Worker {wid} went offline — task NOT assigned. "
-                                    "Pick a different worker and retry."
-                                )
-                                is_error = True
-                            else:
-                                can_accept, capacity_reason = await _worker_can_accept_task(
-                                    db,
-                                    guild_pk=guild_pk,
-                                    worker_id=wid,
-                                    exclude_task_id=existing_task_id,
-                                )
-                                if not can_accept:
-                                    result_text = (
-                                        f"Worker {wid} cannot accept work right now: "
-                                        f"{capacity_reason}. Task NOT assigned; pick an idle "
-                                        "worker or retry after this worker reports idle."
-                                    )
-                                    is_error = True
-                            if is_error:
-                                pass
-                            elif existing_task_id:
-                                name_override = inp.get("name")
-                                update_values: dict = {
-                                    "worker_id": wid,
-                                    "description": desc,
-                                    "tool": tool,
-                                    "model": model,
-                                    "model_tier": model_tier,
-                                    "provider": provider,
-                                    "phase": phase,
-                                    "state": "pending",
-                                }
-                                if name_override:
-                                    update_values["name"] = name_override
-                                if effective_issue_number is not None:
-                                    update_values["issue_number"] = effective_issue_number
-                                if effective_issue_repo:
-                                    update_values["issue_repo"] = effective_issue_repo
-                                if effective_pr_number is not None:
-                                    update_values["pr_number"] = effective_pr_number
-                                if effective_pr_repo:
-                                    update_values["pr_repo"] = effective_pr_repo
-                                if effective_branch:
-                                    update_values["branch"] = effective_branch
-                                if effective_pr_url:
-                                    update_values["pr_url"] = effective_pr_url
-                                if parent_task_id is not None:
-                                    update_values["parent_task_id"] = parent_task_id
-                                await db.exec(
-                                    update(Task)
-                                    .where(
-                                        col(Task.id) == existing_task_id,
-                                        col(Task.guild_id) == guild_pk,
-                                    )
-                                    .values(**update_values)
-                                )
-                                await db.commit()
-                                name_result = await db.exec(
-                                    select(col(Task.name), col(Task.thread_id)).where(
-                                        col(Task.id) == existing_task_id
-                                    )
-                                )
-                                name_row = name_result.first()
-                                task_name = (name_row[0] if name_row else None) or desc[:60]
-                                existing_thread_id = name_row[1] if name_row else None
-                                task_id = existing_task_id
-                                logger.info(
-                                    "assign_task enqueue guild=%s task=%s worker=%s phase=%s "
-                                    "issue_repo=%s pr_number=%s pr_repo=%s branch=%s pr_url=%s "
-                                    "head_sha=%s",
-                                    guild_id,
-                                    task_id,
-                                    wid,
-                                    phase,
-                                    effective_issue_repo,
-                                    effective_pr_number,
-                                    effective_pr_repo,
-                                    effective_branch,
-                                    effective_pr_url,
-                                    effective_head_sha,
-                                )
-                                await broadcast(
-                                    guild_id,
-                                    TaskAssignedMsg(
-                                        workerId=wid,
-                                        taskId=task_id,
-                                        name=task_name,
-                                        description=desc,
-                                        tool=tool,
-                                        model=model,
-                                        modelTier=model_tier,
-                                        provider=provider,
-                                        phase=phase,
-                                        parentTaskId=parent_task_id,
-                                        issueNumber=effective_issue_number,
-                                        issueRepo=effective_issue_repo,
-                                        prNumber=effective_pr_number,
-                                        prRepo=effective_pr_repo,
-                                        branch=effective_branch,
-                                        prUrl=effective_pr_url,
-                                        headSha=effective_head_sha,
-                                        repos=repos,
-                                        threadId=existing_thread_id,
-                                    ).model_dump(by_alias=True, exclude_none=True),
-                                )
-                                _spawn_discord_task_assigned(
-                                    guild_id,
-                                    {
-                                        **inp,
-                                        "issue_number": effective_issue_number,
-                                        "issue_repo": effective_issue_repo,
-                                        "pr_number": effective_pr_number,
-                                        "pr_repo": effective_pr_repo,
-                                    },
-                                    task_id,
-                                    task_name,
-                                )
-                                result_text = f"Task {task_id} assigned to {wid}."
-                            else:
-                                name = inp.get("name") or desc[:60]
-                                task_id = "t-" + "".join(
-                                    random.choices(string.ascii_lowercase + string.digits, k=6)
-                                )
-                                created_at = datetime.now(UTC)
-                                # Route this task back to the conversation
-                                # thread it was created from (#1167).
-                                thread_id: str | None = None
-                                if guild_pk is not None and user_id:
-                                    assign_thread, _created = await get_or_create_active_thread(
-                                        db, guild_pk, user_id, name_hint=name
-                                    )
-                                    thread_id = assign_thread.id
-                                db.add(
-                                    Task(
-                                        id=task_id,
-                                        worker_id=wid,
-                                        guild_id=guild_pk or 0,
-                                        name=name,
-                                        description=desc,
-                                        tool=tool,
-                                        model=model,
-                                        model_tier=model_tier,
-                                        provider=provider,
-                                        issue_number=effective_issue_number,
-                                        issue_repo=effective_issue_repo,
-                                        pr_number=effective_pr_number,
-                                        pr_repo=effective_pr_repo,
-                                        branch=effective_branch,
-                                        pr_url=effective_pr_url,
-                                        state="pending",
-                                        phase=phase,
-                                        parent_task_id=parent_task_id,
-                                        created_at=created_at,
-                                        user_id=user_id,
-                                        thread_id=thread_id,
-                                    )
-                                )
-                                await db.commit()
-                                logger.info(
-                                    "assign_task enqueue guild=%s task=%s worker=%s phase=%s "
-                                    "issue_repo=%s pr_number=%s pr_repo=%s branch=%s pr_url=%s "
-                                    "head_sha=%s",
-                                    guild_id,
-                                    task_id,
-                                    wid,
-                                    phase,
-                                    effective_issue_repo,
-                                    effective_pr_number,
-                                    effective_pr_repo,
-                                    effective_branch,
-                                    effective_pr_url,
-                                    effective_head_sha,
-                                )
-                                await broadcast(
-                                    guild_id,
-                                    TaskAssignedMsg(
-                                        workerId=wid,
-                                        taskId=task_id,
-                                        name=name,
-                                        description=desc,
-                                        tool=tool,
-                                        model=model,
-                                        modelTier=model_tier,
-                                        provider=provider,
-                                        phase=phase,
-                                        parentTaskId=parent_task_id,
-                                        issueNumber=effective_issue_number,
-                                        issueRepo=effective_issue_repo,
-                                        prNumber=effective_pr_number,
-                                        prRepo=effective_pr_repo,
-                                        branch=effective_branch,
-                                        prUrl=effective_pr_url,
-                                        headSha=effective_head_sha,
-                                        repos=repos,
-                                        threadId=thread_id,
-                                    ).model_dump(by_alias=True, exclude_none=True),
-                                )
-                                _spawn_discord_task_assigned(
-                                    guild_id,
-                                    {
-                                        **inp,
-                                        "issue_number": effective_issue_number,
-                                        "issue_repo": effective_issue_repo,
-                                        "pr_number": effective_pr_number,
-                                        "pr_repo": effective_pr_repo,
-                                    },
-                                    task_id,
-                                    name,
-                                )
-                                result_text = f"Task {task_id} queued for {wid}."
-                        finally:
-                            await LockService(db).release(assign_lock_key, owner=assign_lock_id)
-                            await db.commit()
-
-            elif tu.name == "send_followup":
-                task_id = inp["task_id"]
-                instructions = inp["instructions"]
-                preferred_worker_id = inp.get("preferred_worker_id")
-                requested_tool: str | None = inp.get("tool")
-                requested_model: str | None = inp.get("model") or None
-                requested_tier: str | None = inp.get("tier") or None
-                requested_provider: str | None = inp.get("provider") or None
-                requested_create_pr = bool(inp.get("create_pr", False))
-                result = await db.exec(
-                    select(
-                        col(Task.worker_id),
-                        col(Task.state),
-                        col(Task.branch),
-                        col(Task.description),
-                        col(Task.name),
-                        col(Task.tool),
-                        col(Task.model),
-                        col(Task.model_tier),
-                        col(Task.provider),
-                        col(Task.issue_number),
-                        col(Task.issue_repo),
-                        col(Task.claude_session_id),
-                    ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
-                )
-                row = result.one_or_none()
-                if not row:
-                    result_text = f"Task {task_id} not found."
-                else:
-                    (
-                        original_worker_id,
-                        prior_state,
-                        branch,
-                        task_desc,
-                        task_name,
-                        task_tool,
-                        task_model,
-                        task_model_tier,
-                        task_provider,
-                        task_issue_number,
-                        task_issue_repo,
-                        task_session_id,
-                    ) = row
-                    target_worker_id = await _select_followup_worker(
-                        db,
-                        guild_id=guild_id,
-                        original_worker_id=original_worker_id,
-                        preferred_worker_id=preferred_worker_id,
-                    )
-                    if not target_worker_id:
-                        result_text = (
-                            f"No idle worker available to continue task {task_id} on branch "
-                            f"{branch or '<unknown>'}. Wait for one to come online or shut "
-                            "down a busy worker before retrying."
-                        )
-                        is_error = True
-                    elif not branch:
-                        result_text = (
-                            f"Task {task_id} has no branch recorded — can't dispatch a "
-                            "follow-up. The task may have failed before its first push."
-                        )
-                        is_error = True
-                    else:
-                        followup_worker_result = await db.exec(
-                            select(
-                                col(Worker.tools), col(Worker.provider), col(Worker.user_id)
-                            ).where(col(Worker.id) == target_worker_id)
-                        )
-                        followup_worker_row = followup_worker_result.one_or_none()
-                        followup_worker_tools_json = (
-                            followup_worker_row[0] if followup_worker_row else None
-                        )
-                        followup_worker_provider = (
-                            followup_worker_row[1] if followup_worker_row else None
-                        )
-                        followup_worker_user_id = (
-                            followup_worker_row[2] if followup_worker_row else None
-                        )
-                        if isinstance(followup_worker_tools_json, str):
-                            followup_worker_tools: list[str] = json.loads(
-                                followup_worker_tools_json or "[]"
-                            )
-                        else:
-                            followup_worker_tools = followup_worker_tools_json or []
-
-                        if (
-                            requested_tool
-                            and followup_worker_tools
-                            and requested_tool not in followup_worker_tools
-                        ):
-                            available = ", ".join(followup_worker_tools)
-                            result_text = (
-                                f"Worker {target_worker_id} does not support tool "
-                                f"{requested_tool!r}. Available tools: {available}"
-                            )
-                            is_error = True
-                        else:
-                            effective_tool = (
-                                requested_tool
-                                or task_tool
-                                or (followup_worker_tools[0] if followup_worker_tools else "claude")
-                            )
-                            if requested_model is not None:
-                                effective_model = requested_model
-                            elif requested_tier:
-                                # Explicit tier bump/de-escalation — drop the pinned
-                                # model so it's re-resolved from the new tier below.
-                                effective_model = None
-                            elif requested_tool and requested_tool != task_tool:
-                                # Switching tools invalidates the previous model choice
-                                # (e.g. a claude model id is meaningless to codex/pi) —
-                                # drop it and let the worker pick its own default.
-                                effective_model = None
-                            else:
-                                effective_model = task_model
-                            if requested_provider is not None:
-                                effective_provider = requested_provider
-                            elif requested_tool and requested_tool != task_tool:
-                                # Switching tools invalidates a stale provider too; Pi/Codex should
-                                # get their own defaults unless the caller explicitly pins one.
-                                effective_provider = None
-                            else:
-                                effective_provider = task_provider or followup_worker_provider
-                            # Worker-tool defaults live in spawn_settings.
-                            if effective_tool in {"pi", "codex"} and (
-                                effective_provider is None or effective_model is None
-                            ):
-                                (
-                                    effective_provider,
-                                    effective_model,
-                                ) = await _apply_spawn_tool_defaults(
-                                    db,
-                                    guild_pk=guild_pk,
-                                    user_id=followup_worker_user_id,
-                                    tool=effective_tool,
-                                    provider=effective_provider,
-                                    model=effective_model,
-                                )
-
-                            from util.model_tiers import (  # noqa: PLC0415
-                                select_model_tier as _select_tier,
-                            )
-
-                            if requested_tier:
-                                effective_tier = _select_tier(
-                                    "followup", complexity_hint=requested_tier
-                                )
-                            elif requested_tool and requested_tool != task_tool:
-                                effective_tier = _select_tier("followup")
-                            else:
-                                effective_tier = task_model_tier or _select_tier("followup")
-
-                            if (
-                                requested_tier
-                                and requested_model is None
-                                and effective_tool != "pi"
-                                and effective_provider
-                                and not is_error
-                            ):
-                                from util.model_tiers import (  # noqa: PLC0415
-                                    get_model_for_tier as _get_model_for_tier,
-                                )
-                                from util.models_dev import (  # noqa: PLC0415
-                                    get_providers_from_db as _get_providers_from_db,
-                                )
-
-                                _catalog = await _get_providers_from_db(db)
-                                effective_model = _get_model_for_tier(
-                                    effective_tier, effective_provider, _catalog
-                                )
-                            if effective_tool != "pi" and effective_model and effective_provider:
-                                from models import ModelCatalog  # noqa: PLC0415
-
-                                catalog_check = await db.exec(
-                                    select(col(ModelCatalog.model_id)).where(
-                                        col(ModelCatalog.provider) == effective_provider,
-                                        col(ModelCatalog.model_id) == effective_model,
-                                    )
-                                )
-                                if catalog_check.one_or_none() is None:
-                                    result_text = (
-                                        f"Model {effective_model!r} is not available for "
-                                        f"provider {effective_provider!r}. Use GET "
-                                        "/api/models to see available models for each provider."
-                                    )
-                                    is_error = True
-                            # Validation matches on the short models.dev ID, so
-                            # swap to the Bedrock inference-profile ARN only after
-                            # it passes (no-op for non-Bedrock providers).
-                            if not is_error and effective_tool != "pi":
-                                effective_model = await _resolve_bedrock_model_id(
-                                    db, effective_provider, effective_model
-                                )
-
-                        if not is_error:
-                            # Atomically acquire the follow-up lock to prevent two
-                            # concurrent foreman runs from both dispatching a worker.
-                            lock_id = "".join(
-                                random.choices(string.ascii_lowercase + string.digits, k=8)
-                            )
-                            lock_acquired = await LockService(db).acquire(
-                                f"task:{task_id}", owner=lock_id
-                            )
-                            await db.commit()
-                            if not lock_acquired:
-                                # Task already locked by a concurrent follow-up —
-                                # queue this request for replay when the lock releases.
-                                db.add(
-                                    TaskEvent(
-                                        task_id=task_id,
-                                        event_type="pending-followup",
-                                        payload_json=json.dumps(
-                                            {
-                                                "instructions": instructions,
-                                                "preferred_worker_id": preferred_worker_id,
-                                                "tool": requested_tool,
-                                                "model": requested_model,
-                                                "tier": requested_tier,
-                                                "provider": requested_provider,
-                                                "create_pr": requested_create_pr,
-                                            }
-                                        ),
-                                        created_at=datetime.now(UTC),
-                                    )
-                                )
-                                await db.commit()
-                                result_text = (
-                                    f"Task {task_id} is locked by an in-progress follow-up. "
-                                    "Instructions have been queued and will be passed to the "
-                                    "foreman when the current follow-up completes."
-                                )
-                            else:
-                                update_vals: dict = {
-                                    "state": "working",
-                                    "phase": "followup",
-                                    "worker_id": target_worker_id,
-                                    "tool": effective_tool,
-                                    "model": effective_model,
-                                    "model_tier": effective_tier,
-                                    "provider": effective_provider,
-                                }
-                                if prior_state in TERMINAL_STATES:
-                                    # Re-opening a terminal task: clear soft-delete so it
-                                    # reappears in the live task list and isn't auto-purged.
-                                    update_vals["deleted_at"] = None
-                                await db.exec(
-                                    update(Task)
-                                    .where(col(Task.id) == task_id)
-                                    .values(**update_vals)
-                                )
-                                await db.commit()
-                                await broadcast(
-                                    guild_id,
-                                    TaskUpdateMsg(
-                                        taskId=task_id,
-                                        state="working",
-                                        workerId=target_worker_id,
-                                        deletedAt=None,
-                                    ).model_dump(by_alias=True, exclude_none=True),
-                                )
-                                # Only resume the prior agent session when the follow-up
-                                # stays on the same worker — a different machine won't
-                                # have the session data on disk (see _select_followup_worker).
-                                followup_session_id = (
-                                    task_session_id
-                                    if target_worker_id == original_worker_id
-                                    else None
-                                )
-                                await broadcast(
-                                    guild_id,
-                                    TaskFollowupMsg(
-                                        workerId=target_worker_id,
-                                        taskId=task_id,
-                                        name=task_name or "",
-                                        description=task_desc or "",
-                                        tool=effective_tool,
-                                        model=effective_model,
-                                        modelTier=effective_tier,
-                                        provider=effective_provider,
-                                        branch=branch,
-                                        instructions=instructions,
-                                        issueNumber=task_issue_number,
-                                        issueRepo=task_issue_repo,
-                                        sessionId=followup_session_id,
-                                    ).model_dump(by_alias=True, exclude_none=True),
-                                )
-                                spawn(
-                                    notify_discord_followup(
-                                        task_issue_repo,
-                                        task_issue_number,
-                                        task_id,
-                                        instructions,
-                                    ),
-                                    name=f"discord.followup:{task_id}",
-                                )
-                                if target_worker_id != original_worker_id and original_worker_id:
-                                    result_text = (
-                                        f"Follow-up reassigned from {original_worker_id} "
-                                        f"to {target_worker_id} (task {task_id} on branch {branch})."
-                                    )
-                                else:
-                                    result_text = (
-                                        f"Follow-up sent to {target_worker_id} for task {task_id} "
-                                        f"on branch {branch}."
-                                    )
-
-            elif tu.name == "finalize_task":
-                task_id = inp["task_id"]
-                raw_outcome = inp.get("outcome", "done")
-                outcome = raw_outcome if raw_outcome in ("done", "failed") else "done"
-                if outcome != raw_outcome:
-                    logger.warning(
-                        "finalize_task: unknown outcome %r, defaulting to 'done'", raw_outcome
-                    )
-                res = await finalize_task(
-                    db,
-                    guild_pk=guild_pk,
-                    guild_id=guild_id,
-                    task_id=task_id,
-                    outcome=outcome,
-                )
-                if res.status == "not_found":
-                    result_text = f"Task {task_id} not found."
-                elif res.status == "already_terminal":
-                    result_text = f"Task {task_id} is already {res.task.state}."
-                else:
-                    task = res.task
-                    if task.phase == "issue" and task.issue_repo and task.issue_number is not None:
-                        await post_issue_close_summary_comment(
-                            guild_id, task.issue_repo, task.issue_number, res.descendants
-                        )
-                    if outcome == "failed":
-                        spawn(
-                            notify_discord_task_finalized(
-                                task.issue_repo, task.issue_number, task_id, "failed"
-                            ),
-                            name=f"discord.finalize:{task_id}",
-                        )
-                    result_text = f"Task {task_id} finalized as {outcome}; " + (
-                        f"soft-deleted at {res.deleted_at.isoformat()}."
-                        if res.deleted_at is not None
-                        else "kept live until its issue closes."
-                    )
-
-            elif tu.name == "message_worker":
-                wid = inp["worker_id"]
-                msg = inp["message"]
-                target_task_id = inp.get("task_id")
-                await emit_terminal_line(guild_id, wid, f"[foreman] {msg}")
-                await broadcast_msg(
+                _spawn_discord_task_assigned(
                     guild_id,
-                    WorkerMessageMsg(workerId=wid, message=msg, taskId=target_task_id),
+                    {
+                        **inp,
+                        "issue_number": effective_issue_number,
+                        "issue_repo": effective_issue_repo,
+                        "pr_number": effective_pr_number,
+                        "pr_repo": effective_pr_repo,
+                    },
+                    task_id,
+                    name,
                 )
-                result_text = (
-                    f"Message sent to {wid} for task {target_task_id}."
-                    if target_task_id
-                    else (
-                        f"Message sent to {wid}. Without a task_id the worker only delivers it "
-                        "when exactly one of its agents is running."
-                    )
-                )
-
-            elif tu.name == "redirect_task":
-                task_id = inp["task_id"]
-                instructions = inp["instructions"]
-                result = await db.exec(
-                    select(
-                        col(Task.worker_id),
-                        col(Task.state),
-                        col(Task.issue_number),
-                        col(Task.issue_repo),
-                    ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
-                )
-                row = result.one_or_none()
-                if not row:
-                    result_text = f"Task {task_id} not found."
-                else:
-                    worker_id_val, state, redirect_issue_number, redirect_issue_repo = row
-                    if state in TERMINAL_STATES:
-                        result_text = f"Task {task_id} is {state} — cannot redirect."
-                    else:
-                        await db.exec(
-                            update(Task).where(col(Task.id) == task_id).values(state="working")
-                        )
-                        await db.commit()
-                        await broadcast_msg(
-                            guild_id,
-                            TaskRedirectMsg(
-                                workerId=worker_id_val,
-                                taskId=task_id,
-                                instructions=instructions,
-                            ),
-                        )
-                        await broadcast_msg(
-                            guild_id, TaskUpdateMsg(taskId=task_id, state="working")
-                        )
-                        if redirect_issue_number is not None and redirect_issue_repo:
-                            spawn(
-                                notify_discord_redirect(
-                                    redirect_issue_repo,
-                                    redirect_issue_number,
-                                    task_id,
-                                    instructions,
-                                ),
-                                name=f"discord.redirect:{task_id}",
-                            )
-                        result_text = f"Redirect sent to {worker_id_val} for task {task_id}."
-
-            elif tu.name == "cancel_task":
-                task_id = inp["task_id"]
-                reason = inp.get("reason", "")
-                result = await db.exec(
-                    select(
-                        col(Task.worker_id),
-                        col(Task.state),
-                        col(Task.issue_repo),
-                        col(Task.issue_number),
-                    ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
-                )
-                row = result.one_or_none()
-                if not row:
-                    result_text = f"Task {task_id} not found."
-                else:
-                    worker_id_val, state, cancel_issue_repo, cancel_issue_number = row
-                    if state in TERMINAL_STATES:
-                        result_text = f"Task {task_id} is already {state}."
-                    else:
-                        deleted_at = datetime.now(UTC)
-                        await db.exec(
-                            update(Task)
-                            .where(col(Task.id) == task_id)
-                            .values(
-                                state="cancelled",
-                                deleted_at=deleted_at,
-                            )
-                        )
-                        await LockService(db).release(f"task:{task_id}")
-                        await db.commit()
-                        await broadcast_msg(
-                            guild_id,
-                            TaskCancelMsg(workerId=worker_id_val, taskId=task_id),
-                        )
-                        await broadcast_msg(
-                            guild_id,
-                            TaskUpdateMsg(
-                                taskId=task_id,
-                                state="cancelled",
-                                deletedAt=deleted_at.isoformat(),
-                            ),
-                        )
-                        spawn(
-                            notify_discord_task_finalized(
-                                cancel_issue_repo,
-                                cancel_issue_number,
-                                task_id,
-                                "cancelled",
-                                reason=reason or None,
-                            ),
-                            name=f"discord.cancel:{task_id}",
-                        )
-                        result_text = f"Task {task_id} cancelled." + (
-                            f" Reason: {reason}" if reason else ""
-                        )
-
-            elif tu.name == "shutdown_worker":
-                wid = inp["worker_id"]
-                reason = inp.get("reason", "")
-                worker_result = await db.exec(
-                    select(col(Worker.id)).where(
-                        col(Worker.id) == wid, col(Worker.guild_id) == guild_pk
-                    )
-                )
-                if worker_result.one_or_none() is None:
-                    result_text = f"Worker {wid} not found."
-                else:
-                    await broadcast_msg(
-                        guild_id, WorkerShutdownMsg(workerId=wid, reason=reason or None)
-                    )
-                    await db.exec(update(Worker).where(col(Worker.id) == wid).values(disabled=True))
-                    await db.commit()
-                    # Graceful signal only: give the worker a chance to finish any
-                    # in-progress task and exit on its own. Force-kill its container
-                    # only if it's still not offline after the timeout — see
-                    # worker_lifecycle.force_kill_worker_if_unresponsive.
-                    from worker_lifecycle import (  # noqa: PLC0415
-                        force_kill_worker_if_unresponsive as _force_kill_if_unresponsive,
-                    )
-
-                    spawn(
-                        _force_kill_if_unresponsive(wid),
-                        name=f"shutdown-escalate:{wid}",
-                    )
-                    result_text = f"Shutdown signal sent to {wid}." + (
-                        f" Reason: {reason}" if reason else ""
-                    )
-
-            elif tu.name == "spawn_worker":
-                # Deliberately NOT this turn's user_id. A worker the foreman
-                # stands up serves the guild's queue, not the member who
-                # happened to be talking to it, so it takes the guild baseline
-                # rather than that member's personal spawn settings — which are
-                # their own launch form's state and can differ wildly (their
-                # repo subset, their tools, their env overrides). The tool's
-                # explicit repos/tools/agent_count args are how a spawn departs
-                # from the baseline. Human-initiated spawns (Discord
-                # /worker-spawn, the REST endpoint) do pass a user and get that
-                # user's layer.
-                result_text, is_error = await spawn_worker(
-                    inp, guild_id, guild_pk, db, user_id=None
-                )
-
-            elif tu.name == "get_task_status":
-                task_id = inp["task_id"]
-                limit = min(int(inp.get("log_lines", 10)), 50)
-                task_result = await db.exec(
-                    select(Task).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
-                )
-                task = task_result.one_or_none()
-                if not task:
-                    result_text = f"Task {task_id} not found."
-                else:
-                    agent_info = None
-                    if task.worker_id:
-                        agent_result = await db.exec(
-                            select(col(Agent.id), col(Agent.state))
-                            .where(
-                                col(Agent.worker_id) == task.worker_id,
-                                col(Agent.state) != "offline",
-                            )
-                            .limit(1)
-                        )
-                        agent_row = agent_result.one_or_none()
-                        if agent_row:
-                            agent_info = {"agent_id": agent_row[0], "agent_state": agent_row[1]}
-                    logs_result = await db.exec(
-                        select(col(TaskLog.timestamp), col(TaskLog.line), col(TaskLog.data))
-                        .where(col(TaskLog.task_id) == task_id)
-                        .order_by(col(TaskLog.id).desc())
-                        .limit(limit)
-                    )
-                    log_rows = list(reversed(logs_result.all()))
-                    recent_logs = []
-                    for time_, line, data_json in log_rows:
-                        entry: dict = {"time": time_, "line": line}
-                        full = _full_log_content(data_json)
-                        if full and full != line:
-                            entry["data"] = truncate_tool_result(full)
-                        recent_logs.append(entry)
-                    result_text = json.dumps(
-                        {
-                            "id": task.id,
-                            "name": task.name,
-                            "state": task.state,
-                            "phase": task.phase,
-                            "worker_id": task.worker_id,
-                            "agent": agent_info,
-                            "branch": task.branch,
-                            "pr_url": task.pr_url,
-                            "pr_repo": task.pr_repo,
-                            "pr_number": task.pr_number,
-                            "effective_pr_url": task.pr_url
-                            or (
-                                f"https://github.com/{task.pr_repo}/pull/{task.pr_number}"
-                                if task.pr_repo and task.pr_number
-                                else None
-                            ),
-                            "created_at": task.created_at,
-                            "deleted_at": task.deleted_at,
-                            "recent_logs": recent_logs,
-                        },
-                        default=_json_default,
-                    )
-
-            elif tu.name == "message_discord_bot":
-                result_text, is_error = await _message_discord_bot(inp, db)
+                result_text = f"Task {task_id} queued for {wid}."
         finally:
-            await db.close()
+            await LockService(db).release(assign_lock_key, owner=assign_lock_id)
+            await db.commit()
 
-        # GitHub tools — use guild's OAuth token
-        if tu.name in (
-            "list_github_issues",
-            "get_github_issue",
-            "list_github_prs",
-            "claim_github_issue",
-            "create_github_issue",
-            "search_github_issues",
-            "get_pr_status",
-            "create_pr",
-            "review_pr_internal",
-            "analyze_epic",
+    return result_text, is_error
+
+
+async def _handle_send_followup(
+    inp: dict, guild_id: str, guild_pk: int | None, db, user_id: str | None
+) -> tuple[str, bool]:
+    task_id = inp["task_id"]
+    instructions = inp["instructions"]
+    preferred_worker_id = inp.get("preferred_worker_id")
+    requested_tool: str | None = inp.get("tool")
+    # model is resolved from tier, never read from inp (not in schema).
+    requested_tier: str | None = inp.get("tier") or None
+    requested_provider: str | None = inp.get("provider") or None
+    requested_create_pr = bool(inp.get("create_pr", False))
+    result_text = ""
+    is_error = False
+    result = await db.exec(
+        select(
+            col(Task.worker_id),
+            col(Task.state),
+            col(Task.branch),
+            col(Task.description),
+            col(Task.name),
+            col(Task.tool),
+            col(Task.model),
+            col(Task.model_tier),
+            col(Task.provider),
+            col(Task.issue_number),
+            col(Task.issue_repo),
+            col(Task.claude_session_id),
+        ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
+    )
+    row = result.one_or_none()
+    if not row:
+        return f"Task {task_id} not found.", False
+    (
+        original_worker_id,
+        prior_state,
+        branch,
+        task_desc,
+        task_name,
+        task_tool,
+        task_model,
+        task_model_tier,
+        task_provider,
+        task_issue_number,
+        task_issue_repo,
+        task_session_id,
+    ) = row
+    target_worker_id = await _select_followup_worker(
+        db,
+        guild_id=guild_id,
+        original_worker_id=original_worker_id,
+        preferred_worker_id=preferred_worker_id,
+    )
+    if not target_worker_id:
+        return (
+            f"No idle worker available to continue task {task_id} on branch "
+            f"{branch or '<unknown>'}. Wait for one to come online or shut "
+            "down a busy worker before retrying.",
+            True,
+        )
+    if not branch:
+        return (
+            f"Task {task_id} has no branch recorded — can't dispatch a "
+            "follow-up. The task may have failed before its first push.",
+            True,
+        )
+    followup_worker_result = await db.exec(
+        select(
+            col(Worker.tools), col(Worker.provider), col(Worker.user_id)
+        ).where(col(Worker.id) == target_worker_id)
+    )
+    followup_worker_row = followup_worker_result.one_or_none()
+    followup_worker_tools_json = (
+        followup_worker_row[0] if followup_worker_row else None
+    )
+    followup_worker_provider = (
+        followup_worker_row[1] if followup_worker_row else None
+    )
+    followup_worker_user_id = (
+        followup_worker_row[2] if followup_worker_row else None
+    )
+    if isinstance(followup_worker_tools_json, str):
+        followup_worker_tools: list[str] = json.loads(
+            followup_worker_tools_json or "[]"
+        )
+    else:
+        followup_worker_tools = followup_worker_tools_json or []
+
+    if (
+        requested_tool
+        and followup_worker_tools
+        and requested_tool not in followup_worker_tools
+    ):
+        available = ", ".join(followup_worker_tools)
+        return (
+            f"Worker {target_worker_id} does not support tool "
+            f"{requested_tool!r}. Available tools: {available}",
+            True,
+        )
+
+    effective_tool = (
+        requested_tool
+        or task_tool
+        or (followup_worker_tools[0] if followup_worker_tools else "claude")
+    )
+    if requested_tier:
+        # Explicit tier bump/de-escalation — drop the pinned
+        # model so it's re-resolved from the new tier below.
+        effective_model = None
+    elif requested_tool and requested_tool != task_tool:
+        # Switching tools invalidates the previous model choice
+        # (e.g. a claude model id is meaningless to codex/pi) —
+        # drop it and let the worker pick its own default.
+        effective_model = None
+    else:
+        effective_model = task_model
+    if requested_provider is not None:
+        effective_provider = requested_provider
+    elif requested_tool and requested_tool != task_tool:
+        # Switching tools invalidates a stale provider too; Pi/Codex should
+        # get their own defaults unless the caller explicitly pins one.
+        effective_provider = None
+    else:
+        effective_provider = task_provider or followup_worker_provider
+    # Worker-tool defaults live in spawn_settings.
+    if effective_tool in {"pi", "codex"} and (
+        effective_provider is None or effective_model is None
+    ):
+        (
+            effective_provider,
+            effective_model,
+        ) = await _apply_spawn_tool_defaults(
+            db,
+            guild_pk=guild_pk,
+            user_id=followup_worker_user_id,
+            tool=effective_tool,
+            provider=effective_provider,
+            model=effective_model,
+        )
+
+    from util.model_tiers import (  # noqa: PLC0415
+        select_model_tier as _select_tier,
+    )
+
+    if requested_tier:
+        effective_tier = _select_tier(
+            "followup", complexity_hint=requested_tier
+        )
+    elif requested_tool and requested_tool != task_tool:
+        effective_tier = _select_tier("followup")
+    else:
+        effective_tier = task_model_tier or _select_tier("followup")
+
+    if (
+        requested_tier
+        and effective_tool != "pi"
+        and effective_provider
+        and not is_error
+    ):
+        from util.model_tiers import (  # noqa: PLC0415
+            get_model_for_tier as _get_model_for_tier,
+        )
+        from util.models_dev import (  # noqa: PLC0415
+            get_providers_from_db as _get_providers_from_db,
+        )
+
+        _catalog = await _get_providers_from_db(db)
+        effective_model = _get_model_for_tier(
+            effective_tier, effective_provider, _catalog
+        )
+    if effective_tool != "pi" and effective_model and effective_provider:
+        from models import ModelCatalog  # noqa: PLC0415
+
+        catalog_check = await db.exec(
+            select(col(ModelCatalog.model_id)).where(
+                col(ModelCatalog.provider) == effective_provider,
+                col(ModelCatalog.model_id) == effective_model,
+            )
+        )
+        if catalog_check.one_or_none() is None:
+            result_text = (
+                f"Model {effective_model!r} is not available for "
+                f"provider {effective_provider!r}. Use GET "
+                "/api/models to see available models for each provider."
+            )
+            is_error = True
+    # Validation matches on the short models.dev ID, so
+    # swap to the Bedrock inference-profile ARN only after
+    # it passes (no-op for non-Bedrock providers).
+    if not is_error and effective_tool != "pi":
+        effective_model = await _resolve_bedrock_model_id(
+            db, effective_provider, effective_model
+        )
+
+    if not is_error:
+        # Atomically acquire the follow-up lock to prevent two
+        # concurrent foreman runs from both dispatching a worker.
+        lock_id = "".join(
+            random.choices(string.ascii_lowercase + string.digits, k=8)
+        )
+        lock_acquired = await LockService(db).acquire(
+            f"task:{task_id}", owner=lock_id
+        )
+        await db.commit()
+        if not lock_acquired:
+            # Task already locked by a concurrent follow-up —
+            # queue this request for replay when the lock releases.
+            db.add(
+                TaskEvent(
+                    task_id=task_id,
+                    event_type="pending-followup",
+                    payload_json=json.dumps(
+                        {
+                            "instructions": instructions,
+                            "preferred_worker_id": preferred_worker_id,
+                            "tool": requested_tool,
+                            "tier": requested_tier,
+                            "provider": requested_provider,
+                            "create_pr": requested_create_pr,
+                        }
+                    ),
+                    created_at=datetime.now(UTC),
+                )
+            )
+            await db.commit()
+            result_text = (
+                f"Task {task_id} is locked by an in-progress follow-up. "
+                "Instructions have been queued and will be passed to the "
+                "foreman when the current follow-up completes."
+            )
+        else:
+            update_vals: dict = {
+                "state": "working",
+                "phase": "followup",
+                "worker_id": target_worker_id,
+                "tool": effective_tool,
+                "model": effective_model,
+                "model_tier": effective_tier,
+                "provider": effective_provider,
+            }
+            if prior_state in TERMINAL_STATES:
+                # Re-opening a terminal task: clear soft-delete so it
+                # reappears in the live task list and isn't auto-purged.
+                update_vals["deleted_at"] = None
+            await db.exec(
+                update(Task)
+                .where(col(Task.id) == task_id)
+                .values(**update_vals)
+            )
+            await db.commit()
+            await broadcast(
+                guild_id,
+                TaskUpdateMsg(
+                    taskId=task_id,
+                    state="working",
+                    workerId=target_worker_id,
+                    deletedAt=None,
+                ).model_dump(by_alias=True, exclude_none=True),
+            )
+            # Only resume the prior agent session when the follow-up
+            # stays on the same worker — a different machine won't
+            # have the session data on disk (see _select_followup_worker).
+            followup_session_id = (
+                task_session_id
+                if target_worker_id == original_worker_id
+                else None
+            )
+            await broadcast(
+                guild_id,
+                TaskFollowupMsg(
+                    workerId=target_worker_id,
+                    taskId=task_id,
+                    name=task_name or "",
+                    description=task_desc or "",
+                    tool=effective_tool,
+                    model=effective_model,
+                    modelTier=effective_tier,
+                    provider=effective_provider,
+                    branch=branch,
+                    instructions=instructions,
+                    issueNumber=task_issue_number,
+                    issueRepo=task_issue_repo,
+                    sessionId=followup_session_id,
+                ).model_dump(by_alias=True, exclude_none=True),
+            )
+            spawn(
+                notify_discord_followup(
+                    task_issue_repo,
+                    task_issue_number,
+                    task_id,
+                    instructions,
+                ),
+                name=f"discord.followup:{task_id}",
+            )
+            if target_worker_id != original_worker_id and original_worker_id:
+                result_text = (
+                    f"Follow-up reassigned from {original_worker_id} "
+                    f"to {target_worker_id} (task {task_id} on branch {branch})."
+                )
+            else:
+                result_text = (
+                    f"Follow-up sent to {target_worker_id} for task {task_id} "
+                    f"on branch {branch}."
+                )
+
+    return result_text, is_error
+
+
+async def _handle_finalize_task(
+    inp: dict, guild_id: str, guild_pk: int | None, db, user_id: str | None
+) -> tuple[str, bool]:
+    task_id = inp["task_id"]
+    raw_outcome = inp.get("outcome", "done")
+    outcome = raw_outcome if raw_outcome in ("done", "failed") else "done"
+    if outcome != raw_outcome:
+        logger.warning(
+            "finalize_task: unknown outcome %r, defaulting to 'done'", raw_outcome
+        )
+    res = await finalize_task(
+        db,
+        guild_pk=guild_pk,
+        guild_id=guild_id,
+        task_id=task_id,
+        outcome=outcome,
+    )
+    if res.status == "not_found":
+        return f"Task {task_id} not found.", False
+    if res.status == "already_terminal":
+        return f"Task {task_id} is already {res.task.state}.", False
+    task = res.task
+    if task.phase == "issue" and task.issue_repo and task.issue_number is not None:
+        await post_issue_close_summary_comment(
+            guild_id, task.issue_repo, task.issue_number, res.descendants
+        )
+    if outcome == "failed":
+        spawn(
+            notify_discord_task_finalized(
+                task.issue_repo, task.issue_number, task_id, "failed"
+            ),
+            name=f"discord.finalize:{task_id}",
+        )
+    result_text = f"Task {task_id} finalized as {outcome}; " + (
+        f"soft-deleted at {res.deleted_at.isoformat()}."
+        if res.deleted_at is not None
+        else "kept live until its issue closes."
+    )
+    return result_text, False
+
+
+async def _handle_message_worker(
+    inp: dict, guild_id: str, guild_pk: int | None, db, user_id: str | None
+) -> tuple[str, bool]:
+    wid = inp["worker_id"]
+    msg = inp["message"]
+    target_task_id = inp.get("task_id")
+    await emit_terminal_line(guild_id, wid, f"[foreman] {msg}")
+    await broadcast_msg(
+        guild_id,
+        WorkerMessageMsg(workerId=wid, message=msg, taskId=target_task_id),
+    )
+    if target_task_id:
+        return f"Message sent to {wid} for task {target_task_id}.", False
+    return (
+        f"Message sent to {wid}. Without a task_id the worker only delivers it "
+        "when exactly one of its agents is running.",
+        False,
+    )
+
+
+async def _handle_redirect_task(
+    inp: dict, guild_id: str, guild_pk: int | None, db, user_id: str | None
+) -> tuple[str, bool]:
+    task_id = inp["task_id"]
+    instructions = inp["instructions"]
+    result = await db.exec(
+        select(
+            col(Task.worker_id),
+            col(Task.state),
+            col(Task.issue_number),
+            col(Task.issue_repo),
+        ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
+    )
+    row = result.one_or_none()
+    if not row:
+        return f"Task {task_id} not found.", False
+    worker_id_val, state, redirect_issue_number, redirect_issue_repo = row
+    if state in TERMINAL_STATES:
+        return f"Task {task_id} is {state} — cannot redirect.", False
+    await db.exec(
+        update(Task).where(col(Task.id) == task_id).values(state="working")
+    )
+    await db.commit()
+    await broadcast_msg(
+        guild_id,
+        TaskRedirectMsg(
+            workerId=worker_id_val,
+            taskId=task_id,
+            instructions=instructions,
+        ),
+    )
+    await broadcast_msg(
+        guild_id, TaskUpdateMsg(taskId=task_id, state="working")
+    )
+    if redirect_issue_number is not None and redirect_issue_repo:
+        spawn(
+            notify_discord_redirect(
+                redirect_issue_repo,
+                redirect_issue_number,
+                task_id,
+                instructions,
+            ),
+            name=f"discord.redirect:{task_id}",
+        )
+    return f"Redirect sent to {worker_id_val} for task {task_id}.", False
+
+
+async def _handle_cancel_task(
+    inp: dict, guild_id: str, guild_pk: int | None, db, user_id: str | None
+) -> tuple[str, bool]:
+    task_id = inp["task_id"]
+    reason = inp.get("reason", "")
+    result = await db.exec(
+        select(
+            col(Task.worker_id),
+            col(Task.state),
+            col(Task.issue_repo),
+            col(Task.issue_number),
+        ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
+    )
+    row = result.one_or_none()
+    if not row:
+        return f"Task {task_id} not found.", False
+    worker_id_val, state, cancel_issue_repo, cancel_issue_number = row
+    if state in TERMINAL_STATES:
+        return f"Task {task_id} is already {state}.", False
+    deleted_at = datetime.now(UTC)
+    await db.exec(
+        update(Task)
+        .where(col(Task.id) == task_id)
+        .values(
+            state="cancelled",
+            deleted_at=deleted_at,
+        )
+    )
+    await LockService(db).release(f"task:{task_id}")
+    await db.commit()
+    await broadcast_msg(
+        guild_id,
+        TaskCancelMsg(workerId=worker_id_val, taskId=task_id),
+    )
+    await broadcast_msg(
+        guild_id,
+        TaskUpdateMsg(
+            taskId=task_id,
+            state="cancelled",
+            deletedAt=deleted_at.isoformat(),
+        ),
+    )
+    spawn(
+        notify_discord_task_finalized(
+            cancel_issue_repo,
+            cancel_issue_number,
+            task_id,
+            "cancelled",
+            reason=reason or None,
+        ),
+        name=f"discord.cancel:{task_id}",
+    )
+    result_text = f"Task {task_id} cancelled." + (
+        f" Reason: {reason}" if reason else ""
+    )
+    return result_text, False
+
+
+async def _handle_shutdown_worker(
+    inp: dict, guild_id: str, guild_pk: int | None, db, user_id: str | None
+) -> tuple[str, bool]:
+    wid = inp["worker_id"]
+    reason = inp.get("reason", "")
+    worker_result = await db.exec(
+        select(col(Worker.id)).where(
+            col(Worker.id) == wid, col(Worker.guild_id) == guild_pk
+        )
+    )
+    if worker_result.one_or_none() is None:
+        return f"Worker {wid} not found.", False
+    await broadcast_msg(
+        guild_id, WorkerShutdownMsg(workerId=wid, reason=reason or None)
+    )
+    await db.exec(update(Worker).where(col(Worker.id) == wid).values(disabled=True))
+    await db.commit()
+    # Graceful signal only: give the worker a chance to finish any
+    # in-progress task and exit on its own. Force-kill its container
+    # only if it's still not offline after the timeout — see
+    # worker_lifecycle.force_kill_worker_if_unresponsive.
+    from worker_lifecycle import (  # noqa: PLC0415
+        force_kill_worker_if_unresponsive as _force_kill_if_unresponsive,
+    )
+
+    spawn(
+        _force_kill_if_unresponsive(wid),
+        name=f"shutdown-escalate:{wid}",
+    )
+    result_text = f"Shutdown signal sent to {wid}." + (
+        f" Reason: {reason}" if reason else ""
+    )
+    return result_text, False
+
+
+async def _handle_spawn_worker(
+    inp: dict, guild_id: str, guild_pk: int | None, db, user_id: str | None
+) -> tuple[str, bool]:
+    # Deliberately NOT this turn's user_id. A worker the foreman
+    # stands up serves the guild's queue, not the member who
+    # happened to be talking to it, so it takes the guild baseline
+    # rather than that member's personal spawn settings — which are
+    # their own launch form's state and can differ wildly (their
+    # repo subset, their tools, their env overrides). The tool's
+    # explicit repos/tools/agent_count args are how a spawn departs
+    # from the baseline. Human-initiated spawns (Discord
+    # /worker-spawn, the REST endpoint) do pass a user and get that
+    # user's layer.
+    result_text, is_error = await spawn_worker(
+        inp, guild_id, guild_pk, db, user_id=None
+    )
+    return result_text, is_error
+
+
+async def _handle_get_task_status(
+    inp: dict, guild_id: str, guild_pk: int | None, db, user_id: str | None
+) -> tuple[str, bool]:
+    task_id = inp["task_id"]
+    limit = min(int(inp.get("log_lines", 10)), 50)
+    task_result = await db.exec(
+        select(Task).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
+    )
+    task = task_result.one_or_none()
+    if not task:
+        return f"Task {task_id} not found.", False
+    agent_info = None
+    if task.worker_id:
+        agent_result = await db.exec(
+            select(col(Agent.id), col(Agent.state))
+            .where(
+                col(Agent.worker_id) == task.worker_id,
+                col(Agent.state) != "offline",
+            )
+            .limit(1)
+        )
+        agent_row = agent_result.one_or_none()
+        if agent_row:
+            agent_info = {"agent_id": agent_row[0], "agent_state": agent_row[1]}
+    logs_result = await db.exec(
+        select(col(TaskLog.timestamp), col(TaskLog.line), col(TaskLog.data))
+        .where(col(TaskLog.task_id) == task_id)
+        .order_by(col(TaskLog.id).desc())
+        .limit(limit)
+    )
+    log_rows = list(reversed(logs_result.all()))
+    recent_logs = []
+    for time_, line, data_json in log_rows:
+        entry: dict = {"time": time_, "line": line}
+        full = _full_log_content(data_json)
+        if full and full != line:
+            entry["data"] = truncate_tool_result(full)
+        recent_logs.append(entry)
+    result_text = json.dumps(
+        {
+            "id": task.id,
+            "name": task.name,
+            "state": task.state,
+            "phase": task.phase,
+            "worker_id": task.worker_id,
+            "agent": agent_info,
+            "branch": task.branch,
+            "pr_url": task.pr_url,
+            "pr_repo": task.pr_repo,
+            "pr_number": task.pr_number,
+            "effective_pr_url": task.pr_url
+            or (
+                f"https://github.com/{task.pr_repo}/pull/{task.pr_number}"
+                if task.pr_repo and task.pr_number
+                else None
+            ),
+            "created_at": task.created_at,
+            "deleted_at": task.deleted_at,
+            "recent_logs": recent_logs,
+        },
+        default=_json_default,
+    )
+    return result_text, False
+
+
+async def _handle_message_discord_bot(
+    inp: dict, guild_id: str, guild_pk: int | None, db, user_id: str | None
+) -> tuple[str, bool]:
+    result_text, is_error = await _message_discord_bot(inp, db)
+    return result_text, is_error
+
+
+# ---------------------------------------------------------------------------
+# GitHub tool handlers
+# ---------------------------------------------------------------------------
+
+
+async def _handle_list_github_issues(
+    inp: dict, guild_id: str, token: str, username: str
+) -> tuple[str, bool]:
+    repo = inp["repo"]
+    state = inp.get("state", "open")
+    limit = min(int(inp.get("limit", 20)), 50)
+    issues = await _to_thread(
+        _gh_api,
+        f"/repos/{repo}/issues?state={state}&per_page={limit}",
+        token,
+    )
+    trimmed = [
+        {
+            "number": i["number"],
+            "title": i["title"],
+            "state": i["state"],
+            "labels": [l["name"] for l in i.get("labels", [])],
+            "assignees": [a["login"] for a in i.get("assignees", [])],
+            "created_at": i["created_at"],
+        }
+        for i in issues
+        if "pull_request" not in i
+    ]
+    return json.dumps(trimmed), False
+
+
+async def _handle_get_github_issue(
+    inp: dict, guild_id: str, token: str, username: str
+) -> tuple[str, bool]:
+    repo = inp["repo"]
+    num = int(inp["issue_number"])
+    issue = await _to_thread(_gh_api, f"/repos/{repo}/issues/{num}", token)
+    comments_raw = await _to_thread(
+        _gh_api, f"/repos/{repo}/issues/{num}/comments?per_page=20", token
+    )
+    # Native GitHub sub-issues (parenting), not the body checklist.
+    # 404/empty for issues without children — treat any failure as none.
+    try:
+        sub_raw = await _to_thread(
+            _gh_api,
+            f"/repos/{repo}/issues/{num}/sub_issues?per_page=100",
+            token,
+        )
+    except urllib.error.HTTPError:
+        sub_raw = []
+    result_text = json.dumps(
+        {
+            "number": issue["number"],
+            "title": issue["title"],
+            "state": issue["state"],
+            "body": (issue.get("body") or "")[:2000],
+            "labels": [l["name"] for l in issue.get("labels", [])],
+            "comments": [
+                {
+                    "author": c["user"]["login"],
+                    "body": (c.get("body") or "")[:500],
+                }
+                for c in comments_raw
+            ],
+            "sub_issues": [
+                {
+                    "number": s["number"],
+                    "title": s["title"],
+                    "state": s["state"],
+                    "assignees": [a["login"] for a in s.get("assignees", [])],
+                }
+                for s in sub_raw
+            ],
+        }
+    )
+    return result_text, False
+
+
+async def _handle_list_github_prs(
+    inp: dict, guild_id: str, token: str, username: str
+) -> tuple[str, bool]:
+    repo = inp["repo"]
+    state = inp.get("state", "open")
+    prs = await _to_thread(
+        _gh_api, f"/repos/{repo}/pulls?state={state}&per_page=20", token
+    )
+    result_text = json.dumps(
+        [
+            {
+                "number": p["number"],
+                "title": p["title"],
+                "state": p["state"],
+                "head": p["head"]["ref"],
+                "draft": p.get("draft", False),
+            }
+            for p in prs
+        ]
+    )
+    return result_text, False
+
+
+async def _handle_claim_github_issue(
+    inp: dict, guild_id: str, token: str, username: str
+) -> tuple[str, bool]:
+    repo = inp["repo"]
+    num = int(inp["issue_number"])
+    await _to_thread(
+        _gh_api_post,
+        f"/repos/{repo}/issues/{num}/assignees",
+        token,
+        {"assignees": [username]},
+    )
+    return f"Issue #{num} in {repo} assigned to {username}.", False
+
+
+async def _handle_create_github_issue(
+    inp: dict, guild_id: str, token: str, username: str
+) -> tuple[str, bool]:
+    repo = inp["repo"]
+    payload: dict = {"title": inp["title"], "body": inp.get("body", "")}
+    if inp.get("labels"):
+        payload["labels"] = inp["labels"]
+    issue = await _to_thread(
+        _gh_api_post, f"/repos/{repo}/issues", token, payload
+    )
+    result_text = json.dumps(
+        {
+            "number": issue["number"],
+            "url": issue["html_url"],
+            "title": issue["title"],
+        }
+    )
+    return result_text, False
+
+
+async def _handle_get_pr_status(
+    inp: dict, guild_id: str, token: str, username: str
+) -> tuple[str, bool]:
+    repo = inp["repo"]
+    num = int(inp["pr_number"])
+    return json.dumps(await fetch_pr_status(repo, num, token)), False
+
+
+async def _handle_create_pr(
+    inp: dict, guild_id: str, token: str, username: str
+) -> tuple[str, bool]:
+    repo = inp["repo"]
+    branch = inp["branch"]
+    base = inp.get("base") or "main"
+    pr = await _to_thread(
+        _create_pr_api,
+        repo,
+        token,
+        {
+            "title": inp["title"],
+            "body": inp.get("body", ""),
+            "head": branch,
+            "base": base,
+        },
+    )
+    logger.info(
+        "guild=%s create_pr: repo=%s %s -> %s pr=#%s",
+        guild_id,
+        repo,
+        branch,
+        base,
+        pr.get("number"),
+    )
+    result_text = json.dumps(
+        {
+            "number": pr["number"],
+            "url": pr["html_url"],
+            "repo": repo,
+            "head": branch,
+            "base": base,
+        }
+    )
+    return result_text, False
+
+
+async def _handle_search_github_issues(
+    inp: dict, guild_id: str, token: str, username: str
+) -> tuple[str, bool]:
+    repo = inp["repo"]
+    query = inp["query"]
+    state = inp.get("state", "open")
+    state_q = "" if state == "all" else f"+state:{state}"
+    search_url = (
+        f"/search/issues?q={urllib.parse.quote(query)}"
+        f"+repo:{repo}{state_q}&per_page=10&sort=created&order=desc"
+    )
+    data = await _to_thread(_gh_api, search_url, token)
+    items = data.get("items", []) if isinstance(data, dict) else data
+    result_text = json.dumps(
+        [
+            {
+                "number": i["number"],
+                "title": i["title"],
+                "state": i["state"],
+                "url": i["html_url"],
+                "labels": [l["name"] for l in i.get("labels", [])],
+                "assignees": [a["login"] for a in i.get("assignees", [])],
+            }
+            for i in items
+        ]
+    )
+    return result_text, False
+
+
+async def _handle_review_pr_internal(
+    inp: dict, guild_id: str, token: str, username: str
+) -> tuple[str, bool]:
+    # Review action policy (mirrors the worker-driven `gh pr review` path):
+    #   APPROVE           - functionally correct; issues are minor nits
+    #                       (style, naming, formatting). Note nits inline.
+    #   COMMENT           - moderate concerns (performance, clarity) that
+    #                       don't block merging.
+    #   REQUEST_CHANGES   - genuine bugs, security issues, or logic errors
+    #                       only. Be specific and firm about what breaks and
+    #                       why it must be fixed before merge. Never for
+    #                       style preferences.
+    # Tone: polite but firm. Never apologetic about calling out a real bug.
+    # Never blocking a merge over style.
+    #
+    # An explicit `action` input overrides the tool's own judgement; when
+    # omitted, the verdict comes from the diff analysis below and is biased
+    # toward APPROVE per the policy above.
+    pr_url = inp["pr_url"]
+    explicit_action = inp.get("action")
+    if explicit_action:
+        explicit_action = explicit_action.upper()
+        if explicit_action not in ("APPROVE", "REQUEST_CHANGES", "COMMENT"):
+            explicit_action = None
+    pr_match = _PR_URL_RE.match(pr_url.rstrip("/"))
+    if not pr_match:
+        return (
+            f"Invalid GitHub PR URL: {pr_url!r}. "
+            "Expected https://github.com/owner/repo/pull/N",
+            True,
+        )
+    pr_repo = pr_match.group(1)
+    pr_number = int(pr_match.group(2))
+    pr_data, diff_text = await asyncio.gather(
+        _to_thread(
+            _gh_api,
+            f"/repos/{pr_repo}/pulls/{pr_number}",
+            token,
+        ),
+        _to_thread(
+            _gh_api_diff,
+            f"/repos/{pr_repo}/pulls/{pr_number}",
+            token,
+        ),
+    )
+    pr_title = pr_data.get("title", "")
+    pr_body_text = pr_data.get("body") or "(no description)"
+    base_ref = (pr_data.get("base") or {}).get("ref", "")
+    head_ref = (pr_data.get("head") or {}).get("ref", "")
+
+    try:
+        # Use the guild's configured provider/model (Bedrock,
+        # env-var overrides, ...) instead of always defaulting
+        # to the direct Anthropic API — same resolution the main
+        # foreman loop uses for every other inference call.
+        from foreman.runner import (  # noqa: PLC0415
+            _call_llm,
+            _load_foreman_config,
+            resolve_foreman_client,
+        )
+
+        guild_cfg = await _load_foreman_config(guild_id)
+        (
+            client,
+            effective_provider,
+            review_model,
+        ) = await resolve_foreman_client(guild_id, guild_cfg)
+        review_prompt = (
+            "You are a thorough but fair code reviewer. Review the "
+            "following GitHub pull request and provide structured "
+            "feedback.\n\n"
+            f"PR: {pr_title}\n"
+            f"Base: {base_ref} ← Head: {head_ref}\n"
+            f"Description: {pr_body_text[:1000]}\n\n"
+            f"Diff (up to 40 000 chars):\n{diff_text[:40000]}\n\n"
+            "Respond with a JSON object only (no markdown fences) "
+            "with exactly these fields:\n"
+            '{"verdict": "APPROVE|REQUEST_CHANGES|COMMENT", '
+            '"summary": "3-5 markdown bullet points (use - prefix)", '
+            '"comments": [{"path": "file.py", "line": 42, '
+            '"side": "RIGHT", "body": "concise comment"}]}\n\n'
+            "Verdict policy — bias toward APPROVE:\n"
+            "- APPROVE: the code is functionally correct and any issues "
+            "are minor nits (style, naming, formatting). Note the nits as "
+            "inline comments but still approve.\n"
+            "- COMMENT: moderate concerns (performance, clarity) that "
+            "don't block merging.\n"
+            "- REQUEST_CHANGES: reserved for genuine bugs, security "
+            "issues, or logic errors that must be fixed before merge. "
+            "Never use this for style preferences alone.\n\n"
+            "Rules:\n"
+            "- summary: 3-5 bullet points covering key findings, written "
+            "in a polite, constructive tone. Be firm and specific when "
+            "flagging a real bug (explain what breaks and why it must be "
+            "fixed before merge) — never apologetic about it. Don't be "
+            "pedantic or block merging over style.\n"
+            "- comments: 0-5 objects for the most important issues\n"
+            "- line: line number in the NEW file version (RIGHT side)\n"
+            "- Only comment on lines present in the diff\n"
+            "- Focus on bugs, security issues, and significant design problems\n"
+            "- Keep each comment concise (1-3 sentences)"
+        )
+        llm_result = await _call_llm(
+            guild_id,
+            client=client,
+            provider=effective_provider,
+            model=review_model,
+            max_tokens=2048,
+            system_blocks=[],
+            messages=[{"role": "user", "content": review_prompt}],
+            tools=[],
+        )
+        review_json = _parse_review_from_claude(
+            llm_result.response.content[0].text
+        )
+    except Exception as exc:
+        logger.error(
+            "guild=%s review_pr_internal: ai generation failed: %s",
+            guild_id,
+            exc,
+            exc_info=True,
+        )
+        review_json = {
+            "verdict": "COMMENT",
+            "summary": (
+                "Review could not be generated by the AI agent "
+                f"({type(exc).__name__}: {exc})."
+            ),
+            "comments": [],
+        }
+
+    summary_text = review_json.get("summary", "(no summary)")
+    raw_comments = review_json.get("comments") or []
+    gh_comments = [
+        {
+            "path": c["path"],
+            "line": int(c["line"]),
+            "side": c.get("side", "RIGHT"),
+            "body": c["body"],
+        }
+        for c in raw_comments
+        if c.get("path") and c.get("line") and c.get("body")
+    ]
+
+    recommended_verdict = str(
+        review_json.get("verdict") or "COMMENT"
+    ).upper()
+    if recommended_verdict not in (
+        "APPROVE",
+        "REQUEST_CHANGES",
+        "COMMENT",
+    ):
+        recommended_verdict = "COMMENT"
+    action = explicit_action or recommended_verdict
+    logger.info(
+        "guild=%s review_pr_internal: pr_url=%s action=%s"
+        " (explicit=%s recommended=%s)",
+        guild_id,
+        pr_url,
+        action,
+        bool(explicit_action),
+        recommended_verdict,
+    )
+
+    try:
+        threads_resolved = await _supersede_prior_bot_reviews(
+            pr_repo, pr_number, username, token
+        )
+        if threads_resolved:
+            logger.info(
+                "guild=%s review_pr_internal: resolved %d thread(s)"
+                " from prior review(s) on %s#%d",
+                guild_id,
+                threads_resolved,
+                pr_repo,
+                pr_number,
+            )
+    except Exception as _sup_exc:
+        logger.warning(
+            "guild=%s review_pr_internal: thread resolution step failed"
+            " (non-fatal): %s",
+            guild_id,
+            _sup_exc,
+        )
+    try:
+        review_data = await _to_thread(
+            _gh_api_post,
+            f"/repos/{pr_repo}/pulls/{pr_number}/reviews",
+            token,
+            {
+                "body": summary_text,
+                "event": action,
+                "comments": gh_comments,
+            },
+        )
+    except urllib.error.HTTPError:
+        logger.warning(
+            "guild=%s review_pr_internal: inline comments rejected, "
+            "retrying without them",
+            guild_id,
+        )
+        review_data = await _to_thread(
+            _gh_api_post,
+            f"/repos/{pr_repo}/pulls/{pr_number}/reviews",
+            token,
+            {"body": summary_text, "event": action, "comments": []},
+        )
+        gh_comments = []
+
+    logger.info(
+        "guild=%s review_pr_internal: review=%s verdict=%s comments=%d",
+        guild_id,
+        review_data.get("id"),
+        action,
+        len(gh_comments),
+    )
+    result_text = json.dumps(
+        {
+            "pr_url": pr_url,
+            "verdict": action,
+            "review_id": review_data.get("id"),
+            "review_posted": True,
+            "inline_comments_posted": len(gh_comments),
+            "summary": summary_text[:400],
+        }
+    )
+    return result_text, False
+
+
+async def _handle_analyze_epic(
+    inp: dict, guild_id: str, token: str, username: str
+) -> tuple[str, bool]:
+    repo = inp["repo"]
+    num = int(inp["issue_number"])
+    force = inp.get("force", False)
+    trigger_deep = inp.get("trigger_deep_analysis", False)
+
+    # Fetch the epic issue
+    epic = await _to_thread(_gh_api, f"/repos/{repo}/issues/{num}", token)
+    epic_labels = [l["name"] for l in epic.get("labels", [])]
+
+    # Safeguard: skip if already reported (unless forced)
+    if "pm-reported" in epic_labels and not force:
+        # Check if report was recent (within 7 days)
+        comments_raw = await _to_thread(
+            _gh_api,
+            f"/repos/{repo}/issues/{num}/comments?per_page=50",
+            token,
+        )
+        recent_report = False
+        for c in reversed(comments_raw):
+            if c.get("body", "").startswith("## 📋 Epic Status Summary"):
+                created = c.get("created_at", "")
+                if created:
+                    from datetime import datetime as dt  # noqa: PLC0415
+
+                    report_time = dt.fromisoformat(
+                        created.replace("Z", "+00:00")
+                    )
+                    if (datetime.now(UTC) - report_time) < timedelta(days=7):
+                        recent_report = True
+                break
+        if recent_report:
+            return json.dumps(
+                {
+                    "skipped": True,
+                    "reason": "Report already posted within the last 7 days. Use force=true to override.",
+                    "epic": num,
+                }
+            ), False
+        # Label exists but report is stale — proceed
+        force = True
+
+    # --- Level 1: Lightweight status fetch ---
+    # Fetch sub-issues
+    try:
+        sub_raw = await _to_thread(
+            _gh_api,
+            f"/repos/{repo}/issues/{num}/sub_issues?per_page=100",
+            token,
+        )
+    except urllib.error.HTTPError:
+        sub_raw = []
+
+    # Fetch linked PRs (single search, no per-sub-issue queries)
+    mention_q = urllib.parse.quote(f"repo:{repo} is:pr #{num}")
+    try:
+        mention_prs_data = await _to_thread(
+            _gh_api,
+            f"/search/issues?q={mention_q}&per_page=30",
+            token,
+        )
+        all_prs = mention_prs_data.get("items", [])
+    except urllib.error.HTTPError:
+        all_prs = []
+
+    # Build lightweight sub-issue summary (no per-issue API calls)
+    sub_issue_details = []
+    for sub in sub_raw:
+        sub_detail = {
+            "number": sub["number"],
+            "title": sub.get("title", ""),
+            "state": sub.get("state", "unknown"),
+            "labels": [l["name"] for l in sub.get("labels", [])],
+        }
+        sub_issue_details.append(sub_detail)
+
+    # Analyze completeness
+    total_subs = len(sub_issue_details)
+    closed_subs = sum(
+        1 for s in sub_issue_details if s["state"] == "closed"
+    )
+    open_subs = total_subs - closed_subs
+
+    # Identify basic inconsistencies (no API calls needed)
+    gaps: list = []
+    for s in sub_issue_details:
+        # Closed issue — note it for potential verification
+        if s["state"] == "closed" and not any(
+            f"#{s['number']}" in (p.get("title", "") + p.get("body", ""))
+            for p in all_prs
         ):
+            gaps.append(
+                f"Sub-issue #{s['number']} ({s['title']}) is closed but no PR references it"
+            )
+
+    # Determine if deep analysis is recommended
+    recommend_deep = len(gaps) >= 2 or (
+        total_subs > 0 and open_subs == 0 and len(all_prs) > 0
+    )
+
+    # Build concise status summary
+    pct = int((closed_subs / total_subs) * 100) if total_subs > 0 else 0
+    report_lines = [
+        "## 📋 Epic Status Summary",
+        "",
+        f"**Epic:** #{num} — {epic.get('title', '')}",
+        f"**Checked:** {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}",
+        "",
+        f"### Progress: {pct}%",
+        f"- **Sub-issues:** {total_subs} total — {closed_subs} closed, {open_subs} open",
+        f"- **Related PRs:** {len(all_prs)} found",
+    ]
+
+    if gaps:
+        report_lines.append(f"- **Potential gaps:** {len(gaps)}")
+        report_lines.append("")
+        report_lines.append("### ⚠️ Gaps")
+        for g in gaps[:10]:
+            report_lines.append(f"- {g}")
+    else:
+        report_lines.append("- **Gaps:** None detected")
+
+    report_lines.append("")
+    if total_subs > 0 and open_subs == 0:
+        report_lines.append(
+            "✅ All sub-issues closed. Epic may be ready to finalize."
+        )
+    report_lines.append("")
+    report_lines.append(
+        "*Level 1 status check. Use `trigger_deep_analysis` for "
+        "code-level review.*"
+    )
+
+    report_body = "\n".join(report_lines)
+
+    # Post the status summary as a comment
+    await _to_thread(
+        _gh_api_post,
+        f"/repos/{repo}/issues/{num}/comments",
+        token,
+        {"body": report_body},
+    )
+
+    # Add pm-reported label (create if needed)
+    try:
+        await _to_thread(
+            _gh_api_post,
+            f"/repos/{repo}/issues/{num}/labels",
+            token,
+            {"labels": ["pm-reported"]},
+        )
+    except urllib.error.HTTPError:
+        pass  # label may already exist or lack permission
+
+    # Gap issue auto-filing is intentionally disabled: the gap
+    # detection above uses naive substring matching against PR
+    # titles/bodies, which is prone to false positives and isn't
+    # reliable enough to drive automatic issue creation. The
+    # `file_gap_issues` parameter is kept for backward
+    # compatibility but no longer files anything.
+    filed_issues: list = []
+
+    # Build deep analysis task description if triggered
+    deep_analysis_task_id = None
+    deep_desc = None
+    if trigger_deep and recommend_deep:
+        # Level 2: Create a worker task for deep code analysis
+        deep_desc = (
+            f"Deep code analysis for epic #{num} in {repo}.\n\n"
+            f"## Context\n"
+            f"Epic: {epic.get('title', '')}\n"
+            f"Sub-issues: {total_subs} ({closed_subs} closed, {open_subs} open)\n"
+            f"Related PRs: {', '.join('#' + str(p['number']) for p in all_prs[:15])}\n\n"
+            f"## Instructions\n"
+            f"1. Check out each related PR branch and review the code changes\n"
+            f"2. Compare implementations against the requirements in each sub-issue\n"
+            f"3. Identify: bugs, missing functionality, architectural issues, "
+            f"test gaps\n"
+            f"4. Post detailed findings as a comment on epic #{num}\n"
+            f"5. If bugs are found, file individual issues with 'bug' label\n\n"
+            f"## Gaps already identified (Level 1)\n"
+        )
+        for g in gaps:
+            deep_desc += f"- {g}\n"
+
+        # Store the description for the foreman to use with assign_task
+        # We return it in the result so the foreman can create+assign
+        deep_analysis_task_id = "pending_assignment"
+
+    result_text = json.dumps(
+        {
+            "epic": num,
+            "repo": repo,
+            "level": 1,
+            "report_posted": True,
+            "sub_issues_total": total_subs,
+            "sub_issues_closed": closed_subs,
+            "sub_issues_open": open_subs,
+            "related_prs": len(all_prs),
+            "gaps_found": len(gaps),
+            "gaps": gaps[:10],
+            "issues_filed": filed_issues,
+            "all_complete": total_subs > 0 and open_subs == 0,
+            "recommend_deep_analysis": recommend_deep,
+            "deep_analysis_triggered": deep_analysis_task_id is not None,
+            "deep_analysis_description": deep_desc,
+        }
+    )
+    return result_text, False
+
+
+# ---------------------------------------------------------------------------
+# Misc tool handlers (no external context required)
+# ---------------------------------------------------------------------------
+
+
+async def _handle_dnsid(inp: dict, guild_id: str) -> tuple[str, bool]:
+    logger.info("dnsid tool: input=%s", inp)
+    command = inp.get("command", "")
+    if not command:
+        return "dnsid requires command (resolve or verify)", True
+    try:
+        return json.dumps(await _run_dnsid(command, inp)), False
+    except (ValueError, RuntimeError) as exc:
+        return str(exc), True
+    except Exception as exc:
+        return f"dnsid {command} failed: {exc}", True
+
+
+async def _handle_call_agent(inp: dict, guild_id: str) -> tuple[str, bool]:
+    logger.info("call_agent: input=%s", inp)
+    agent_url = (inp.get("agent_url") or "").rstrip("/")
+    skill_id = inp.get("skill") or ""
+    params = inp.get("params") or {}
+    if not agent_url:
+        return "call_agent requires agent_url", True
+    if not skill_id:
+        return "call_agent requires skill", True
+    try:
+        card_url = f"{agent_url}/.well-known/agent.json"
+        card = await _to_thread(_fetch_agent_card, card_url)
+        logger.debug("call_agent: fetched agent card from %s: %s", card_url, card)
+        skills = card.get("skills", [])
+        skill_ids = [s.get("id", "") for s in skills]
+        if skills and skill_id not in skill_ids:
+            return (
+                f"Skill {skill_id!r} not found on agent at {agent_url}. "
+                f"Available skills: {', '.join(skill_ids)}",
+                True,
+            )
+        task_body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "method": "tasks/send",
+                "params": {
+                    "skill_id": skill_id,
+                    "message": {
+                        "parts": [{"type": "text", "text": json.dumps(params)}]
+                    },
+                },
+                "id": 1,
+            }
+        ).encode()
+        response = await _to_thread(
+            _post_agent_task,
+            f"{agent_url}/jsonrpc",
+            task_body,
+        )
+        result_text = json.dumps(
+            {
+                "agent_url": agent_url,
+                "skill": skill_id,
+                "agent_name": card.get("name", ""),
+                "response": response,
+            }
+        )
+        return result_text, False
+    except urllib.error.HTTPError as exc:
+        return f"Agent HTTP error {exc.code}: {exc.reason}", True
+    except Exception as exc:
+        return f"Agent call failed: {exc}", True
+
+
+# ---------------------------------------------------------------------------
+# Registry — maps every tool name to its ForemanTool binding
+# ---------------------------------------------------------------------------
+
+_TOOL_REGISTRY: dict[str, ForemanTool] = {
+    t.name: t
+    for t in [
+        ForemanTool("create_task", _CTX_DB, _handle_create_task),
+        ForemanTool("assign_task", _CTX_DB, _handle_assign_task),
+        ForemanTool("send_followup", _CTX_DB, _handle_send_followup),
+        ForemanTool("finalize_task", _CTX_DB, _handle_finalize_task),
+        ForemanTool("message_worker", _CTX_DB, _handle_message_worker),
+        ForemanTool("redirect_task", _CTX_DB, _handle_redirect_task),
+        ForemanTool("cancel_task", _CTX_DB, _handle_cancel_task),
+        ForemanTool("shutdown_worker", _CTX_DB, _handle_shutdown_worker),
+        ForemanTool("spawn_worker", _CTX_DB, _handle_spawn_worker),
+        ForemanTool("get_task_status", _CTX_DB, _handle_get_task_status),
+        ForemanTool("message_discord_bot", _CTX_DB, _handle_message_discord_bot),
+        ForemanTool("list_github_issues", _CTX_GITHUB, _handle_list_github_issues),
+        ForemanTool("get_github_issue", _CTX_GITHUB, _handle_get_github_issue),
+        ForemanTool("list_github_prs", _CTX_GITHUB, _handle_list_github_prs),
+        ForemanTool("claim_github_issue", _CTX_GITHUB, _handle_claim_github_issue),
+        ForemanTool("create_github_issue", _CTX_GITHUB, _handle_create_github_issue),
+        ForemanTool("get_pr_status", _CTX_GITHUB, _handle_get_pr_status),
+        ForemanTool("create_pr", _CTX_GITHUB, _handle_create_pr),
+        ForemanTool("search_github_issues", _CTX_GITHUB, _handle_search_github_issues),
+        ForemanTool("review_pr_internal", _CTX_GITHUB, _handle_review_pr_internal),
+        ForemanTool("analyze_epic", _CTX_GITHUB, _handle_analyze_epic),
+        ForemanTool("dnsid", _CTX_NONE, _handle_dnsid),
+        ForemanTool("call_agent", _CTX_NONE, _handle_call_agent),
+    ]
+}
+
+
+async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
+    """Dispatch a single tool call via the registry and return a tool_result block."""
+    _ctx_token = _api_calls_ctx.set([])
+    result_text = ""
+    is_error = False
+
+    tool = _TOOL_REGISTRY.get(tu.name)
+    if tool is None:
+        _api_calls_ctx.reset(_ctx_token)
+        return {
+            "type": "tool_result",
+            "tool_use_id": tu.id,
+            "content": (
+                f"Unknown tool: {tu.name!r}. "
+                f"Available: {', '.join(sorted(_TOOL_REGISTRY))}"
+            ),
+            "is_error": True,
+        }
+
+    inp = tu.input
+
+    try:
+        if tool.context == _CTX_DB:
+            db = await get_db()
+            try:
+                from auth_deps import get_guild_pk  # noqa: PLC0415
+
+                guild_pk = await get_guild_pk(db, guild_id)
+                result_text, is_error = await tool.handler(
+                    inp, guild_id, guild_pk, db, user_id
+                )
+            finally:
+                await db.close()
+
+        elif tool.context == _CTX_GITHUB:
             logger.info("Executing GitHub tool %s with input %s", tu.name, inp)
             creds = await _guild_github_token(guild_id, user_id)
             if not creds:
@@ -2630,620 +3462,9 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
             else:
                 token, username = creds
                 try:
-                    if tu.name == "list_github_issues":
-                        repo = inp["repo"]
-                        state = inp.get("state", "open")
-                        limit = min(int(inp.get("limit", 20)), 50)
-                        issues = await _to_thread(
-                            _gh_api,
-                            f"/repos/{repo}/issues?state={state}&per_page={limit}",
-                            token,
-                        )
-                        trimmed = [
-                            {
-                                "number": i["number"],
-                                "title": i["title"],
-                                "state": i["state"],
-                                "labels": [l["name"] for l in i.get("labels", [])],
-                                "assignees": [a["login"] for a in i.get("assignees", [])],
-                                "created_at": i["created_at"],
-                            }
-                            for i in issues
-                            if "pull_request" not in i
-                        ]
-                        result_text = json.dumps(trimmed)
-
-                    elif tu.name == "get_github_issue":
-                        repo = inp["repo"]
-                        num = int(inp["issue_number"])
-                        issue = await _to_thread(_gh_api, f"/repos/{repo}/issues/{num}", token)
-                        comments_raw = await _to_thread(
-                            _gh_api, f"/repos/{repo}/issues/{num}/comments?per_page=20", token
-                        )
-                        # Native GitHub sub-issues (parenting), not the body checklist.
-                        # 404/empty for issues without children — treat any failure as none.
-                        try:
-                            sub_raw = await _to_thread(
-                                _gh_api,
-                                f"/repos/{repo}/issues/{num}/sub_issues?per_page=100",
-                                token,
-                            )
-                        except urllib.error.HTTPError:
-                            sub_raw = []
-                        result_text = json.dumps(
-                            {
-                                "number": issue["number"],
-                                "title": issue["title"],
-                                "state": issue["state"],
-                                "body": (issue.get("body") or "")[:2000],
-                                "labels": [l["name"] for l in issue.get("labels", [])],
-                                "comments": [
-                                    {
-                                        "author": c["user"]["login"],
-                                        "body": (c.get("body") or "")[:500],
-                                    }
-                                    for c in comments_raw
-                                ],
-                                "sub_issues": [
-                                    {
-                                        "number": s["number"],
-                                        "title": s["title"],
-                                        "state": s["state"],
-                                        "assignees": [a["login"] for a in s.get("assignees", [])],
-                                    }
-                                    for s in sub_raw
-                                ],
-                            }
-                        )
-
-                    elif tu.name == "list_github_prs":
-                        repo = inp["repo"]
-                        state = inp.get("state", "open")
-                        prs = await _to_thread(
-                            _gh_api, f"/repos/{repo}/pulls?state={state}&per_page=20", token
-                        )
-                        result_text = json.dumps(
-                            [
-                                {
-                                    "number": p["number"],
-                                    "title": p["title"],
-                                    "state": p["state"],
-                                    "head": p["head"]["ref"],
-                                    "draft": p.get("draft", False),
-                                }
-                                for p in prs
-                            ]
-                        )
-
-                    elif tu.name == "claim_github_issue":
-                        repo = inp["repo"]
-                        num = int(inp["issue_number"])
-                        await _to_thread(
-                            _gh_api_post,
-                            f"/repos/{repo}/issues/{num}/assignees",
-                            token,
-                            {"assignees": [username]},
-                        )
-                        result_text = f"Issue #{num} in {repo} assigned to {username}."
-
-                    elif tu.name == "create_github_issue":
-                        repo = inp["repo"]
-                        payload: dict = {"title": inp["title"], "body": inp.get("body", "")}
-                        if inp.get("labels"):
-                            payload["labels"] = inp["labels"]
-                        issue = await _to_thread(
-                            _gh_api_post, f"/repos/{repo}/issues", token, payload
-                        )
-                        result_text = json.dumps(
-                            {
-                                "number": issue["number"],
-                                "url": issue["html_url"],
-                                "title": issue["title"],
-                            }
-                        )
-
-                    elif tu.name == "get_pr_status":
-                        repo = inp["repo"]
-                        num = int(inp["pr_number"])
-                        result_text = json.dumps(await fetch_pr_status(repo, num, token))
-
-                    elif tu.name == "create_pr":
-                        repo = inp["repo"]
-                        branch = inp["branch"]
-                        base = inp.get("base") or "main"
-                        pr = await _to_thread(
-                            _create_pr_api,
-                            repo,
-                            token,
-                            {
-                                "title": inp["title"],
-                                "body": inp.get("body", ""),
-                                "head": branch,
-                                "base": base,
-                            },
-                        )
-                        logger.info(
-                            "guild=%s create_pr: repo=%s %s -> %s pr=#%s",
-                            guild_id,
-                            repo,
-                            branch,
-                            base,
-                            pr.get("number"),
-                        )
-                        result_text = json.dumps(
-                            {
-                                "number": pr["number"],
-                                "url": pr["html_url"],
-                                "repo": repo,
-                                "head": branch,
-                                "base": base,
-                            }
-                        )
-
-                    elif tu.name == "search_github_issues":
-                        repo = inp["repo"]
-                        query = inp["query"]
-                        state = inp.get("state", "open")
-                        state_q = "" if state == "all" else f"+state:{state}"
-                        search_url = (
-                            f"/search/issues?q={urllib.parse.quote(query)}"
-                            f"+repo:{repo}{state_q}&per_page=10&sort=created&order=desc"
-                        )
-                        data = await _to_thread(_gh_api, search_url, token)
-                        items = data.get("items", []) if isinstance(data, dict) else data
-                        result_text = json.dumps(
-                            [
-                                {
-                                    "number": i["number"],
-                                    "title": i["title"],
-                                    "state": i["state"],
-                                    "url": i["html_url"],
-                                    "labels": [l["name"] for l in i.get("labels", [])],
-                                    "assignees": [a["login"] for a in i.get("assignees", [])],
-                                }
-                                for i in items
-                            ]
-                        )
-
-                    elif tu.name == "review_pr_internal":
-                        # Review action policy (mirrors the worker-driven `gh pr review` path):
-                        #   APPROVE           - functionally correct; issues are minor nits
-                        #                       (style, naming, formatting). Note nits inline.
-                        #   COMMENT           - moderate concerns (performance, clarity) that
-                        #                       don't block merging.
-                        #   REQUEST_CHANGES   - genuine bugs, security issues, or logic errors
-                        #                       only. Be specific and firm about what breaks and
-                        #                       why it must be fixed before merge. Never for
-                        #                       style preferences.
-                        # Tone: polite but firm. Never apologetic about calling out a real bug.
-                        # Never blocking a merge over style.
-                        #
-                        # An explicit `action` input overrides the tool's own judgement; when
-                        # omitted, the verdict comes from the diff analysis below and is biased
-                        # toward APPROVE per the policy above.
-                        pr_url = inp["pr_url"]
-                        explicit_action = inp.get("action")
-                        if explicit_action:
-                            explicit_action = explicit_action.upper()
-                            if explicit_action not in ("APPROVE", "REQUEST_CHANGES", "COMMENT"):
-                                explicit_action = None
-                        pr_match = _PR_URL_RE.match(pr_url.rstrip("/"))
-                        if not pr_match:
-                            result_text = (
-                                f"Invalid GitHub PR URL: {pr_url!r}. "
-                                "Expected https://github.com/owner/repo/pull/N"
-                            )
-                            is_error = True
-                        else:
-                            pr_repo = pr_match.group(1)
-                            pr_number = int(pr_match.group(2))
-                            pr_data, diff_text = await asyncio.gather(
-                                _to_thread(
-                                    _gh_api,
-                                    f"/repos/{pr_repo}/pulls/{pr_number}",
-                                    token,
-                                ),
-                                _to_thread(
-                                    _gh_api_diff,
-                                    f"/repos/{pr_repo}/pulls/{pr_number}",
-                                    token,
-                                ),
-                            )
-                            pr_title = pr_data.get("title", "")
-                            pr_body_text = pr_data.get("body") or "(no description)"
-                            base_ref = (pr_data.get("base") or {}).get("ref", "")
-                            head_ref = (pr_data.get("head") or {}).get("ref", "")
-
-                            try:
-                                # Use the guild's configured provider/model (Bedrock,
-                                # env-var overrides, ...) instead of always defaulting
-                                # to the direct Anthropic API — same resolution the main
-                                # foreman loop uses for every other inference call.
-                                from foreman.runner import (
-                                    _call_llm,
-                                    _load_foreman_config,
-                                    resolve_foreman_client,
-                                )
-
-                                guild_cfg = await _load_foreman_config(guild_id)
-                                (
-                                    client,
-                                    effective_provider,
-                                    review_model,
-                                ) = await resolve_foreman_client(guild_id, guild_cfg)
-                                review_prompt = (
-                                    "You are a thorough but fair code reviewer. Review the "
-                                    "following GitHub pull request and provide structured "
-                                    "feedback.\n\n"
-                                    f"PR: {pr_title}\n"
-                                    f"Base: {base_ref} ← Head: {head_ref}\n"
-                                    f"Description: {pr_body_text[:1000]}\n\n"
-                                    f"Diff (up to 40 000 chars):\n{diff_text[:40000]}\n\n"
-                                    "Respond with a JSON object only (no markdown fences) "
-                                    "with exactly these fields:\n"
-                                    '{"verdict": "APPROVE|REQUEST_CHANGES|COMMENT", '
-                                    '"summary": "3-5 markdown bullet points (use - prefix)", '
-                                    '"comments": [{"path": "file.py", "line": 42, '
-                                    '"side": "RIGHT", "body": "concise comment"}]}\n\n'
-                                    "Verdict policy — bias toward APPROVE:\n"
-                                    "- APPROVE: the code is functionally correct and any issues "
-                                    "are minor nits (style, naming, formatting). Note the nits as "
-                                    "inline comments but still approve.\n"
-                                    "- COMMENT: moderate concerns (performance, clarity) that "
-                                    "don't block merging.\n"
-                                    "- REQUEST_CHANGES: reserved for genuine bugs, security "
-                                    "issues, or logic errors that must be fixed before merge. "
-                                    "Never use this for style preferences alone.\n\n"
-                                    "Rules:\n"
-                                    "- summary: 3-5 bullet points covering key findings, written "
-                                    "in a polite, constructive tone. Be firm and specific when "
-                                    "flagging a real bug (explain what breaks and why it must be "
-                                    "fixed before merge) — never apologetic about it. Don't be "
-                                    "pedantic or block merging over style.\n"
-                                    "- comments: 0-5 objects for the most important issues\n"
-                                    "- line: line number in the NEW file version (RIGHT side)\n"
-                                    "- Only comment on lines present in the diff\n"
-                                    "- Focus on bugs, security issues, and significant design problems\n"
-                                    "- Keep each comment concise (1-3 sentences)"
-                                )
-                                llm_result = await _call_llm(
-                                    guild_id,
-                                    client=client,
-                                    provider=effective_provider,
-                                    model=review_model,
-                                    max_tokens=2048,
-                                    system_blocks=[],
-                                    messages=[{"role": "user", "content": review_prompt}],
-                                    tools=[],
-                                )
-                                review_json = _parse_review_from_claude(
-                                    llm_result.response.content[0].text
-                                )
-                            except Exception as exc:
-                                logger.error(
-                                    "guild=%s review_pr_internal: ai generation failed: %s",
-                                    guild_id,
-                                    exc,
-                                    exc_info=True,
-                                )
-                                review_json = {
-                                    "verdict": "COMMENT",
-                                    "summary": (
-                                        "Review could not be generated by the AI agent "
-                                        f"({type(exc).__name__}: {exc})."
-                                    ),
-                                    "comments": [],
-                                }
-
-                            summary_text = review_json.get("summary", "(no summary)")
-                            raw_comments = review_json.get("comments") or []
-                            gh_comments = [
-                                {
-                                    "path": c["path"],
-                                    "line": int(c["line"]),
-                                    "side": c.get("side", "RIGHT"),
-                                    "body": c["body"],
-                                }
-                                for c in raw_comments
-                                if c.get("path") and c.get("line") and c.get("body")
-                            ]
-
-                            recommended_verdict = str(
-                                review_json.get("verdict") or "COMMENT"
-                            ).upper()
-                            if recommended_verdict not in (
-                                "APPROVE",
-                                "REQUEST_CHANGES",
-                                "COMMENT",
-                            ):
-                                recommended_verdict = "COMMENT"
-                            action = explicit_action or recommended_verdict
-                            logger.info(
-                                "guild=%s review_pr_internal: pr_url=%s action=%s"
-                                " (explicit=%s recommended=%s)",
-                                guild_id,
-                                pr_url,
-                                action,
-                                bool(explicit_action),
-                                recommended_verdict,
-                            )
-
-                            try:
-                                threads_resolved = await _supersede_prior_bot_reviews(
-                                    pr_repo, pr_number, username, token
-                                )
-                                if threads_resolved:
-                                    logger.info(
-                                        "guild=%s review_pr_internal: resolved %d thread(s)"
-                                        " from prior review(s) on %s#%d",
-                                        guild_id,
-                                        threads_resolved,
-                                        pr_repo,
-                                        pr_number,
-                                    )
-                            except Exception as _sup_exc:
-                                logger.warning(
-                                    "guild=%s review_pr_internal: thread resolution step failed"
-                                    " (non-fatal): %s",
-                                    guild_id,
-                                    _sup_exc,
-                                )
-                            try:
-                                review_data = await _to_thread(
-                                    _gh_api_post,
-                                    f"/repos/{pr_repo}/pulls/{pr_number}/reviews",
-                                    token,
-                                    {
-                                        "body": summary_text,
-                                        "event": action,
-                                        "comments": gh_comments,
-                                    },
-                                )
-                            except urllib.error.HTTPError:
-                                logger.warning(
-                                    "guild=%s review_pr_internal: inline comments rejected, "
-                                    "retrying without them",
-                                    guild_id,
-                                )
-                                review_data = await _to_thread(
-                                    _gh_api_post,
-                                    f"/repos/{pr_repo}/pulls/{pr_number}/reviews",
-                                    token,
-                                    {"body": summary_text, "event": action, "comments": []},
-                                )
-                                gh_comments = []
-
-                            logger.info(
-                                "guild=%s review_pr_internal: review=%s verdict=%s comments=%d",
-                                guild_id,
-                                review_data.get("id"),
-                                action,
-                                len(gh_comments),
-                            )
-                            result_text = json.dumps(
-                                {
-                                    "pr_url": pr_url,
-                                    "verdict": action,
-                                    "review_id": review_data.get("id"),
-                                    "review_posted": True,
-                                    "inline_comments_posted": len(gh_comments),
-                                    "summary": summary_text[:400],
-                                }
-                            )
-
-                    elif tu.name == "analyze_epic":
-                        repo = inp["repo"]
-                        num = int(inp["issue_number"])
-                        force = inp.get("force", False)
-                        trigger_deep = inp.get("trigger_deep_analysis", False)
-
-                        # Fetch the epic issue
-                        epic = await _to_thread(_gh_api, f"/repos/{repo}/issues/{num}", token)
-                        epic_labels = [l["name"] for l in epic.get("labels", [])]
-
-                        # Safeguard: skip if already reported (unless forced)
-                        if "pm-reported" in epic_labels and not force:
-                            # Check if report was recent (within 7 days)
-                            comments_raw = await _to_thread(
-                                _gh_api,
-                                f"/repos/{repo}/issues/{num}/comments?per_page=50",
-                                token,
-                            )
-                            recent_report = False
-                            for c in reversed(comments_raw):
-                                if c.get("body", "").startswith("## 📋 Epic Status Summary"):
-                                    created = c.get("created_at", "")
-                                    if created:
-                                        from datetime import datetime as dt
-
-                                        report_time = dt.fromisoformat(
-                                            created.replace("Z", "+00:00")
-                                        )
-                                        if (datetime.now(UTC) - report_time) < timedelta(days=7):
-                                            recent_report = True
-                                    break
-                            if recent_report:
-                                result_text = json.dumps(
-                                    {
-                                        "skipped": True,
-                                        "reason": "Report already posted within the last 7 days. Use force=true to override.",
-                                        "epic": num,
-                                    }
-                                )
-                                # Skip to end — result_text is already set
-                            else:
-                                # Label exists but report is stale — proceed
-                                force = True
-
-                        if not ("pm-reported" in epic_labels and not force):
-                            # --- Level 1: Lightweight status fetch ---
-                            # Fetch sub-issues
-                            try:
-                                sub_raw = await _to_thread(
-                                    _gh_api,
-                                    f"/repos/{repo}/issues/{num}/sub_issues?per_page=100",
-                                    token,
-                                )
-                            except urllib.error.HTTPError:
-                                sub_raw = []
-
-                            # Fetch linked PRs (single search, no per-sub-issue queries)
-                            mention_q = urllib.parse.quote(f"repo:{repo} is:pr #{num}")
-                            try:
-                                mention_prs_data = await _to_thread(
-                                    _gh_api,
-                                    f"/search/issues?q={mention_q}&per_page=30",
-                                    token,
-                                )
-                                all_prs = mention_prs_data.get("items", [])
-                            except urllib.error.HTTPError:
-                                all_prs = []
-
-                            # Build lightweight sub-issue summary (no per-issue API calls)
-                            sub_issue_details = []
-                            for sub in sub_raw:
-                                sub_detail = {
-                                    "number": sub["number"],
-                                    "title": sub.get("title", ""),
-                                    "state": sub.get("state", "unknown"),
-                                    "labels": [l["name"] for l in sub.get("labels", [])],
-                                }
-                                sub_issue_details.append(sub_detail)
-
-                            # Analyze completeness
-                            total_subs = len(sub_issue_details)
-                            closed_subs = sum(
-                                1 for s in sub_issue_details if s["state"] == "closed"
-                            )
-                            open_subs = total_subs - closed_subs
-
-                            # Identify basic inconsistencies (no API calls needed)
-                            gaps: list = []
-                            for s in sub_issue_details:
-                                # Closed issue — note it for potential verification
-                                if s["state"] == "closed" and not any(
-                                    f"#{s['number']}" in (p.get("title", "") + p.get("body", ""))
-                                    for p in all_prs
-                                ):
-                                    gaps.append(
-                                        f"Sub-issue #{s['number']} ({s['title']}) is closed but no PR references it"
-                                    )
-
-                            # Determine if deep analysis is recommended
-                            recommend_deep = len(gaps) >= 2 or (
-                                total_subs > 0 and open_subs == 0 and len(all_prs) > 0
-                            )
-
-                            # Build concise status summary
-                            pct = int((closed_subs / total_subs) * 100) if total_subs > 0 else 0
-                            report_lines = [
-                                "## 📋 Epic Status Summary",
-                                "",
-                                f"**Epic:** #{num} — {epic.get('title', '')}",
-                                f"**Checked:** {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}",
-                                "",
-                                f"### Progress: {pct}%",
-                                f"- **Sub-issues:** {total_subs} total — {closed_subs} closed, {open_subs} open",
-                                f"- **Related PRs:** {len(all_prs)} found",
-                            ]
-
-                            if gaps:
-                                report_lines.append(f"- **Potential gaps:** {len(gaps)}")
-                                report_lines.append("")
-                                report_lines.append("### ⚠️ Gaps")
-                                for g in gaps[:10]:
-                                    report_lines.append(f"- {g}")
-                            else:
-                                report_lines.append("- **Gaps:** None detected")
-
-                            report_lines.append("")
-                            if total_subs > 0 and open_subs == 0:
-                                report_lines.append(
-                                    "✅ All sub-issues closed. Epic may be ready to finalize."
-                                )
-                            report_lines.append("")
-                            report_lines.append(
-                                "*Level 1 status check. Use `trigger_deep_analysis` for "
-                                "code-level review.*"
-                            )
-
-                            report_body = "\n".join(report_lines)
-
-                            # Post the status summary as a comment
-                            await _to_thread(
-                                _gh_api_post,
-                                f"/repos/{repo}/issues/{num}/comments",
-                                token,
-                                {"body": report_body},
-                            )
-
-                            # Add pm-reported label (create if needed)
-                            try:
-                                await _to_thread(
-                                    _gh_api_post,
-                                    f"/repos/{repo}/issues/{num}/labels",
-                                    token,
-                                    {"labels": ["pm-reported"]},
-                                )
-                            except urllib.error.HTTPError:
-                                pass  # label may already exist or lack permission
-
-                            # Gap issue auto-filing is intentionally disabled: the gap
-                            # detection above uses naive substring matching against PR
-                            # titles/bodies, which is prone to false positives and isn't
-                            # reliable enough to drive automatic issue creation. The
-                            # `file_gap_issues` parameter is kept for backward
-                            # compatibility but no longer files anything.
-                            filed_issues: list = []
-
-                            # Build deep analysis task description if triggered
-                            deep_analysis_task_id = None
-                            if trigger_deep and recommend_deep:
-                                # Level 2: Create a worker task for deep code analysis
-                                deep_desc = (
-                                    f"Deep code analysis for epic #{num} in {repo}.\n\n"
-                                    f"## Context\n"
-                                    f"Epic: {epic.get('title', '')}\n"
-                                    f"Sub-issues: {total_subs} ({closed_subs} closed, {open_subs} open)\n"
-                                    f"Related PRs: {', '.join('#' + str(p['number']) for p in all_prs[:15])}\n\n"
-                                    f"## Instructions\n"
-                                    f"1. Check out each related PR branch and review the code changes\n"
-                                    f"2. Compare implementations against the requirements in each sub-issue\n"
-                                    f"3. Identify: bugs, missing functionality, architectural issues, "
-                                    f"test gaps\n"
-                                    f"4. Post detailed findings as a comment on epic #{num}\n"
-                                    f"5. If bugs are found, file individual issues with 'bug' label\n\n"
-                                    f"## Gaps already identified (Level 1)\n"
-                                )
-                                for g in gaps:
-                                    deep_desc += f"- {g}\n"
-
-                                # Store the description for the foreman to use with assign_task
-                                # We return it in the result so the foreman can create+assign
-                                deep_analysis_task_id = "pending_assignment"
-
-                            result_text = json.dumps(
-                                {
-                                    "epic": num,
-                                    "repo": repo,
-                                    "level": 1,
-                                    "report_posted": True,
-                                    "sub_issues_total": total_subs,
-                                    "sub_issues_closed": closed_subs,
-                                    "sub_issues_open": open_subs,
-                                    "related_prs": len(all_prs),
-                                    "gaps_found": len(gaps),
-                                    "gaps": gaps[:10],
-                                    "issues_filed": filed_issues,
-                                    "all_complete": total_subs > 0 and open_subs == 0,
-                                    "recommend_deep_analysis": recommend_deep,
-                                    "deep_analysis_triggered": deep_analysis_task_id is not None,
-                                    "deep_analysis_description": (
-                                        deep_desc if deep_analysis_task_id else None
-                                    ),
-                                }
-                            )
-
+                    result_text, is_error = await tool.handler(
+                        inp, guild_id, token, username
+                    )
                 except urllib.error.HTTPError as exc:
                     result_text = f"GitHub API error: {exc.code} {exc.reason}"
                     is_error = True
@@ -3251,85 +3472,13 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     result_text = f"GitHub error: {exc}"
                     is_error = True
 
-        # DNSid verification tools — signing is intentionally application-owned.
-        if tu.name == "dnsid":
-            logger.info("dnsid tool: input=%s", inp)
-            command = inp.get("command", "")
-            if not command:
-                result_text = "dnsid requires command (resolve or verify)"
-                is_error = True
-            else:
-                try:
-                    result_text = json.dumps(await _run_dnsid(command, inp))
-                except (ValueError, RuntimeError) as exc:
-                    result_text = str(exc)
-                    is_error = True
-                except Exception as exc:
-                    result_text = f"dnsid {command} failed: {exc}"
-                    is_error = True
-
-        # A2A agent call — no GitHub token or DB required
-        if tu.name == "call_agent":
-            logger.info("call_agent: input=%s", inp)
-            agent_url = (inp.get("agent_url") or "").rstrip("/")
-            skill_id = inp.get("skill") or ""
-            params = inp.get("params") or {}
-            if not agent_url:
-                result_text = "call_agent requires agent_url"
-                is_error = True
-            elif not skill_id:
-                result_text = "call_agent requires skill"
-                is_error = True
-            else:
-                try:
-                    card_url = f"{agent_url}/.well-known/agent.json"
-                    card = await _to_thread(_fetch_agent_card, card_url)
-                    logger.debug("call_agent: fetched agent card from %s: %s", card_url, card)
-                    skills = card.get("skills", [])
-                    skill_ids = [s.get("id", "") for s in skills]
-                    if skills and skill_id not in skill_ids:
-                        result_text = (
-                            f"Skill {skill_id!r} not found on agent at {agent_url}. "
-                            f"Available skills: {', '.join(skill_ids)}"
-                        )
-                        is_error = True
-                    else:
-                        task_body = json.dumps(
-                            {
-                                "jsonrpc": "2.0",
-                                "method": "tasks/send",
-                                "params": {
-                                    "skill_id": skill_id,
-                                    "message": {
-                                        "parts": [{"type": "text", "text": json.dumps(params)}]
-                                    },
-                                },
-                                "id": 1,
-                            }
-                        ).encode()
-                        response = await _to_thread(
-                            _post_agent_task,
-                            f"{agent_url}/jsonrpc",
-                            task_body,
-                        )
-                        result_text = json.dumps(
-                            {
-                                "agent_url": agent_url,
-                                "skill": skill_id,
-                                "agent_name": card.get("name", ""),
-                                "response": response,
-                            }
-                        )
-                except urllib.error.HTTPError as exc:
-                    result_text = f"Agent HTTP error {exc.code}: {exc.reason}"
-                    is_error = True
-                except Exception as exc:
-                    result_text = f"Agent call failed: {exc}"
-                    is_error = True
+        else:  # _CTX_NONE
+            result_text, is_error = await tool.handler(inp, guild_id)
 
     except Exception as exc:
         result_text = f"Tool {tu.name} failed: {exc}"
         is_error = True
+
     finally:
         _api_call_log = _api_calls_ctx.get([])
         _api_calls_ctx.reset(_ctx_token)
@@ -3337,7 +3486,11 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
     # Surface GitHub request IDs in error responses so failures can be correlated
     # with provider-side logs without digging through the database.
     if is_error and _api_call_log:
-        req_ids = [c["x_github_request_id"] for c in _api_call_log if c.get("x_github_request_id")]
+        req_ids = [
+            c["x_github_request_id"]
+            for c in _api_call_log
+            if c.get("x_github_request_id")
+        ]
         if req_ids:
             result_text = f"{result_text}\n[x-github-request-id: {', '.join(req_ids)}]"
 
@@ -3347,3 +3500,10 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
     if _api_call_log:
         block["api_calls"] = _api_call_log
     return block
+
+
+# ---------------------------------------------------------------------------
+# Dead code removed: the old elif dispatch chain that used to live here has been
+# replaced by the ForemanTool registry above. If you are looking for the old
+# _exec_one_tool body, use `git log -p` to find it.
+# ---------------------------------------------------------------------------
