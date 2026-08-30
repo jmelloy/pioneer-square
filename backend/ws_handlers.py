@@ -42,6 +42,7 @@ from sqlalchemy import delete, func, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from task_lifecycle import TERMINAL_STATES
 from util.tasks import spawn
 from utils import worker_display_name
 from worker_lifecycle import signal_stale_worker_on_join
@@ -75,7 +76,6 @@ from ws_types import (
 
 logger = logging.getLogger(__name__)
 
-_TERMINAL_STATES = ("done", "failed", "cancelled", "error")
 
 # Terminal-output "levels" (see worker.py LEVEL_* constants) whose lines are
 # actual agent/Claude output worth mirroring into a task's Discord stream
@@ -925,7 +925,7 @@ async def handle_task_update(ctx: WSContext, msg: TaskUpdateMsg) -> None:
         update_values["pr_repo"] = pr_repo
     if update_values:
         await ctx.db.exec(update(Task).where(col(Task.id) == task_id).values(**update_values))
-        if update_values.get("state") in _TERMINAL_STATES:
+        if update_values.get("state") in TERMINAL_STATES:
             await LockService(ctx.db).release(f"task:{task_id}")
         await ctx.db.commit()
     await broadcast_msg(ctx.guild_id, msg, exclude=ctx.websocket)
@@ -934,7 +934,7 @@ async def handle_task_update(ctx: WSContext, msg: TaskUpdateMsg) -> None:
         ensure_poll_loop(ctx.guild_id)
     # Free the task's Discord stream buffer once it reaches a terminal state
     # (failed/cancelled/error), draining any tail output first.
-    if update_values.get("state") in _TERMINAL_STATES:
+    if update_values.get("state") in TERMINAL_STATES:
         spawn(
             discord_notifier.flush_task_stream(task_id),
             name=f"discord.stream-flush:{task_id}",
@@ -1193,13 +1193,13 @@ async def handle_task_followup_done(ctx: WSContext, msg: TaskFollowupDoneMsg) ->
         # Move to the worker-reported post-run state unless task is already terminal.
         await ctx.db.exec(
             update(Task)
-            .where(col(Task.id) == task_id, col(Task.state).not_in(_TERMINAL_STATES))
+            .where(col(Task.id) == task_id, col(Task.state).not_in(list(TERMINAL_STATES)))
             .values(**pr_update, state=next_state_fud)
         )
         if pr_update:
             await ctx.db.exec(
                 update(Task)
-                .where(col(Task.id) == task_id, col(Task.state).in_(_TERMINAL_STATES))
+                .where(col(Task.id) == task_id, col(Task.state).in_(list(TERMINAL_STATES)))
                 .values(**pr_update)
             )
         await LockService(ctx.db).release(f"task:{task_id}")

@@ -63,6 +63,7 @@ from models import (
 from oauth import FRONTEND_URL
 from sqlalchemy import func, update
 from sqlmodel import col, select
+from task_lifecycle import TERMINAL_STATES
 from util.tasks import spawn
 from ws_types import TaskCancelMsg, TaskCreatedMsg, TaskUpdateMsg
 
@@ -562,7 +563,7 @@ async def _cmd_cancel(interaction_token: str, guild_slug: str, task_id: str) -> 
                 return
 
             worker_id, state = row
-            if state in ("done", "failed", "cancelled"):
+            if state in TERMINAL_STATES:
                 await _send_followup(
                     interaction_token, content=f"Task `{task_id}` is already `{state}`."
                 )

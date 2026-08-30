@@ -123,14 +123,14 @@ async def _sweep_threads_once(guild_id: str) -> dict[str, int]:
         ).all()
         orphaned_cleaned = 0
         if dead_thread_ids:
-            from foreman.constants import _TERMINAL_STATES  # noqa: PLC0415
+            from task_lifecycle import TERMINAL_STATES  # noqa: PLC0415
 
             orphaned_tasks = (
                 await db.exec(
                     select(Task).where(
                         col(Task.guild_id) == guild_pk,
                         col(Task.thread_id).in_(dead_thread_ids),
-                        ~col(Task.state).in_(list(_TERMINAL_STATES)),
+                        ~col(Task.state).in_(list(TERMINAL_STATES)),
                     )
                 )
             ).all()

@@ -7,8 +7,9 @@ import json
 from datetime import date, datetime
 from typing import Any
 
+from task_lifecycle import TERMINAL_STATES
+
 from .constants import (
-    _TERMINAL_STATES,
     MAX_HISTORY_MESSAGES,
     MAX_TOOL_RESULT_CHARS,
 )
@@ -185,7 +186,7 @@ def _summarize_task(task: dict, cutoff_ts: float) -> dict | None:
     ``deleted_at`` is stamped at finalize time, so it *is* the completion instant.
     """
     state = task.get("state", "")
-    if state not in _TERMINAL_STATES:
+    if state not in TERMINAL_STATES:
         return task
     deleted_at = task.get("deleted_at")
     if deleted_at:
