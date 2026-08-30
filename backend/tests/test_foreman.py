@@ -1113,7 +1113,13 @@ class TestExecToolsDispatching:
             task = session.execute(select(Task).where(col(Task.id) == "t-badtool1")).scalar_one()
         assert task.tool == "claude", "Task tool must be unchanged after a rejected override"
 
-    async def test_send_followup_model_override_rejected_when_not_in_catalog(self, db_session):
+    async def test_send_followup_model_input_is_ignored(self, db_session):
+        """model= in send_followup input is not in the schema and is ignored.
+
+        The refactor (issue #1235) removed inp.get("model") from send_followup so
+        that the schema (which exposes tier, not model) is the single source of truth.
+        Passing model= has no effect; the follow-up dispatches successfully.
+        """
         insert_guild(db_session, "g-followup-badmodel")
         insert_worker(
             db_session,
@@ -1145,15 +1151,17 @@ class TestExecToolsDispatching:
                         {
                             "task_id": "t-badmodel1",
                             "instructions": "Retry",
+                            # model= is not in the schema; it is ignored by the handler.
                             "model": "not-a-real-model",
+                            "tier": "standard",
                         },
                     )
                 ],
             )
-        content = results[0]["content"]
-        assert "not available" in content.lower()
+        # model= input is ignored; follow-up succeeds
+        assert not results[0].get("is_error"), f"Unexpected error: {results[0]['content']}"
         followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
-        assert len(followup_msgs) == 0
+        assert len(followup_msgs) == 1
 
     async def test_send_followup_provider_override_persists(self, db_session):
         insert_guild(db_session, "g-followup-provider")
@@ -3105,13 +3113,20 @@ class TestExecToolsResultHandling:
         assert "org/repo#3" in joined and "org/repo#4" in joined
         assert "#5" not in joined
 
-    async def test_empty_result_does_not_crash(self, db_session):
-        """A tool that produces an empty string result is valid."""
+    async def test_unknown_tool_returns_helpful_error(self, db_session):
+        """An unknown tool name returns an is_error result listing available tools.
+
+        The ForemanTool registry (issue #1235) replaced the old dispatch chain.
+        Unrecognised tool names now produce a descriptive error instead of silently
+        returning empty content.
+        """
         insert_guild(db_session, "g-empty-res")
-        # unknown tool returns empty content — verify no exception
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
             results = await exec_tools("g-empty-res", [_fake_tool_use("unknown_tool_xyz", {})])
-        assert results[0]["content"] == ""
+        r = results[0]
+        assert r.get("is_error"), "Unknown tool must produce an error result"
+        assert "unknown_tool_xyz" in r["content"]
+        assert "available" in r["content"].lower()
 
     async def test_large_result_is_a_string(self, db_session):
         """Even a large JSON result from get_task_status must be a plain string."""
