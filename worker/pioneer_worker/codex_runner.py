@@ -12,10 +12,28 @@ import tempfile
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+from .runner_types import RunRequest, RunResult, StopReason  # pyright: ignore[reportMissingImports]
+
 logger = logging.getLogger(__name__)
 
 EmitFn = Callable[..., Awaitable[None]]  # emit(line: str, detail: dict | None = None)
 OnProcFn = Callable[["CodexProcess"], None]
+
+# Codex's own vocabulary is already small and closed (see _run_codex_once), but
+# it is still codex's, not Pioneer Square's — map it explicitly rather than
+# assuming it'll never grow a fourth value.
+_STOP_REASON_MAP: dict[str, StopReason] = {
+    "success": StopReason.SUCCESS,
+    "error_during_execution": StopReason.ERROR,
+    "no_events": StopReason.NO_EVENTS,
+}
+
+
+def _map_stop_reason(raw: str) -> StopReason:
+    try:
+        return _STOP_REASON_MAP[raw]
+    except KeyError:
+        raise ValueError(f"codex runner produced unknown stop_reason {raw!r}") from None
 
 
 class CodexProcess:
@@ -32,10 +50,8 @@ class CodexProcess:
         return False
 
     async def terminate(self) -> None:
-        try:
+        with contextlib.suppress(ProcessLookupError):
             self.proc.terminate()
-        except ProcessLookupError:
-            pass
 
 
 def parse_codex_event(event: dict) -> tuple[str | None, dict | None]:
@@ -285,3 +301,82 @@ async def _run_codex_once(
                     os.close(fd)
         with contextlib.suppress(OSError):
             os.unlink(last_message_path)
+
+
+class CodexRunner:
+    """Codex adapter for the shared Runner seam."""
+
+    credential_hint = "OPENAI_API_KEY"
+
+    def __init__(
+        self,
+        *,
+        codex_path: str = "codex",
+        codex_args: list[str] | None = None,
+        openai_api_key: str | None = None,
+    ) -> None:
+        self.codex_path = codex_path
+        self.codex_args = codex_args
+        self.openai_api_key = openai_api_key
+
+    @property
+    def binary_path(self) -> str:
+        return self.codex_path
+
+    async def run(self, req: RunRequest) -> RunResult:
+        success, stop_reason, last_text, session_id = await run_codex_auto(
+            req.description,
+            req.cwd,
+            emit=req.emit,
+            codex_path=self.codex_path,
+            codex_args=self.codex_args,
+            openai_api_key=self.openai_api_key,
+            model=req.model,
+            resume_session_id=req.resume_session_id,
+            env=req.env,
+            on_proc=req.on_proc,
+        )
+        return RunResult(
+            success=success,
+            stop_reason=_map_stop_reason(stop_reason),
+            final_message=last_text,
+            session_id=session_id,
+            raw_stop_reason=stop_reason,
+        )
+
+    async def probe_credentials(self, env: dict[str, str]) -> bool:
+        if env.get("OPENAI_API_KEY") or self.openai_api_key:
+            return True
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self.codex_path,
+                "doctor",
+                "--json",
+                "--summary",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env=env,
+            )
+        except FileNotFoundError as exc:
+            logger.warning("codex binary not found at %r: %s", self.codex_path, exc)
+            return False
+        except Exception as exc:
+            logger.warning("codex doctor spawn failed: %s", exc)
+            return False
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=20.0)
+        except TimeoutError:
+            logger.warning("codex doctor timed out after 20s; killing pid=%s", proc.pid)
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+                await proc.wait()
+            return False
+        try:
+            parsed = json.loads(stdout.decode(errors="replace").strip())
+        except json.JSONDecodeError:
+            return False
+        return parsed.get("checks", {}).get("auth.credentials", {}).get("status") == "ok"
+
+    async def list_models(self, env: dict[str, str]) -> list[dict]:
+        del env
+        return []

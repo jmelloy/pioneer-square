@@ -44,13 +44,13 @@ def _make_origin(tmp_path: Path) -> str:
 
 
 async def test_auth_env_carries_token_out_of_argv_and_config():
-    env = git_ops._auth_env("ghp_secret123")
+    env = git_ops._auth_env("fake_token_for_tests")
     assert env is not None
     # The token rides in a git config value delivered by environment, so it is
     # not in the command line and not written to any repo's config file.
     assert env["GIT_CONFIG_COUNT"] == "1"
     assert env["GIT_CONFIG_KEY_0"].startswith("http.https://github.com/")
-    expected = base64.b64encode(b"x-access-token:ghp_secret123").decode()
+    expected = base64.b64encode(b"x-access-token:fake_token_for_tests").decode()
     assert env["GIT_CONFIG_VALUE_0"] == f"Authorization: Basic {expected}"
     assert git_ops._auth_env(None) is None
     assert git_ops._auth_env("") is None
@@ -72,8 +72,8 @@ async def test_run_git_passes_token_only_to_that_invocation(tmp_path):
         return _P()
 
     with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
-        await git_ops.run_git(["fetch", "origin"], cwd=str(tmp_path), token="ghp_secret123")
-    assert "ghp_secret123" not in " ".join(str(a) for a in captured["argv"])
+        await git_ops.run_git(["fetch", "origin"], cwd=str(tmp_path), token="fake_token_for_tests")
+    assert "fake_token_for_tests" not in " ".join(str(a) for a in captured["argv"])
     assert captured["env"]["GIT_CONFIG_COUNT"] == "1"
 
     with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
@@ -95,11 +95,11 @@ async def test_clone_does_not_persist_the_token_in_git_config(tmp_path):
         return await real_run_git(args, cwd=cwd, token=token)
 
     with patch.object(git_ops, "run_git", side_effect=run_git):
-        path = await git_ops.ensure_repo(str(repos_dir), "owner/repo", token="ghp_secret123")
+        path = await git_ops.ensure_repo(str(repos_dir), "owner/repo", token="fake_token_for_tests")
 
     assert path is not None
     config = (Path(path) / ".git" / "config").read_text()
-    assert "ghp_secret123" not in config
+    assert "fake_token_for_tests" not in config
     assert _git("config", "--get", "remote.origin.url", cwd=path) == origin
 
 

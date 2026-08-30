@@ -33,6 +33,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import config as config_mod
+from .runner_types import StopReason  # pyright: ignore[reportMissingImports]
 from .worker import Worker, _now_iso
 
 logger = logging.getLogger(__name__)
@@ -120,8 +121,8 @@ class MockWorker(Worker):
             try:
                 await asyncio.wait_for(self._shutdown_event.wait(), timeout=self.cfg.pull_interval)
                 return
-            except TimeoutError:
-                pass
+            except TimeoutError as exc:
+                logger.debug("[mock] idle pull interval elapsed: %s", exc)
             try:
                 pending = await self._fetch_pending_tasks()
                 for task in pending:
@@ -204,6 +205,7 @@ class MockWorker(Worker):
             finally:
                 self._task_outcomes.pop(task_id, None)
 
+        assert outcome is not None
         await self._finalize_task(task_id, agent, outcome, desc, branch, is_followup)
 
     async def _run_script(self, task_id: str, agent, script: list[dict], emit) -> dict | None:
@@ -215,7 +217,10 @@ class MockWorker(Worker):
                 continue
             delay_ms = step.get("delay_ms")
             if delay_ms:
-                await asyncio.sleep(float(delay_ms) / 1000.0)
+                try:
+                    await asyncio.sleep(float(delay_ms) / 1000.0)
+                except (TypeError, ValueError):
+                    logger.warning("[mock] invalid delay_ms: %r", delay_ms)
             if "state" in step:
                 new_state = step["state"]
                 if "activity" in step:
@@ -293,15 +298,22 @@ class MockWorker(Worker):
             stop_reason = outcome.get("stopReason", "mock_failure")
             last_message = outcome.get("lastMessage", "mock failure")
             await self._task_update(task_id, agent=agent, branch=branch, state="failed")
+            # Mirror the real worker (_execute_task): only a NEEDS_INPUT outcome
+            # escalates to a human via type="needs-input". Sending it on every
+            # failure made handle_needs_input look exercised while the branch
+            # production actually takes — a plain error task-update — was not.
             await self._send(
                 {
-                    "type": "needs-input",
+                    "type": (
+                        "needs-input" if stop_reason == StopReason.NEEDS_INPUT else "task-update"
+                    ),
                     "workerId": self.cfg.worker_id,
                     "agentId": agent.agent_id,
                     "taskId": task_id,
                     "description": desc,
                     "branch": branch,
                     "sessionId": "",
+                    "state": "error",
                     "stopReason": stop_reason,
                     "lastMessage": last_message,
                 }
@@ -431,7 +443,10 @@ def _make_handler(worker: MockWorker) -> type[BaseHTTPRequestHandler]:
             self.wfile.write(body)
 
         def _read_json(self) -> dict:
-            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
             if not length:
                 return {}
             try:

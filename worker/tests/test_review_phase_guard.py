@@ -174,13 +174,13 @@ async def test_review_phase_injects_no_pr_instructions(caplog: pytest.LogCapture
 
     async def fake_run_claude(desc, *args, **kwargs):
         captured_desc.append(desc)
-        return True, "end_turn", "done", None
+        return True, "success", "done", None
 
     with (
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
         patch("pioneer_worker.worker.git_ops.get_pr_head_branch", return_value="pr-42-branch"),
         patch("pioneer_worker.worker.git_ops.checkout_pr_worktree", return_value=True),
-        patch("pioneer_worker.worker.github_pr.push_branch", return_value=True),
+        patch("pioneer_worker.worker.github_pr.push_branch", return_value="pushed"),
         patch("pioneer_worker.worker.github_pr.find_existing_pr", return_value=None),
         patch("pioneer_worker.worker.claude_runner.run_claude_auto", side_effect=fake_run_claude),
         patch.dict(os.environ, {}),
@@ -230,7 +230,7 @@ async def test_review_phase_checks_out_pr_branch_via_gh(caplog: pytest.LogCaptur
     slot = worker.agents[0]
 
     async def fake_run_claude(desc, *args, **kwargs):
-        return True, "end_turn", "done", None
+        return True, "success", "done", None
 
     with (
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
@@ -297,7 +297,7 @@ async def test_review_prefers_pr_number_over_issue_number():
     slot = worker.agents[0]
 
     async def fake_run_claude(desc, *args, **kwargs):
-        return True, "end_turn", "done", None
+        return True, "success", "done", None
 
     with (
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
@@ -408,7 +408,7 @@ async def test_review_task_1758_regression_resolves_branch_from_metadata():
     slot = worker.agents[0]
 
     async def fake_run_claude(desc, *args, **kwargs):
-        return True, "end_turn", "done", None
+        return True, "success", "done", None
 
     with (
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),

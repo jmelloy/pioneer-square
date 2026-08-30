@@ -129,7 +129,7 @@ async def test_success_but_no_commits_marks_error(tmp_path):
         patch("pioneer_worker.worker.git_ops.create_worktree", new=AsyncMock(return_value=True)),
         patch(
             "pioneer_worker.worker.pi_runner.run_pi_auto",
-            new=AsyncMock(return_value=(True, "done", "ok", None)),  # agent "succeeded"
+            new=AsyncMock(return_value=(True, "success", "ok", None)),  # agent "succeeded"
         ),
         patch(
             "pioneer_worker.worker.github_pr.push_branch",

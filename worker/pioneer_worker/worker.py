@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import random
@@ -11,11 +12,12 @@ import signal
 import socket
 import string
 from datetime import UTC, datetime
+from typing import cast
 
 import anyio
 import httpx
 
-from . import (
+from . import (  # noqa: F401 - test patch compatibility
     claude_runner,
     codex_runner,
     git_ops,
@@ -27,6 +29,13 @@ from . import (
 )
 from . import config as config_mod
 from .control_api import ControlServer
+from .runner_registry import build as build_runner_registry  # pyright: ignore[reportMissingImports]
+from .runner_types import (  # pyright: ignore[reportMissingImports]
+    ProcessHandle,
+    RunRequest,
+    RunResult,
+    StopReason,
+)
 from .sleep_monitor import SystemSleepMonitor
 from .ws_client import WSClient
 
@@ -88,19 +97,10 @@ REPO_REFRESH_INTERVAL_SECONDS = 20 * 60
 # already re-fetched fresh per task by _task_github_token.
 GITHUB_TOKEN_REFRESH_INTERVAL_SECONDS = 45 * 60
 
-# Env vars that mean "claude has a way to authenticate". A direct key, an OAuth
-# token, a proxy auth token, or a gateway flag that makes claude authenticate
-# through the cloud provider's own credentials instead (this deployment runs
-# claude on Bedrock, so the flag alone is a valid configuration). A tool with
-# none of these and no logged-in CLI is dropped from the available list rather
-# than launched per-task and failed.
-_CLAUDE_CREDENTIAL_KEYS = (
-    "ANTHROPIC_API_KEY",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "ANTHROPIC_AUTH_TOKEN",
-    "CLAUDE_CODE_USE_BEDROCK",
-    "CLAUDE_CODE_USE_VERTEX",
-)
+# Cancelled ids linger only until the cancellation is honoured (see
+# _clear_cancelled); this caps the residual entries for cancels that never
+# match a dispatch, so the set can't grow for the worker's whole lifetime.
+_MAX_CANCELLED_TASKS = 512
 
 
 class Agent:
@@ -118,7 +118,7 @@ class Agent:
     def __init__(self, *, id: str | None = None, name: str | None = None) -> None:
         self.id: str = id if id is not None else _gen_id("a-")
         self.name: str = name if name is not None else _droid_name(self.id)
-        self.current_claude: claude_runner.ClaudeProcess | None = None
+        self.current_claude: ProcessHandle | None = None
         self.current_task_id: str | None = None
         # Last state we told the backend about; resent on WS reconnect so the
         # backend (and frontend) don't show the agent stuck offline.
@@ -180,11 +180,15 @@ class Worker:
         # The authoritative task record lives in the backend.
 
         # Shared queue: all agents drain from here; the listener pushes into it.
-        self.task_queue: asyncio.Queue[dict] = asyncio.Queue()
+        self.task_queue: asyncio.Queue[object] = asyncio.Queue()
         # Guards against re-queueing the same task-id on reconnect or poll.
         self._known_task_ids: set[str] = set()
-        # Tasks cancelled by the foreman or a human; checked before/during execution.
-        self._cancelled_tasks: set[str] = set()
+        # Tasks cancelled by the foreman or a human; checked before/during
+        # execution and cleared once the cancellation has been honoured, so a
+        # later re-assignment of the same id can still run here. Insertion-
+        # ordered (a dict used as an ordered set) so _mark_cancelled can evict
+        # the oldest entry rather than growing for the worker's lifetime.
+        self._cancelled_tasks: dict[str, None] = {}
         # Per-task redirect-instruction queues (SIGTERM + --resume flow).
         self._redirect_queues: dict[str, asyncio.Queue] = {}
         self._interactive_queues: dict[str, asyncio.Queue] = {}
@@ -219,6 +223,7 @@ class Worker:
         # plus API-discovered repos). Never used for task execution — only for
         # telling the backend/UI how many repos this worker can see.
         self._broadcast_repos: list[str] = list(cfg.repos)
+        self._runners = build_runner_registry(cfg)
         # Available tool runners detected at startup (e.g. ["claude", "codex", "pi"]).
         self._available_tools: list[str] = []
         # Per-tool live model catalogs detected at startup. Currently populated
@@ -484,11 +489,9 @@ class Worker:
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
         except TimeoutError:
             logger.warning("gh auth status timed out after 10s")
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 proc.kill()
                 await proc.wait()
-            except ProcessLookupError:
-                pass
             return
 
         output = stdout.decode(errors="replace").strip()
@@ -520,11 +523,9 @@ class Worker:
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=20.0)
         except TimeoutError:
             logger.warning("codex doctor timed out after 20s")
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 proc.kill()
                 await proc.wait()
-            except ProcessLookupError:
-                pass
             return
 
         output = stdout.decode(errors="replace").strip()
@@ -543,27 +544,20 @@ class Worker:
         credential like the others, so an unconfigured pi is dropped instead of
         becoming a task-swallowing default.
         """
+        runner = self._runners.get(name)
+        if runner is None:
+            return False
         env = self._env_for_tool(name)
-        if name == "claude":
-            if any(env.get(k) for k in _CLAUDE_CREDENTIAL_KEYS):
-                return True
-            # Fall back to a locally logged-in CLI (dev machines / keychain).
-            return await self._claude_is_authenticated(env)
-        if name == "codex":
-            if env.get("OPENAI_API_KEY") or self.cfg.openai_api_key:
-                return True
-            # Fall back to a locally logged-in CLI (chatgpt tokens in auth.json).
-            return await self._codex_is_authenticated()
-        if name == "pi":
-            # Pi speaks to ~20 providers via ~35 different env vars, so mirroring
-            # that key list here would drift from it. Instead ask pi: `pi
-            # --list-models` only lists providers whose creds/config are present
-            # in the environment, so a non-empty catalog means pi has something
-            # usable. It doesn't truly auth, but an unconfigured pi lists nothing
-            # and would otherwise launch, fail per-task, and — as the only tool
-            # left when claude/codex are unconfigured — silently swallow tasks.
-            return await self._pi_has_models()
-        return True  # any other tool needs no credentials
+        models = await runner.list_models(env)
+        if models:
+            self._tool_models[name] = models
+        else:
+            self._tool_models.pop(name, None)
+        return await runner.probe_credentials(env)
+
+    def _tool_paths(self) -> dict[str, str]:
+        """Each registered runner's configured binary path, keyed by tool name."""
+        return {name: runner.binary_path for name, runner in self._runners.items()}
 
     async def _ensure_tools_installed(self) -> None:
         """Install any missing AI coding CLIs before probing PATH for them.
@@ -582,12 +576,7 @@ class Worker:
         )
         if not targets:
             return
-        tool_paths = {
-            "claude": self.cfg.claude_path,
-            "codex": self.cfg.codex_path,
-            "pi": self.cfg.pi_path,
-        }
-        await tool_installer.ensure_tools_installed(targets, tool_paths=tool_paths)
+        await tool_installer.ensure_tools_installed(targets, tool_paths=self._tool_paths())
 
     async def _detect_available_tools(self) -> None:
         """Populate self._available_tools from runner binaries on PATH + credentials.
@@ -610,26 +599,21 @@ class Worker:
             if shutil.which(path):
                 return True
             if os.sep in path or (os.altsep and os.altsep in path):
-                return os.path.isfile(path) and os.access(path, os.X_OK)
+                try:
+                    return os.path.isfile(path) and os.access(path, os.X_OK)
+                except OSError:
+                    return False
             return False
 
-        tool_paths = {
-            "claude": self.cfg.claude_path,
-            "codex": self.cfg.codex_path,
-            "pi": self.cfg.pi_path,
-        }
-        cred_hint = {
-            "claude": " or ".join(_CLAUDE_CREDENTIAL_KEYS),
-            "codex": "OPENAI_API_KEY",
-        }
-        candidates = self.cfg.tools if self.cfg.tools is not None else list(tool_paths)
+        candidates = self.cfg.tools if self.cfg.tools is not None else list(self._runners)
 
         tools: list[str] = []
         for name in candidates:
-            binary = tool_paths.get(name)
-            if binary is None:
+            runner = self._runners.get(name)
+            if runner is None:
                 logger.warning("Unknown tool %r in --tools list; skipping", name)
                 continue
+            binary = runner.binary_path
             if not _is_executable(binary):
                 logger.warning(
                     "Tool %r not found on PATH (checked %r); excluding from available tools",
@@ -642,149 +626,12 @@ class Worker:
                     "Tool %r has no credentials (set %s in the guild env vars); "
                     "excluding from available tools",
                     name,
-                    cred_hint.get(name, "the required credentials"),
+                    runner.credential_hint,
                 )
                 continue
             tools.append(name)
         self._available_tools = tools
         logger.info("Available tools: %s", tools or ["(none)"])
-
-    async def _claude_is_authenticated(self, env: dict[str, str] | None = None) -> bool:
-        """Return True if `claude auth status --json` reports loggedIn=true.
-
-        Works on macOS keychain and Linux. The exit code alone is unreliable
-        (the CLI returns 0 even when not logged in, just emits ``loggedIn:
-        false``), so we parse the JSON. A timeout guards against macOS keychain
-        access prompts that can hang the subprocess indefinitely when invoked
-        without a controlling TTY.
-
-        *env* is claude's scoped environment (see _env_for_tool). Passing it
-        matters: the codex and pi probes already do, and without it a per-tool
-        override that configures claude's auth is invisible to the probe, so a
-        correctly configured tool reads as unauthenticated and gets dropped.
-        """
-        import json as _json
-
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                self.cfg.claude_path,
-                "auth",
-                "status",
-                "--json",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                env=env if env is not None else self._env_for_tool("claude"),
-            )
-        except FileNotFoundError as exc:
-            logger.warning("claude binary not found at %r: %s", self.cfg.claude_path, exc)
-            return False
-        except Exception as exc:
-            logger.warning("claude auth status spawn failed: %s", exc)
-            return False
-
-        try:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
-        except TimeoutError:
-            logger.warning(
-                "claude auth status timed out after 10s — keychain prompt? killing pid=%s",
-                proc.pid,
-            )
-            try:
-                proc.kill()
-                await proc.wait()
-            except ProcessLookupError:
-                pass
-            return False
-
-        raw = stdout.decode(errors="replace").strip()
-        logger.info("claude auth status rc=%s output=%s", proc.returncode, raw[:200])
-        if proc.returncode != 0:
-            return False
-        try:
-            parsed = _json.loads(raw)
-        except _json.JSONDecodeError:
-            # Older claude versions returned plain text; fall back to rc=0 == authed.
-            logger.info("claude auth status output is not JSON; treating rc=0 as authed")
-            return True
-        logged_in = bool(parsed.get("loggedIn"))
-        if logged_in:
-            logger.info(
-                "Claude auth detected (method=%s provider=%s)",
-                parsed.get("authMethod"),
-                parsed.get("apiProvider"),
-            )
-        else:
-            logger.info("claude auth status reports loggedIn=false")
-        return logged_in
-
-    async def _codex_is_authenticated(self) -> bool:
-        """Return True if `codex doctor --json --summary` reports auth configured.
-
-        Mirrors _claude_is_authenticated: the exit code alone doesn't isolate
-        auth (doctor returns 0 with unrelated warnings), so we parse the JSON
-        and read the auth.credentials check's status. A timeout guards against a
-        hung subprocess.
-        """
-        import json as _json
-
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                self.cfg.codex_path,
-                "doctor",
-                "--json",
-                "--summary",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                env=self._env_for_tool("codex"),
-            )
-        except FileNotFoundError as exc:
-            logger.warning("codex binary not found at %r: %s", self.cfg.codex_path, exc)
-            return False
-        except Exception as exc:
-            logger.warning("codex doctor spawn failed: %s", exc)
-            return False
-
-        try:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=20.0)
-        except TimeoutError:
-            logger.warning("codex doctor timed out after 20s; killing pid=%s", proc.pid)
-            try:
-                proc.kill()
-                await proc.wait()
-            except ProcessLookupError:
-                pass
-            return False
-
-        raw = stdout.decode(errors="replace").strip()
-        try:
-            parsed = _json.loads(raw)
-        except _json.JSONDecodeError:
-            logger.warning("codex doctor output is not JSON: %s", raw[:200])
-            return False
-        status = parsed.get("checks", {}).get("auth.credentials", {}).get("status")
-        logger.info("codex doctor auth.credentials status=%s", status)
-        return status == "ok"
-
-    async def _pi_has_models(self) -> bool:
-        """Load the live pi model catalog and return True if any model is usable."""
-        try:
-            models = await pi_runner.list_pi_models(
-                pi_path=self.cfg.pi_path,
-                env=self._env_for_tool("pi"),
-                timeout=20.0,
-            )
-        except FileNotFoundError as exc:
-            logger.warning("pi binary not found at %r: %s", self.cfg.pi_path, exc)
-            return False
-        except Exception as exc:
-            logger.warning("pi --list-models spawn failed: %s", exc)
-            return False
-        if models:
-            self._tool_models["pi"] = models
-        else:
-            self._tool_models.pop("pi", None)
-        logger.info("pi --list-models returned %d model rows", len(models))
-        return bool(models)
 
     # ------------------------------------------------------------------ Control API
     def _status_snapshot(self) -> dict:
@@ -858,6 +705,22 @@ class Worker:
         if task_id in self._cancelled_tasks:
             return f"task {task_id} is cancelled"
         return None
+
+    def _mark_cancelled(self, task_id: str) -> None:
+        """Record *task_id* as cancelled, evicting the oldest entry past the cap."""
+        self._cancelled_tasks.pop(task_id, None)
+        self._cancelled_tasks[task_id] = None
+        while len(self._cancelled_tasks) > _MAX_CANCELLED_TASKS:
+            self._cancelled_tasks.pop(next(iter(self._cancelled_tasks)))
+
+    def _clear_cancelled(self, task_id: str) -> None:
+        """Drop *task_id*'s cancellation once it has been acted on.
+
+        Cancellation applies to the dispatch in flight, not to the task id
+        forever: leaving the entry in place made the worker refuse that task
+        permanently, even on a fresh foreman re-assignment.
+        """
+        self._cancelled_tasks.pop(task_id, None)
 
     async def _reject_assignment(self, task_id: str, reason: str) -> None:
         logger.warning("Rejecting task %s: %s", task_id, reason)
@@ -1019,7 +882,10 @@ class Worker:
             )
             return
 
-        delivered = await target.current_claude.send_message(text)
+        handle = target.current_claude
+        if handle is None:
+            return
+        delivered = await handle.send_message(text)
         if delivered:
             await self._emit(f"Injected into {target.current_task_id}: {text[:80]}")
         else:
@@ -1185,10 +1051,8 @@ class Worker:
         if self._shutdown_event.is_set():
             # User pressed Ctrl-C twice — fall back to default handler.
             logger.warning("Received %s during shutdown — forcing exit", sig.name)
-            try:
+            with contextlib.suppress(NotImplementedError, RuntimeError):
                 loop.remove_signal_handler(sig)
-            except (NotImplementedError, RuntimeError):
-                pass
             os.kill(os.getpid(), sig)
             return
         logger.info(
@@ -1535,6 +1399,7 @@ class Worker:
                     if not task_id:
                         continue
                     logger.info("Finalize signal for task %s — releasing worktree", task_id)
+                    self._clear_cancelled(task_id)
                     await self._release_task_worktrees(task_id)
 
                 elif mtype == "task-cancel":
@@ -1544,7 +1409,7 @@ class Worker:
                     if not task_id:
                         continue
                     logger.info("Cancel signal for task %s", task_id)
-                    self._cancelled_tasks.add(task_id)
+                    self._mark_cancelled(task_id)
                     # Kill subprocess if this task is currently running
                     active = next((s for s in self.agents if s.current_task_id == task_id), None)
                     if active and active.current_claude:
@@ -1708,7 +1573,11 @@ class Worker:
         if self.cfg.org:
             org_dir = os.path.join(self.cfg.repos_dir, self.cfg.org)
             if os.path.isdir(org_dir):
-                for entry in os.listdir(org_dir):
+                try:
+                    entries = os.listdir(org_dir)
+                except OSError:
+                    entries = []
+                for entry in entries:
                     repo_full = f"{self.cfg.org}/{entry}"
                     if repo_full not in repos and os.path.isdir(
                         os.path.join(org_dir, entry, ".git")
@@ -1766,9 +1635,12 @@ class Worker:
             self.cfg.s3_paths,
             self.cfg.s3_sync_interval,
         )
+        bucket = self.cfg.s3_bucket
+        if not bucket:
+            return
         # Sync immediately at startup so the most recent session state is captured.
         await s3_uploader.sync_paths(
-            bucket=self.cfg.s3_bucket,
+            bucket=bucket,
             prefix=self.cfg.s3_prefix,
             paths=self.cfg.s3_paths,
         )
@@ -1779,10 +1651,10 @@ class Worker:
                     timeout=self.cfg.s3_sync_interval,
                 )
                 break  # shutdown
-            except TimeoutError:
-                pass
+            except TimeoutError as exc:
+                logger.debug("s3 sync interval elapsed: %s", exc)
             await s3_uploader.sync_paths(
-                bucket=self.cfg.s3_bucket,
+                bucket=bucket,
                 prefix=self.cfg.s3_prefix,
                 paths=self.cfg.s3_paths,
             )
@@ -1797,8 +1669,8 @@ class Worker:
                     timeout=self.cfg.pull_interval,
                 )
                 break  # shutdown event fired
-            except TimeoutError:
-                pass  # normal interval elapsed
+            except TimeoutError as exc:
+                logger.debug("idle pull interval elapsed: %s", exc)
             # Do not poll REST for tasks. Task assignment/replay is owned by
             # the backend over WebSocket; polling here creates a second queueing
             # path inside the worker and can duplicate assignments.
@@ -1835,6 +1707,7 @@ class Worker:
             if task is _SHUTDOWN_SENTINEL:
                 logger.info("Agent %s: shutdown sentinel received; exiting", slot.agent_id)
                 break
+            task = cast(dict, task)
             task_id = task.get("id")
             target_agent_id = task.get("target_agent_id")
             if target_agent_id and target_agent_id != slot.agent_id:
@@ -1842,7 +1715,12 @@ class Worker:
                 await asyncio.sleep(0.1)
                 continue
             if task_id in self._cancelled_tasks:
+                # Dropping this silently left the backend's task in whatever
+                # state it was dispatched in, with no task-rejected to tell the
+                # foreman the work never started.
                 logger.info("Skipping cancelled task %s", task_id)
+                self._clear_cancelled(task_id)
+                await self._reject_assignment(task_id, "task was cancelled before it started")
                 continue
 
             logger.info(
@@ -2111,7 +1989,7 @@ class Worker:
                     resume_session_id = agent.current_claude.session_id
                 agent.current_claude = None
 
-        def _on_proc(proc: claude_runner.ClaudeProcess) -> None:
+        def _on_proc(proc: ProcessHandle) -> None:
             agent.current_claude = proc
 
         # Per-API-call usage captured from the claude stream across all runs of
@@ -2169,42 +2047,66 @@ class Worker:
                     )
             else:
                 current_desc = desc
-                if tool == "claude":
-                    if is_review:
-                        # Review-phase tasks must post findings as GitHub PR review
-                        # comments — NEVER by committing files and opening a new PR.
-                        if pr_repo and pr_number:
-                            _pr_ref = f"https://github.com/{pr_repo}/pull/{pr_number}"
-                            _api_ref = f"repos/{pr_repo}/pulls/{pr_number}"
-                        else:
-                            _pr_ref = "<PR-URL>"
-                            _api_ref = "repos/OWNER/REPO/pulls/NUMBER"
-                        current_desc = (
-                            f"{desc}\n\n"
-                            "IMPORTANT — this is a review-phase task.\n"
-                            "If you are reviewing a pull request:\n"
-                            "  - Post your findings directly as a GitHub PR review using the gh CLI or API.\n"
-                            "  - NEVER create a new branch, commit review findings to files, or open a new PR.\n"
-                            "  - The review is complete when you post it, for example:\n"
-                            f"      gh pr review {_pr_ref} --comment --body '<your findings>'\n"
-                            "    or for APPROVE/REQUEST_CHANGES:\n"
-                            f"      gh pr review {_pr_ref} --approve --body '<comment>'\n"
-                            f"      gh pr review {_pr_ref} --request-changes --body '<what needs fixing>'\n"
-                            "    or via the API for inline comments:\n"
-                            f"      gh api {_api_ref}/reviews \\\n"
-                            "        -f body='...' -f event='COMMENT|APPROVE|REQUEST_CHANGES' \\\n"
-                            "        -f 'comments[][path]=file.py' -f 'comments[][line]=42' \\\n"
-                            "        -f 'comments[][body]=inline comment'\n"
-                            "Do NOT push any commits or open a PR as part of this review.\n"
-                        )
+                if is_review:
+                    # Review-phase tasks must post findings as GitHub PR review
+                    # comments — NEVER by committing files and opening a new PR.
+                    if pr_repo and pr_number:
+                        _pr_ref = f"https://github.com/{pr_repo}/pull/{pr_number}"
+                        _api_ref = f"repos/{pr_repo}/pulls/{pr_number}"
+                    else:
+                        _pr_ref = "<PR-URL>"
+                        _api_ref = "repos/OWNER/REPO/pulls/NUMBER"
+                    current_desc = (
+                        f"{desc}\n\n"
+                        "IMPORTANT — this is a review-phase task.\n"
+                        "If you are reviewing a pull request:\n"
+                        "  - Post your findings directly as a GitHub PR review using the gh CLI or API.\n"
+                        "  - NEVER create a new branch, commit review findings to files, or open a new PR.\n"
+                        "  - The review is complete when you post it, for example:\n"
+                        f"      gh pr review {_pr_ref} --comment --body '<your findings>'\n"
+                        "    or for APPROVE/REQUEST_CHANGES:\n"
+                        f"      gh pr review {_pr_ref} --approve --body '<comment>'\n"
+                        f"      gh pr review {_pr_ref} --request-changes --body '<what needs fixing>'\n"
+                        "    or via the API for inline comments:\n"
+                        f"      gh api {_api_ref}/reviews \\\n"
+                        "        -f body='...' -f event='COMMENT|APPROVE|REQUEST_CHANGES' \\\n"
+                        "        -f 'comments[][path]=file.py' -f 'comments[][line]=42' \\\n"
+                        "        -f 'comments[][body]=inline comment'\n"
+                        "Do NOT push any commits or open a PR as part of this review.\n"
+                    )
 
-                    # plan / ephemeral / automation phases: leave current_desc = desc unchanged
-            success = False
-            stop_reason = "no_events"
-            last_msg = ""
+                # plan / ephemeral / automation phases: leave current_desc = desc unchanged
+            result = RunResult(False, StopReason.NO_EVENTS)
+            success = result.success
+            stop_reason = result.stop_reason
+            last_msg = result.final_message
+            runner = self._runners[tool]
             # Scoped environment for this tool: shared vars + this tool's own set,
             # with the other tools' credentials deliberately excluded.
             tool_env = self._env_for_tool(tool)
+
+            async def _run_current_desc() -> RunResult:
+                return await runner.run(
+                    RunRequest(
+                        description=current_desc,
+                        cwd=primary_wt,
+                        emit=emit,
+                        env=tool_env,
+                        on_usage=_collect_usage,
+                        on_proc=_on_proc,
+                        resume_session_id=resume_session_id,
+                        model=task.get("model") or None,
+                        provider=task.get("provider") or None,
+                    )
+                )
+
+            def _apply_result(run_result: RunResult) -> None:
+                nonlocal result, success, stop_reason, last_msg, resume_session_id
+                result = run_result
+                success = run_result.success
+                stop_reason = run_result.stop_reason
+                last_msg = run_result.final_message
+                resume_session_id = run_result.session_id
 
             if is_interactive:
                 interactive_q: asyncio.Queue = asyncio.Queue()
@@ -2216,67 +2118,8 @@ class Worker:
                 )
                 try:
                     while True:
-                        if tool == "codex":
-                            (
-                                success,
-                                stop_reason,
-                                last_msg,
-                                resume_session_id,
-                            ) = await codex_runner.run_codex_auto(
-                                current_desc,
-                                primary_wt,
-                                emit=emit,
-                                codex_path=self.cfg.codex_path,
-                                codex_args=self.cfg.codex_args,
-                                openai_api_key=self.cfg.openai_api_key,
-                                model=task.get("model") or None,
-                                resume_session_id=resume_session_id,
-                                env=tool_env,
-                                on_proc=_on_proc,
-                            )
-                            agent.current_claude = None
-                        elif tool == "pi":
-                            (
-                                success,
-                                stop_reason,
-                                last_msg,
-                                resume_session_id,
-                            ) = await pi_runner.run_pi_auto(
-                                current_desc,
-                                primary_wt,
-                                emit=emit,
-                                pi_path=self.cfg.pi_path,
-                                model=task.get("model") or self.cfg.pi_model,
-                                provider=(
-                                    task.get("provider")
-                                    or self.cfg.pi_provider
-                                    or self.cfg.provider
-                                ),
-                                on_usage=_collect_usage,
-                                on_proc=_on_proc,
-                                resume_session_id=resume_session_id,
-                                env=tool_env,
-                            )
-                            agent.current_claude = None
-                        else:
-                            (
-                                success,
-                                stop_reason,
-                                last_msg,
-                                resume_session_id,
-                            ) = await claude_runner.run_claude_auto(
-                                current_desc,
-                                primary_wt,
-                                max_turns=self.cfg.claude_max_turns,
-                                emit=emit,
-                                on_proc=_on_proc,
-                                on_usage=_collect_usage,
-                                claude_path=self.cfg.claude_path,
-                                resume_session_id=resume_session_id,
-                                model=task.get("model") or None,
-                                env=tool_env,
-                            )
-                            _capture_session_and_clear()
+                        _apply_result(await _run_current_desc())
+                        _capture_session_and_clear()
 
                         await self._task_update(
                             task_id,
@@ -2291,10 +2134,12 @@ class Worker:
                             lastText=last_msg,
                         )
                         if task_id in self._cancelled_tasks:
+                            self._clear_cancelled(task_id)
                             break
                         await emit(f"[{tool}] Waiting for your next message…", level=LEVEL_WORKER)
                         next_msg = await interactive_q.get()
                         if next_msg is _CANCEL_SENTINEL:
+                            self._clear_cancelled(task_id)
                             break
                         current_desc = str(next_msg)
 
@@ -2310,96 +2155,17 @@ class Worker:
                 return
 
             while True:
-                if tool == "codex":
-                    _codex_model = task.get("model") or None
-                    logger.info(
-                        "Task %s: launching codex in %s (model=%s, resume=%s)",
-                        task_id,
-                        primary_wt,
-                        _codex_model,
-                        resume_session_id,
-                    )
-                    (
-                        success,
-                        stop_reason,
-                        last_msg,
-                        resume_session_id,
-                    ) = await codex_runner.run_codex_auto(
-                        current_desc,
-                        primary_wt,
-                        emit=emit,
-                        codex_path=self.cfg.codex_path,
-                        codex_args=self.cfg.codex_args,
-                        openai_api_key=self.cfg.openai_api_key,
-                        model=_codex_model,
-                        resume_session_id=resume_session_id,
-                        env=tool_env,
-                    )
-                elif tool == "pi":
-                    _pi_model = task.get("model") or self.cfg.pi_model
-                    # Fall back to the worker's generic provider if pi_provider is
-                    # unset, so pi still launches with a provider when the task
-                    # carried none (defensive companion to the backend #1040 fix).
-                    _pi_provider = task.get("provider") or self.cfg.pi_provider or self.cfg.provider
-
-                    logger.info(
-                        "Task %s: launching pi in %s (model=%s provider=%s resume=%s)",
-                        task_id,
-                        primary_wt,
-                        _pi_model,
-                        _pi_provider,
-                        resume_session_id,
-                    )
-                    (
-                        success,
-                        stop_reason,
-                        last_msg,
-                        resume_session_id,
-                    ) = await pi_runner.run_pi_auto(
-                        current_desc,
-                        primary_wt,
-                        emit=emit,
-                        pi_path=self.cfg.pi_path,
-                        model=_pi_model,
-                        provider=_pi_provider,
-                        on_usage=_collect_usage,
-                        on_proc=_on_proc,
-                        resume_session_id=resume_session_id,
-                        env=tool_env,
-                    )
-                    # pi returns its session via the return value, not the
-                    # ClaudeProcess slot; just release the live handle so the
-                    # worker reads as idle again (cancel/redirect used it).
-                    agent.current_claude = None
-                else:
-                    _claude_model = task.get("model") or None
-                    logger.info(
-                        "Task %s: launching claude in %s (max_turns=%s, resume=%s, model=%s)",
-                        task_id,
-                        primary_wt,
-                        self.cfg.claude_max_turns,
-                        resume_session_id,
-                        _claude_model,
-                    )
-                    (
-                        success,
-                        stop_reason,
-                        last_msg,
-                        resume_session_id,
-                    ) = await claude_runner.run_claude_auto(
-                        current_desc,
-                        primary_wt,
-                        max_turns=self.cfg.claude_max_turns,
-                        emit=emit,
-                        on_proc=_on_proc,
-                        on_usage=_collect_usage,
-                        claude_path=self.cfg.claude_path,
-                        resume_session_id=resume_session_id,
-                        model=_claude_model,
-                        env=tool_env,
-                    )
-
-                    _capture_session_and_clear()
+                logger.info(
+                    "Task %s: launching %s in %s (model=%s provider=%s resume=%s)",
+                    task_id,
+                    tool,
+                    primary_wt,
+                    task.get("model") or None,
+                    task.get("provider") or None,
+                    resume_session_id,
+                )
+                _apply_result(await _run_current_desc())
+                _capture_session_and_clear()
                 logger.info(
                     "Task %s: run done success=%s stop=%s session=%s",
                     task_id,
@@ -2409,6 +2175,7 @@ class Worker:
                 )
 
                 if task_id in self._cancelled_tasks:
+                    self._clear_cancelled(task_id)
                     await emit("Task cancelled.", level=LEVEL_WORKER)
                     await self._task_update(
                         task_id, agent=agent, state="cancelled", finishedAt=_now_iso()
@@ -2423,6 +2190,7 @@ class Worker:
                     redirect_instr = None
 
                 if redirect_instr is _CANCEL_SENTINEL:
+                    self._clear_cancelled(task_id)
                     await emit("Task cancelled.", level=LEVEL_WORKER)
                     await self._task_update(
                         task_id, agent=agent, state="cancelled", finishedAt=_now_iso()
@@ -2490,8 +2258,7 @@ class Worker:
                         "Task %s: agent reported success but push failed — marking error",
                         task_id,
                     )
-                    success = False
-                    stop_reason = "push_failed"
+                    _apply_result(result.with_stop_reason(StopReason.PUSH_FAILED))
                 elif push_result == "nothing" and success:
                     # The agent claimed success but left no commits — usually it
                     # was blocked (e.g. every tool call denied) and never did the
@@ -2504,8 +2271,7 @@ class Worker:
                         "Agent reported success but produced no commits — flagging for review.",
                         level=LEVEL_WORKER,
                     )
-                    success = False
-                    stop_reason = "no_changes"
+                    _apply_result(result.with_stop_reason(StopReason.NO_CHANGES))
 
                 pr_url = await github_pr.find_existing_pr(
                     branch=branch, worktree_path=primary_wt, token=push_token
@@ -2558,7 +2324,7 @@ class Worker:
 
             else:
                 logger.warning("Task %s failed: %s", task_id, stop_reason)
-                if stop_reason == "needs_input":
+                if stop_reason == StopReason.NEEDS_INPUT:
                     # Human-escalation path: a dedicated message type so the
                     # backend can surface it distinctly (handle_needs_input).
                     await self._task_update(

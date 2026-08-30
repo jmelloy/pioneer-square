@@ -12,7 +12,7 @@ from pioneer_worker.worker import Worker
 
 
 def _make_cfg(**kwargs) -> Config:
-    defaults = dict(
+    defaults: dict = dict(
         backend_url="ws://localhost:8000",
         guild_id="g12345",
         repos=["owner/repo"],
@@ -178,7 +178,7 @@ class TestCredentialGating:
         cfg = _make_cfg(tools=["claude"], claude_path="claude")
         worker = Worker(cfg)
         # No env creds and not locally logged in.
-        worker._claude_is_authenticated = AsyncMock(return_value=False)
+        worker._runners["claude"].probe_credentials = AsyncMock(return_value=False)
         with caplog.at_level(logging.WARNING, logger="pioneer_worker.worker"):
             with patch("shutil.which", return_value="claude"):
                 await worker._detect_available_tools()
@@ -196,27 +196,32 @@ class TestCredentialGating:
 
     async def test_codex_env_key_skips_cli_check(self, monkeypatch):
         # An env OPENAI_API_KEY is a fast-path: codex is included without
-        # running `codex doctor`.
+        # running `codex doctor`. Asserted against the spawn itself rather than
+        # a mocked-out probe method, so the fast path is verified where it now
+        # lives — inside CodexRunner.probe_credentials.
         monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
         worker = Worker(_make_cfg(tools=["codex"], codex_path="codex"))
-        worker._codex_is_authenticated = AsyncMock(return_value=False)
-        with patch("shutil.which", return_value="codex"):
+        spawn = AsyncMock()
+        with (
+            patch("shutil.which", return_value="codex"),
+            patch("asyncio.create_subprocess_exec", spawn),
+        ):
             await worker._detect_available_tools()
         assert "codex" in worker._available_tools
-        worker._codex_is_authenticated.assert_not_awaited()
+        spawn.assert_not_awaited()
 
     async def test_codex_without_key_falls_back_to_cli(self, monkeypatch):
         # No env key → gated on `codex doctor` auth status.
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         cfg = _make_cfg(tools=["codex"], codex_path="codex")
         worker = Worker(cfg)
-        worker._codex_is_authenticated = AsyncMock(return_value=False)
+        worker._runners["codex"].probe_credentials = AsyncMock(return_value=False)
         with patch("shutil.which", return_value="codex"):
             await worker._detect_available_tools()
         assert "codex" not in worker._available_tools
 
         worker2 = Worker(cfg)
-        worker2._codex_is_authenticated = AsyncMock(return_value=True)
+        worker2._runners["codex"].probe_credentials = AsyncMock(return_value=True)
         with patch("shutil.which", return_value="codex"):
             await worker2._detect_available_tools()
         assert "codex" in worker2._available_tools
@@ -225,7 +230,7 @@ class TestCredentialGating:
         # `pi --list-models` returns nothing → dropped.
         cfg = _make_cfg(tools=["pi"], pi_path="pi")
         worker = Worker(cfg)
-        worker._pi_has_models = AsyncMock(return_value=False)
+        worker._runners["pi"].list_models = AsyncMock(return_value=[])
         with patch("shutil.which", return_value="pi"):
             await worker._detect_available_tools()
         assert "pi" not in worker._available_tools
@@ -234,7 +239,7 @@ class TestCredentialGating:
         # `pi --list-models` returns at least one model → configured.
         cfg = _make_cfg(tools=["pi"], pi_path="pi")
         worker = Worker(cfg)
-        worker._pi_has_models = AsyncMock(return_value=True)
+        worker._runners["pi"].list_models = AsyncMock(return_value=[{"id": "model"}])
         with patch("shutil.which", return_value="pi"):
             await worker._detect_available_tools()
         assert "pi" in worker._available_tools
@@ -273,7 +278,7 @@ class TestPerToolEnvScoping:
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         cfg = _make_cfg(tools=["claude"], claude_path="claude")
         worker = Worker(cfg)
-        worker._claude_is_authenticated = AsyncMock(return_value=False)
+        worker._runners["claude"].is_authenticated = AsyncMock(return_value=False)
         # Credential present only in the claude-scoped env (never os.environ).
         worker._tool_env = {"claude": {"CLAUDE_CODE_OAUTH_TOKEN": "claude-tok"}}
         with patch("shutil.which", return_value="claude"):
@@ -426,6 +431,7 @@ class TestEnsureToolsInstalled:
         with patch.object(tool_installer, "ensure_tools_installed", AsyncMock()) as ensure:
             await worker._ensure_tools_installed()
         ensure.assert_awaited_once()
+        assert ensure.await_args is not None
         assert ensure.await_args.args[0] == ["claude"]
 
     async def test_falls_back_to_tools_when_install_tools_unset(self):
@@ -433,6 +439,7 @@ class TestEnsureToolsInstalled:
         worker = Worker(cfg)
         with patch.object(tool_installer, "ensure_tools_installed", AsyncMock()) as ensure:
             await worker._ensure_tools_installed()
+        assert ensure.await_args is not None
         assert ensure.await_args.args[0] == ["codex"]
 
     async def test_falls_back_to_all_tools_when_both_unset(self):
@@ -440,6 +447,7 @@ class TestEnsureToolsInstalled:
         worker = Worker(cfg)
         with patch.object(tool_installer, "ensure_tools_installed", AsyncMock()) as ensure:
             await worker._ensure_tools_installed()
+        assert ensure.await_args is not None
         assert ensure.await_args.args[0] == list(tool_installer.ALL_TOOLS)
 
     async def test_empty_install_tools_skips_installation(self):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -10,6 +11,7 @@ import signal
 from collections.abc import Awaitable, Callable
 
 from .log_format import strip_worktree_prefix
+from .runner_types import RunRequest, RunResult, StopReason  # pyright: ignore[reportMissingImports]
 
 logger = logging.getLogger(__name__)
 
@@ -84,11 +86,9 @@ async def list_pi_models(
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except TimeoutError:
         logger.warning("pi --list-models timed out after %ss; killing pid=%s", timeout, proc.pid)
-        try:
+        with contextlib.suppress(ProcessLookupError):
             proc.kill()
             await proc.wait()
-        except ProcessLookupError:
-            pass
         return []
     if proc.returncode != 0:
         logger.warning("pi --list-models rc=%d", proc.returncode)
@@ -108,9 +108,9 @@ def _signal_group(proc: asyncio.subprocess.Process, sig: signal.Signals) -> None
         return
     try:
         os.killpg(os.getpgid(proc.pid), sig)
-    except ProcessLookupError:
-        pass
-    except Exception:
+    except Exception as exc:
+        if isinstance(exc, ProcessLookupError):
+            return
         logger.debug("pi killpg failed", exc_info=True)
 
 
@@ -183,12 +183,15 @@ def _parse_pi_usage(event: dict) -> dict | None:
     cache_creation = (
         v if v is not None else usage.get("cache_creation_input_tokens", usage.get("cacheWrite", 0))
     )
-    return {
-        "input_tokens": int(input_tokens),
-        "output_tokens": int(output_tokens),
-        "cache_read_input_tokens": int(cache_read),
-        "cache_creation_input_tokens": int(cache_creation),
-    }
+    try:
+        return {
+            "input_tokens": int(input_tokens),
+            "output_tokens": int(output_tokens),
+            "cache_read_input_tokens": int(cache_read),
+            "cache_creation_input_tokens": int(cache_creation),
+        }
+    except (TypeError, ValueError):
+        return None
 
 
 def _event_model(event: dict) -> str | None:
@@ -363,41 +366,6 @@ async def run_pi_auto(
     return success, stop_reason, last_text, session_id
 
 
-async def run_pi_interactive(
-    description: str,
-    cwd: str,
-    *,
-    emit: EmitFn,
-    on_usage: UsageFn | None = None,
-    on_proc: OnProcFn | None = None,
-    pi_path: str = "pi",
-    model: str | None = None,
-    provider: str | None = None,
-    resume_session_id: str | None = None,
-    env: dict[str, str] | None = None,
-) -> tuple[bool, str, str, str | None]:
-    """Run pi RPC as a long-lived interactive session.
-
-    Unlike run_pi_auto, this keeps the RPC process open after ``agent_end`` so
-    callers can send additional prompts via the PiProcess returned to
-    ``on_proc``. It returns only when stdin is closed, the process exits, or the
-    caller terminates the process.
-    """
-    return await _run_pi_once(
-        description,
-        cwd,
-        emit=emit,
-        on_usage=on_usage,
-        on_proc=on_proc,
-        pi_path=pi_path,
-        model=model,
-        provider=provider,
-        resume_session_id=resume_session_id,
-        env=env,
-        interactive=True,
-    )
-
-
 async def _run_pi_once(
     description: str,
     cwd: str,
@@ -484,26 +452,32 @@ async def _run_pi_once(
                 await emit(_text_buf.strip())
             _text_buf = ""
 
-        while True:
+        async def _read_stdout_line() -> bytes | asyncio.LimitOverrunError:
             try:
-                raw = await proc.stdout.readline()  # type: ignore[union-attr]
-            except (asyncio.LimitOverrunError, ValueError) as exc:
+                return await proc.stdout.readline()  # type: ignore[union-attr]
+            except Exception as exc:
+                if isinstance(exc, asyncio.LimitOverrunError):
+                    return exc
+                raise
+
+        while True:
+            raw_or_exc = await _read_stdout_line()
+            if isinstance(raw_or_exc, asyncio.LimitOverrunError):
                 logger.error(
                     "pi[%d] stdout line exceeded StreamReader limit, skipping line: %s",
                     proc.pid,
-                    exc,
+                    raw_or_exc,
                 )
-                await emit(f"[pi] ✗ stdout line too large, skipping: {exc}")
+                await emit(f"[pi] ✗ stdout line too large, skipping: {raw_or_exc}")
                 # Drain the rest of the oversized line one byte at a time so we
                 # stop exactly at the \n and don't consume bytes from the next line.
-                try:
+                with contextlib.suppress(Exception):
                     while True:
                         byte = await proc.stdout.read(1)  # type: ignore[union-attr]
                         if not byte or byte == b"\n":
                             break
-                except Exception:
-                    pass
                 continue
+            raw = raw_or_exc
             if not raw:  # EOF
                 break
             line_str = raw.decode(errors="replace").strip()
@@ -660,10 +634,8 @@ async def _run_pi_once(
         # exception or were cancelled before the normal cleanup above ran.
         if proc is not None and proc.returncode is None:
             if proc.stdin and not proc.stdin.is_closing():
-                try:
+                with contextlib.suppress(Exception):
                     proc.stdin.close()
-                except Exception:
-                    pass
             _signal_group(proc, signal.SIGKILL)
             try:
                 await asyncio.wait_for(proc.wait(), timeout=5.0)
@@ -672,7 +644,81 @@ async def _run_pi_once(
         # Cancel the stderr drain task if it is still running.
         if stderr_task is not None and not stderr_task.done():
             stderr_task.cancel()
-            try:
+            with contextlib.suppress(BaseException):
                 await stderr_task
-            except BaseException:
-                pass
+
+
+_STOP_REASON_MAP: dict[str, StopReason] = {
+    "success": StopReason.SUCCESS,
+    "error_during_execution": StopReason.ERROR,
+    "no_events": StopReason.NO_EVENTS,
+}
+
+
+def _map_stop_reason(raw: str) -> StopReason:
+    try:
+        return _STOP_REASON_MAP[raw]
+    except KeyError:
+        raise ValueError(f"pi runner produced unknown stop_reason {raw!r}") from None
+
+
+class PiRunner:
+    """Pi adapter for the shared Runner seam."""
+
+    # pi resolves credentials per provider, so there is no single env var to name.
+    credential_hint = "a provider credential pi recognises"
+
+    def __init__(
+        self,
+        *,
+        pi_path: str = "pi",
+        model: str | None = None,
+        provider: str | None = None,
+    ) -> None:
+        self.pi_path = pi_path
+        self.model = model
+        self.provider = provider
+
+    @property
+    def binary_path(self) -> str:
+        return self.pi_path
+
+    async def run(self, req: RunRequest) -> RunResult:
+        success, stop_reason, last_text, session_id = await run_pi_auto(
+            req.description,
+            req.cwd,
+            emit=req.emit,
+            on_usage=req.on_usage,
+            on_proc=req.on_proc,
+            pi_path=self.pi_path,
+            model=req.model or self.model,
+            provider=req.provider or self.provider,
+            resume_session_id=req.resume_session_id,
+            env=req.env,
+        )
+        return RunResult(
+            success=success,
+            stop_reason=_map_stop_reason(stop_reason),
+            final_message=last_text,
+            session_id=session_id,
+            raw_stop_reason=stop_reason,
+        )
+
+    async def probe_credentials(self, env: dict[str, str]) -> bool:
+        return bool(await self.list_models(env))
+
+    async def list_models(self, env: dict[str, str]) -> list[dict]:
+        """Live pi catalog, or [] when the binary is missing or won't spawn.
+
+        Tool detection calls this before every credential probe, so a spawn
+        failure has to read as "no models" rather than propagate and abort the
+        whole detection pass.
+        """
+        try:
+            return await list_pi_models(pi_path=self.pi_path, env=env, timeout=20.0)
+        except FileNotFoundError as exc:
+            logger.warning("pi binary not found at %r: %s", self.pi_path, exc)
+            return []
+        except Exception as exc:
+            logger.warning("pi --list-models spawn failed: %s", exc)
+            return []
