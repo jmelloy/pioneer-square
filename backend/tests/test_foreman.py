@@ -53,7 +53,17 @@ from helpers import (
     insert_task,
     insert_worker,
 )
-from models import ForemanTurn, Guild, Lock, Task, TaskEvent, TaskLog, Thread, Worker  # noqa: E402
+from models import (  # noqa: E402
+    ForemanTurn,
+    Guild,
+    Lock,
+    ModelCatalog,
+    Task,
+    TaskEvent,
+    TaskLog,
+    Thread,
+    Worker,
+)
 from sqlalchemy import func, select, update  # noqa: E402
 from sqlmodel import col  # noqa: E402
 
@@ -96,6 +106,21 @@ def _extract_task_id(content: str) -> str:
     match = re.search(r"\bt-\w+\b", content)
     assert match, f"no task id found in tool result: {content!r}"
     return match.group(0)
+
+
+async def _seed_catalog(provider: str, model_ids: list[str]) -> None:
+    now = datetime.now(UTC)
+    async with database_module.AsyncSessionLocal() as db:
+        for mid in model_ids:
+            db.add(
+                ModelCatalog(
+                    provider=provider,
+                    model_id=mid,
+                    display_name=mid,
+                    fetched_at=now,
+                )
+            )
+        await db.commit()
 
 
 def _insert_worker(db_url: str, guild_id: str, worker_id: str) -> None:
@@ -1137,6 +1162,7 @@ class TestExecToolsDispatching:
             tool="claude",
             branch="claude/test-branch-badmodel",
         )
+        await _seed_catalog("anthropic", ["claude-sonnet-4-6"])
         broadcast_calls = []
 
         async def capture(gid, msg):
