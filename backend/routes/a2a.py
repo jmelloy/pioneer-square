@@ -14,6 +14,7 @@ from database import get_db_dep
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
+from foreman import triggers
 from foreman.dnsid_identity import (
     A2A_VERSION,
     DNSID_A2A_EXTENSION_URI,
@@ -351,9 +352,7 @@ async def _handle_a2a(request: Request, db: AsyncSession) -> JSONResponse:
             source="a2a",
         ),
     )
-    from ws_handlers import _trigger_foreman
-
-    await _trigger_foreman(
+    await triggers.trigger_foreman(
         runtime.guild_slug,
         "chat",
         content,

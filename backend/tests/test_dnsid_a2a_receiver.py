@@ -89,7 +89,7 @@ def test_signed_authorized_request_is_accepted_and_replay_rejected(client):
     trigger = AsyncMock()
     with (
         patch("routes.a2a.get_dnsid_runtime", return_value=runtime),
-        patch("ws_handlers._trigger_foreman", trigger),
+        patch("foreman.triggers.trigger_foreman", trigger),
     ):
         first = test_client.post("/", json=_payload(), headers=_headers())
         poll = test_client.post(
@@ -181,7 +181,7 @@ def test_real_dnsid_sdk_signature_is_accepted(client):
     trigger = AsyncMock()
     with (
         patch("routes.a2a.get_dnsid_runtime", return_value=runtime),
-        patch("ws_handlers._trigger_foreman", trigger),
+        patch("foreman.triggers.trigger_foreman", trigger),
     ):
         response = test_client.post("/", content=body, headers=signed.headers)
 

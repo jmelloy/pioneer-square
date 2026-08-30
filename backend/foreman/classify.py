@@ -5,7 +5,7 @@ queued rather than dropped when the foreman is busy — see
 ``foreman.runner.run_foreman_ai``'s ``is_human`` param. Two call sites need to
 agree on this classification, so it lives here as a single source of truth:
 
-- ``ws_handlers._trigger_foreman`` — event-driven dispatch (websocket-origin
+- ``foreman.triggers.trigger_foreman`` — event-driven dispatch (websocket-origin
   triggers: ``chat``, ``task-complete``, ``periodic-check``, etc).
 - ``routes.tasks.create_task_followup`` — the REST follow-up endpoint, which
   has no dispatch ``event`` string of its own but tags its call with the

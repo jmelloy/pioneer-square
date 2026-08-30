@@ -1573,10 +1573,10 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 )
                 created_at = datetime.now(UTC)
                 # Route this task back to the conversation thread it was
-                # created from (#1167) — reuses the thread ws_handlers'
-                # _trigger_foreman already created/touched for this message;
-                # falls back to None for system/webhook-triggered work with
-                # no human user_id.
+                # created from (#1167) — reuses the thread
+                # foreman.triggers.trigger_foreman already created/touched for
+                # this message; falls back to None for system/webhook-triggered
+                # work with no human user_id.
                 thread_id: str | None = None
                 if guild_pk is not None and user_id:
                     thread, _created = await get_or_create_active_thread(

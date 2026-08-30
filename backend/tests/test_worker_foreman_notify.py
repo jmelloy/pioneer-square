@@ -28,8 +28,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 import database as database_module  # noqa: E402
 import discord_notifier  # noqa: E402
 import main as main_module  # noqa: E402
-import ws_handlers  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
+from foreman import triggers  # noqa: E402
 from helpers import insert_guild, insert_task, insert_worker  # noqa: E402
 
 
@@ -85,7 +85,7 @@ def test_worker_online_notifies_foreman(client):
 
     triggered, fake_trigger = _make_trigger_spy()
 
-    with patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger):
+    with patch.object(triggers, "trigger_foreman", new=fake_trigger):
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
             ws.send_json(
                 {
@@ -136,7 +136,7 @@ def test_worker_graceful_offline_notifies_foreman(client):
 
     triggered, fake_trigger = _make_trigger_spy()
 
-    with patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger):
+    with patch.object(triggers, "trigger_foreman", new=fake_trigger):
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
             ws.send_json(
                 {
@@ -171,7 +171,7 @@ def test_abrupt_disconnect_notifies_foreman(client):
 
     triggered, fake_trigger = _make_trigger_spy()
 
-    with patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger):
+    with patch.object(triggers, "trigger_foreman", new=fake_trigger):
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
             ws.send_json(
                 {
@@ -205,7 +205,7 @@ def test_worker_online_does_not_notify_discord(client):
     _triggered, fake_trigger = _make_trigger_spy()
 
     with (
-        patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger),
+        patch.object(triggers, "trigger_foreman", new=fake_trigger),
         patch.object(discord_notifier, "notify", new=AsyncMock()) as mock_notify,
     ):
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
@@ -251,7 +251,7 @@ def test_worker_graceful_offline_does_not_notify_discord(client):
     _triggered, fake_trigger = _make_trigger_spy()
 
     with (
-        patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger),
+        patch.object(triggers, "trigger_foreman", new=fake_trigger),
         patch.object(discord_notifier, "notify", new=AsyncMock()) as mock_notify,
     ):
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
@@ -285,7 +285,7 @@ def test_abrupt_disconnect_does_not_notify_discord(client):
     _triggered, fake_trigger = _make_trigger_spy()
 
     with (
-        patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger),
+        patch.object(triggers, "trigger_foreman", new=fake_trigger),
         patch.object(discord_notifier, "notify", new=AsyncMock()) as mock_notify,
     ):
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
@@ -318,7 +318,7 @@ def test_task_complete_max_turns_notifies_foreman(client):
 
     triggered, fake_trigger = _make_trigger_spy()
 
-    with patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger):
+    with patch.object(triggers, "trigger_foreman", new=fake_trigger):
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
             ws_worker.send_json(
                 {
@@ -394,7 +394,7 @@ def test_task_complete_max_turns_does_not_truncate_last_text(client):
 
     triggered, fake_trigger = _make_trigger_spy()
 
-    with patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger):
+    with patch.object(triggers, "trigger_foreman", new=fake_trigger):
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
             ws_worker.send_json(
                 {
@@ -448,7 +448,7 @@ def test_task_complete_max_turns_caps_last_text_at_4000_chars(client):
 
     triggered, fake_trigger = _make_trigger_spy()
 
-    with patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger):
+    with patch.object(triggers, "trigger_foreman", new=fake_trigger):
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
             ws_worker.send_json(
                 {
@@ -506,7 +506,7 @@ def test_followup_done_max_turns_does_not_truncate_last_text(client):
 
     triggered, fake_trigger = _make_trigger_spy()
 
-    with patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger):
+    with patch.object(triggers, "trigger_foreman", new=fake_trigger):
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
             ws_worker.send_json(
                 {
@@ -558,7 +558,7 @@ def test_followup_done_max_turns_caps_last_text_at_4000_chars(client):
 
     triggered, fake_trigger = _make_trigger_spy()
 
-    with patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger):
+    with patch.object(triggers, "trigger_foreman", new=fake_trigger):
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
             ws_worker.send_json(
                 {
@@ -620,7 +620,7 @@ def test_task_update_failed_notifies_discord(client):
     _triggered, fake_trigger = _make_trigger_spy()
 
     with (
-        patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger),
+        patch.object(triggers, "trigger_foreman", new=fake_trigger),
         patch.object(discord_notifier, "notify_existing_thread", new=AsyncMock()) as mock_notify,
     ):
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
@@ -672,7 +672,7 @@ def test_task_update_cancelled_notifies_discord(client):
     _triggered, fake_trigger = _make_trigger_spy()
 
     with (
-        patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger),
+        patch.object(triggers, "trigger_foreman", new=fake_trigger),
         patch.object(discord_notifier, "notify_existing_thread", new=AsyncMock()) as mock_notify,
     ):
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
@@ -740,7 +740,7 @@ def test_task_update_error_notifies_discord_and_foreman(client):
     triggered, fake_trigger = _make_trigger_spy()
 
     with (
-        patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger),
+        patch.object(triggers, "trigger_foreman", new=fake_trigger),
         patch.object(discord_notifier, "notify_existing_thread", new=AsyncMock()) as mock_notify,
     ):
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
@@ -807,7 +807,7 @@ def test_task_update_working_does_not_notify_discord(client):
     _triggered, fake_trigger = _make_trigger_spy()
 
     with (
-        patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger),
+        patch.object(triggers, "trigger_foreman", new=fake_trigger),
         patch.object(discord_notifier, "notify_existing_thread", new=AsyncMock()) as mock_notify,
     ):
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
@@ -858,7 +858,7 @@ def test_worker_online_not_sent_to_foreign_guild(client):
 
     triggered, fake_trigger = _make_trigger_spy()
 
-    with patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger):
+    with patch.object(triggers, "trigger_foreman", new=fake_trigger):
         # Worker mistakenly (or maliciously) connects to guild_b's WebSocket
         with test_client.websocket_connect(f"/ws/{guild_b}") as ws:
             ws.send_json(
@@ -908,7 +908,7 @@ def test_worker_offline_not_sent_to_foreign_guild_on_disconnect(client):
 
     triggered, fake_trigger = _make_trigger_spy()
 
-    with patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger):
+    with patch.object(triggers, "trigger_foreman", new=fake_trigger):
         # Worker connects to the wrong guild
         with test_client.websocket_connect(f"/ws/{guild_b}") as ws:
             ws.send_json(
@@ -946,7 +946,7 @@ def test_worker_online_fires_for_correct_guild(client):
 
     triggered, fake_trigger = _make_trigger_spy()
 
-    with patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger):
+    with patch.object(triggers, "trigger_foreman", new=fake_trigger):
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
             ws.send_json(
                 {

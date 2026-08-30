@@ -80,6 +80,7 @@ from discord.auth import (
     strip_foreman_role_mention,
 )
 from discord.gateway import gateway_message_queue
+from foreman import triggers
 
 logger = logging.getLogger(__name__)
 
@@ -587,7 +588,7 @@ async def _dispatch_author_scoped(message: dict, content: str, reply_channel_id:
 
     Whichever list survives, the most recently created project is used as the
     trigger target (a single Foreman trigger is inherently scoped to one
-    project — see ``_trigger_foreman``), with the rest listed in the forwarded
+    project — see ``foreman.triggers.trigger_foreman``), with the rest listed in the forwarded
     message so the Foreman can answer with context spanning all of them
     rather than just the one it's replying from. Never raises.
     """
@@ -728,9 +729,8 @@ async def _forward_to_foreman(
         return
 
     from foreman.runner import reset_foreman_poll  # noqa: PLC0415
-    from ws_handlers import _trigger_foreman  # noqa: PLC0415
 
-    await _trigger_foreman(
+    await triggers.trigger_foreman(
         guild_slug,
         "chat",
         human_message,
@@ -799,7 +799,7 @@ async def _persist_inbound_message(
     broadcast it over WS so the frontend chat panel shows it live, tagged
     ``source="discord"``. Best-effort — a failure here must not stop the
     message from reaching the Foreman, so the caller wraps this call in its
-    own try/except and forwards to ``_trigger_foreman`` regardless.
+    own try/except and forwards to ``foreman.triggers.trigger_foreman`` regardless.
     """
     from auth_deps import get_guild_pk  # noqa: PLC0415
     from database import AsyncSessionLocal  # noqa: PLC0415

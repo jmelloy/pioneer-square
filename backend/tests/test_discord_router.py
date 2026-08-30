@@ -140,7 +140,7 @@ async def test_route_inbound_message_tags_task_thread_reply(client):
 
     with (
         patch.object(router, "_persist_inbound_message", new=AsyncMock()),
-        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.triggers.trigger_foreman", new=AsyncMock()) as mock_trigger,
         patch("foreman.runner.reset_foreman_poll"),
     ):
         await router._route_inbound_message(
@@ -167,7 +167,7 @@ async def test_route_inbound_message_no_tag_for_general_chat(client):
 
     with (
         patch.object(router, "_persist_inbound_message", new=AsyncMock()),
-        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.triggers.trigger_foreman", new=AsyncMock()) as mock_trigger,
         patch("foreman.runner.reset_foreman_poll"),
     ):
         await router._route_inbound_message(
@@ -200,7 +200,7 @@ async def test_route_inbound_message_auto_redirects_working_task(client):
         patch(
             "foreman.tools.exec_tools", new=AsyncMock(return_value=[{"content": "ok"}])
         ) as mock_exec,
-        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.triggers.trigger_foreman", new=AsyncMock()) as mock_trigger,
         patch("foreman.runner.reset_foreman_poll"),
     ):
         await router._route_inbound_message(
@@ -242,7 +242,7 @@ async def test_route_inbound_message_auto_followups_paused_task(client, state):
         patch(
             "foreman.tools.exec_tools", new=AsyncMock(return_value=[{"content": "ok"}])
         ) as mock_exec,
-        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.triggers.trigger_foreman", new=AsyncMock()) as mock_trigger,
         patch("foreman.runner.reset_foreman_poll"),
     ):
         await router._route_inbound_message(
@@ -276,7 +276,7 @@ async def test_route_inbound_message_falls_back_for_non_routable_state(client):
     with (
         patch.object(router, "_persist_inbound_message", new=AsyncMock()),
         patch("foreman.tools.exec_tools", new=AsyncMock()) as mock_exec,
-        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.triggers.trigger_foreman", new=AsyncMock()) as mock_trigger,
         patch("foreman.runner.reset_foreman_poll"),
     ):
         await router._route_inbound_message(
@@ -308,7 +308,7 @@ async def test_bot_mention_in_bound_channel_scopes_to_that_guild(client):
     with (
         patch.dict(os.environ, {"DISCORD_APPLICATION_ID": "bot-id-1"}),
         patch.object(router, "_persist_inbound_message", new=AsyncMock()),
-        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.triggers.trigger_foreman", new=AsyncMock()) as mock_trigger,
         patch("foreman.runner.reset_foreman_poll"),
     ):
         await router._route_inbound_message(
@@ -347,7 +347,7 @@ async def test_bot_mention_in_unbound_channel_falls_back_to_author_projects(clie
             new=AsyncMock(return_value=["g-newest", "g-older"]),
         ),
         patch.object(router, "_persist_inbound_message", new=AsyncMock()),
-        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.triggers.trigger_foreman", new=AsyncMock()) as mock_trigger,
         patch("foreman.runner.reset_foreman_poll"),
     ):
         await router._route_inbound_message(
@@ -393,7 +393,7 @@ async def test_bot_mention_prefers_projects_bound_to_the_same_discord_server(cli
             new=AsyncMock(return_value=["g-unrelated", "g-server-1"]),
         ),
         patch.object(router, "_persist_inbound_message", new=AsyncMock()),
-        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.triggers.trigger_foreman", new=AsyncMock()) as mock_trigger,
         patch("foreman.runner.reset_foreman_poll"),
     ):
         await router._route_inbound_message(
@@ -428,7 +428,7 @@ async def test_bot_mention_ignores_server_binding_author_cannot_access(client):
         ),
         patch.object(router, "_resolve_user_guild_slugs", new=AsyncMock(return_value=["g-mine"])),
         patch.object(router, "_persist_inbound_message", new=AsyncMock()),
-        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.triggers.trigger_foreman", new=AsyncMock()) as mock_trigger,
         patch("foreman.runner.reset_foreman_poll"),
     ):
         await router._route_inbound_message(
@@ -458,7 +458,7 @@ async def test_bot_mention_from_unlinked_author_in_unbound_channel_ignored(clien
             router, "_resolve_identity", new=AsyncMock(return_value=(None, "a Discord user"))
         ),
         patch.object(router, "_persist_inbound_message", new=AsyncMock()),
-        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.triggers.trigger_foreman", new=AsyncMock()) as mock_trigger,
         patch("foreman.runner.reset_foreman_poll"),
     ):
         await router._route_inbound_message(
@@ -483,7 +483,7 @@ async def test_unbound_channel_without_mention_still_ignored(client):
         patch.dict(os.environ, {"DISCORD_APPLICATION_ID": "bot-id-1"}),
         patch.object(router, "_resolve_user_guild_slugs", new=AsyncMock(return_value=["g-newest"])),
         patch.object(router, "_persist_inbound_message", new=AsyncMock()),
-        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.triggers.trigger_foreman", new=AsyncMock()) as mock_trigger,
         patch("foreman.runner.reset_foreman_poll"),
     ):
         await router._route_inbound_message(
@@ -513,7 +513,7 @@ async def test_route_inbound_message_auto_provisions_bot_author(client):
 
     with (
         patch.object(router, "_persist_inbound_message", new=AsyncMock()),
-        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.triggers.trigger_foreman", new=AsyncMock()) as mock_trigger,
         patch("foreman.runner.reset_foreman_poll"),
     ):
         await router._route_inbound_message(
@@ -545,7 +545,7 @@ async def test_route_inbound_message_reuses_existing_bot_user(client):
     async def _send():
         with (
             patch.object(router, "_persist_inbound_message", new=AsyncMock()),
-            patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+            patch("foreman.triggers.trigger_foreman", new=AsyncMock()) as mock_trigger,
             patch("foreman.runner.reset_foreman_poll"),
         ):
             await router._route_inbound_message(
@@ -587,7 +587,7 @@ async def test_bot_mention_in_unwired_channel_provisions_via_server_binding(clie
     with (
         patch.dict(os.environ, {"DISCORD_APPLICATION_ID": "bot-id-1"}),
         patch.object(router, "_persist_inbound_message", new=AsyncMock()),
-        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.triggers.trigger_foreman", new=AsyncMock()) as mock_trigger,
         patch("foreman.runner.reset_foreman_poll"),
     ):
         await router._route_inbound_message(
@@ -626,7 +626,7 @@ async def test_bot_mention_with_no_server_binding_falls_back_to_default_guild(cl
     with (
         patch.dict(os.environ, {"DISCORD_APPLICATION_ID": "bot-id-1", "GUILD_ID": "g-defalt"}),
         patch.object(router, "_persist_inbound_message", new=AsyncMock()),
-        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.triggers.trigger_foreman", new=AsyncMock()) as mock_trigger,
         patch("foreman.runner.reset_foreman_poll"),
     ):
         await router._route_inbound_message(
@@ -665,7 +665,7 @@ async def test_server_binding_beats_default_guild_for_bot_mention(client):
     with (
         patch.dict(os.environ, {"DISCORD_APPLICATION_ID": "bot-id-1", "GUILD_ID": "g-defalt"}),
         patch.object(router, "_persist_inbound_message", new=AsyncMock()),
-        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.triggers.trigger_foreman", new=AsyncMock()) as mock_trigger,
         patch("foreman.runner.reset_foreman_poll"),
     ):
         await router._route_inbound_message(
