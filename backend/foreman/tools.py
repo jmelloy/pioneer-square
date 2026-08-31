@@ -25,9 +25,15 @@ import discord_notifier
 import worker_runtime
 from database import get_db
 from db import github_cache
-from events import broadcast, broadcast_msg, emit_terminal_line
+from events import (
+    broadcast,  # noqa: F401 — looked up as foreman.tools.broadcast by ports.RealEvents
+    broadcast_msg,
+    emit_terminal_line,  # noqa: F401 — looked up as foreman.tools.emit_terminal_line by ports.RealEvents
+)
 from foreman.message_utils import _json_default, truncate_tool_result
+from foreman.ports import RealEvents, RealGithub, RealScheduler, SystemClock
 from foreman.thread_service import get_or_create_active_thread
+from foreman.tool_context import ToolContext
 from foreman.tools_schema import (
     FOREMAN_TOOLS,  # noqa: F401 — re-exported for test compatibility
 )
@@ -1553,12 +1559,12 @@ async def _resolve_bedrock_model_id(db, provider: str | None, model: str | None)
 class ForemanTool:
     """Binding of a tool name, its required execution context, and its handler.
 
-    Handlers return ``(result_text, is_error)`` and receive arguments
-    determined by the context type:
-
-    * ``_CTX_DB``     – ``(inp, guild_id, guild_pk, db, user_id)``
-    * ``_CTX_GITHUB`` – ``(inp, guild_id, token, username)``
-    * ``_CTX_NONE``   – ``(inp, guild_id)``
+    Every handler has the uniform signature ``(inp, ctx: ToolContext) ->
+    (result_text, is_error)`` (issue #1241). ``context`` still records which
+    of the three legacy context *kinds* the tool needs — ``_CTX_DB``,
+    ``_CTX_GITHUB``, ``_CTX_NONE`` — since ``_exec_one_tool`` uses it to
+    decide whether to resolve GitHub credentials before dispatch; it no
+    longer changes the handler's call signature.
     """
 
     __slots__ = ("name", "context", "handler")
@@ -1579,9 +1585,8 @@ _CTX_NONE = "none"
 # ---------------------------------------------------------------------------
 
 
-async def _handle_create_task(
-    inp: dict, guild_id: str, guild_pk: int | None, db, user_id: str | None
-) -> tuple[str, bool]:
+async def _handle_create_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
+    guild_id, guild_pk, db, user_id = ctx.guild_id, ctx.guild_pk, ctx.db, ctx.user_id
     # No lock needed: creates an unassigned task (worker_id=None) so
     # there is no worker state to race on. Task ID collisions are
     # statistically negligible and caught by the DB unique constraint.
@@ -1619,7 +1624,7 @@ async def _handle_create_task(
         )
     )
     await db.commit()
-    await broadcast(
+    await ctx.events.broadcast(
         guild_id,
         TaskCreatedMsg(
             taskId=task_id,
@@ -1637,9 +1642,8 @@ async def _handle_create_task(
     )
 
 
-async def _handle_assign_task(
-    inp: dict, guild_id: str, guild_pk: int | None, db, user_id: str | None
-) -> tuple[str, bool]:
+async def _handle_assign_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
+    guild_id, guild_pk, db, user_id = ctx.guild_id, ctx.guild_pk, ctx.db, ctx.user_id
     wid = inp["worker_id"]
     desc = inp.get("description", "")
     phase = inp.get("phase", "execute")
@@ -1914,7 +1918,7 @@ async def _handle_assign_task(
                     effective_pr_url,
                     effective_head_sha,
                 )
-                await broadcast(
+                await ctx.events.broadcast(
                     guild_id,
                     TaskAssignedMsg(
                         workerId=wid,
@@ -2006,7 +2010,7 @@ async def _handle_assign_task(
                     effective_pr_url,
                     effective_head_sha,
                 )
-                await broadcast(
+                await ctx.events.broadcast(
                     guild_id,
                     TaskAssignedMsg(
                         workerId=wid,
@@ -2050,9 +2054,8 @@ async def _handle_assign_task(
     return result_text, is_error
 
 
-async def _handle_send_followup(
-    inp: dict, guild_id: str, guild_pk: int | None, db, user_id: str | None
-) -> tuple[str, bool]:
+async def _handle_send_followup(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
+    guild_id, guild_pk, db, _ = ctx.guild_id, ctx.guild_pk, ctx.db, ctx.user_id
     task_id = inp["task_id"]
     instructions = inp["instructions"]
     preferred_worker_id = inp.get("preferred_worker_id")
@@ -2268,7 +2271,7 @@ async def _handle_send_followup(
                 update_vals["deleted_at"] = None
             await db.exec(update(Task).where(col(Task.id) == task_id).values(**update_vals))
             await db.commit()
-            await broadcast(
+            await ctx.events.broadcast(
                 guild_id,
                 TaskUpdateMsg(
                     taskId=task_id,
@@ -2283,7 +2286,7 @@ async def _handle_send_followup(
             followup_session_id = (
                 task_session_id if target_worker_id == original_worker_id else None
             )
-            await broadcast(
+            await ctx.events.broadcast(
                 guild_id,
                 TaskFollowupMsg(
                     workerId=target_worker_id,
@@ -2301,7 +2304,7 @@ async def _handle_send_followup(
                     sessionId=followup_session_id,
                 ).model_dump(by_alias=True, exclude_none=True),
             )
-            spawn(
+            ctx.scheduler.spawn(
                 notify_discord_followup(
                     task_issue_repo,
                     task_issue_number,
@@ -2323,9 +2326,8 @@ async def _handle_send_followup(
     return result_text, is_error
 
 
-async def _handle_finalize_task(
-    inp: dict, guild_id: str, guild_pk: int | None, db, user_id: str | None
-) -> tuple[str, bool]:
+async def _handle_finalize_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
+    guild_id, guild_pk, db, _ = ctx.guild_id, ctx.guild_pk, ctx.db, ctx.user_id
     task_id = inp["task_id"]
     raw_outcome = inp.get("outcome", "done")
     outcome = raw_outcome if raw_outcome in ("done", "failed") else "done"
@@ -2348,7 +2350,7 @@ async def _handle_finalize_task(
             guild_id, task.issue_repo, task.issue_number, res.descendants
         )
     if outcome == "failed":
-        spawn(
+        ctx.scheduler.spawn(
             notify_discord_task_finalized(task.issue_repo, task.issue_number, task_id, "failed"),
             name=f"discord.finalize:{task_id}",
         )
@@ -2360,14 +2362,13 @@ async def _handle_finalize_task(
     return result_text, False
 
 
-async def _handle_message_worker(
-    inp: dict, guild_id: str, guild_pk: int | None, db, user_id: str | None
-) -> tuple[str, bool]:
+async def _handle_message_worker(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
+    guild_id, _, _, _ = ctx.guild_id, ctx.guild_pk, ctx.db, ctx.user_id
     wid = inp["worker_id"]
     msg = inp["message"]
     target_task_id = inp.get("task_id")
-    await emit_terminal_line(guild_id, wid, f"[foreman] {msg}")
-    await broadcast_msg(
+    await ctx.events.emit_terminal_line(guild_id, wid, f"[foreman] {msg}")
+    await ctx.events.broadcast_msg(
         guild_id,
         WorkerMessageMsg(workerId=wid, message=msg, taskId=target_task_id),
     )
@@ -2380,9 +2381,8 @@ async def _handle_message_worker(
     )
 
 
-async def _handle_redirect_task(
-    inp: dict, guild_id: str, guild_pk: int | None, db, user_id: str | None
-) -> tuple[str, bool]:
+async def _handle_redirect_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
+    guild_id, guild_pk, db, _ = ctx.guild_id, ctx.guild_pk, ctx.db, ctx.user_id
     task_id = inp["task_id"]
     instructions = inp["instructions"]
     result = await db.exec(
@@ -2401,7 +2401,7 @@ async def _handle_redirect_task(
         return f"Task {task_id} is {state} — cannot redirect.", False
     await db.exec(update(Task).where(col(Task.id) == task_id).values(state="working"))
     await db.commit()
-    await broadcast_msg(
+    await ctx.events.broadcast_msg(
         guild_id,
         TaskRedirectMsg(
             workerId=worker_id_val,
@@ -2409,9 +2409,9 @@ async def _handle_redirect_task(
             instructions=instructions,
         ),
     )
-    await broadcast_msg(guild_id, TaskUpdateMsg(taskId=task_id, state="working"))
+    await ctx.events.broadcast_msg(guild_id, TaskUpdateMsg(taskId=task_id, state="working"))
     if redirect_issue_number is not None and redirect_issue_repo:
-        spawn(
+        ctx.scheduler.spawn(
             notify_discord_redirect(
                 redirect_issue_repo,
                 redirect_issue_number,
@@ -2423,9 +2423,8 @@ async def _handle_redirect_task(
     return f"Redirect sent to {worker_id_val} for task {task_id}.", False
 
 
-async def _handle_cancel_task(
-    inp: dict, guild_id: str, guild_pk: int | None, db, user_id: str | None
-) -> tuple[str, bool]:
+async def _handle_cancel_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
+    guild_id, guild_pk, db, _ = ctx.guild_id, ctx.guild_pk, ctx.db, ctx.user_id
     task_id = inp["task_id"]
     reason = inp.get("reason", "")
     result = await db.exec(
@@ -2453,11 +2452,11 @@ async def _handle_cancel_task(
     )
     await LockService(db).release(f"task:{task_id}")
     await db.commit()
-    await broadcast_msg(
+    await ctx.events.broadcast_msg(
         guild_id,
         TaskCancelMsg(workerId=worker_id_val, taskId=task_id),
     )
-    await broadcast_msg(
+    await ctx.events.broadcast_msg(
         guild_id,
         TaskUpdateMsg(
             taskId=task_id,
@@ -2465,7 +2464,7 @@ async def _handle_cancel_task(
             deletedAt=deleted_at.isoformat(),
         ),
     )
-    spawn(
+    ctx.scheduler.spawn(
         notify_discord_task_finalized(
             cancel_issue_repo,
             cancel_issue_number,
@@ -2479,9 +2478,8 @@ async def _handle_cancel_task(
     return result_text, False
 
 
-async def _handle_shutdown_worker(
-    inp: dict, guild_id: str, guild_pk: int | None, db, user_id: str | None
-) -> tuple[str, bool]:
+async def _handle_shutdown_worker(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
+    guild_id, guild_pk, db, _ = ctx.guild_id, ctx.guild_pk, ctx.db, ctx.user_id
     wid = inp["worker_id"]
     reason = inp.get("reason", "")
     worker_result = await db.exec(
@@ -2489,7 +2487,7 @@ async def _handle_shutdown_worker(
     )
     if worker_result.one_or_none() is None:
         return f"Worker {wid} not found.", False
-    await broadcast_msg(guild_id, WorkerShutdownMsg(workerId=wid, reason=reason or None))
+    await ctx.events.broadcast_msg(guild_id, WorkerShutdownMsg(workerId=wid, reason=reason or None))
     await db.exec(update(Worker).where(col(Worker.id) == wid).values(disabled=True))
     await db.commit()
     # Graceful signal only: give the worker a chance to finish any
@@ -2500,7 +2498,7 @@ async def _handle_shutdown_worker(
         force_kill_worker_if_unresponsive as _force_kill_if_unresponsive,
     )
 
-    spawn(
+    ctx.scheduler.spawn(
         _force_kill_if_unresponsive(wid),
         name=f"shutdown-escalate:{wid}",
     )
@@ -2508,9 +2506,8 @@ async def _handle_shutdown_worker(
     return result_text, False
 
 
-async def _handle_spawn_worker(
-    inp: dict, guild_id: str, guild_pk: int | None, db, user_id: str | None
-) -> tuple[str, bool]:
+async def _handle_spawn_worker(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
+    guild_id, guild_pk, db, _ = ctx.guild_id, ctx.guild_pk, ctx.db, ctx.user_id
     # Deliberately NOT this turn's user_id. A worker the foreman
     # stands up serves the guild's queue, not the member who
     # happened to be talking to it, so it takes the guild baseline
@@ -2525,9 +2522,8 @@ async def _handle_spawn_worker(
     return result_text, is_error
 
 
-async def _handle_get_task_status(
-    inp: dict, guild_id: str, guild_pk: int | None, db, user_id: str | None
-) -> tuple[str, bool]:
+async def _handle_get_task_status(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
+    _, guild_pk, db, _ = ctx.guild_id, ctx.guild_pk, ctx.db, ctx.user_id
     task_id = inp["task_id"]
     limit = min(int(inp.get("log_lines", 10)), 50)
     task_result = await db.exec(
@@ -2590,9 +2586,8 @@ async def _handle_get_task_status(
     return result_text, False
 
 
-async def _handle_message_discord_bot(
-    inp: dict, guild_id: str, guild_pk: int | None, db, user_id: str | None
-) -> tuple[str, bool]:
+async def _handle_message_discord_bot(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
+    _, _, db, _ = ctx.guild_id, ctx.guild_pk, ctx.db, ctx.user_id
     result_text, is_error = await _message_discord_bot(inp, db)
     return result_text, is_error
 
@@ -2602,16 +2597,14 @@ async def _handle_message_discord_bot(
 # ---------------------------------------------------------------------------
 
 
-async def _handle_list_github_issues(
-    inp: dict, guild_id: str, token: str, username: str
-) -> tuple[str, bool]:
+async def _handle_list_github_issues(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
+    _, token, _ = ctx.guild_id, ctx.github_token, ctx.github_username
     repo = inp["repo"]
     state = inp.get("state", "open")
     limit = min(int(inp.get("limit", 20)), 50)
-    issues = await _to_thread(
-        _gh_api,
+    issues = await ctx.github.get(
         f"/repos/{repo}/issues?state={state}&per_page={limit}",
-        token,
+        token=token,
     )
     trimmed = [
         {
@@ -2628,22 +2621,20 @@ async def _handle_list_github_issues(
     return json.dumps(trimmed), False
 
 
-async def _handle_get_github_issue(
-    inp: dict, guild_id: str, token: str, username: str
-) -> tuple[str, bool]:
+async def _handle_get_github_issue(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
+    _, token, _ = ctx.guild_id, ctx.github_token, ctx.github_username
     repo = inp["repo"]
     num = int(inp["issue_number"])
-    issue = await _to_thread(_gh_api, f"/repos/{repo}/issues/{num}", token)
-    comments_raw = await _to_thread(
-        _gh_api, f"/repos/{repo}/issues/{num}/comments?per_page=20", token
+    issue = await ctx.github.get(f"/repos/{repo}/issues/{num}", token=token)
+    comments_raw = await ctx.github.get(
+        f"/repos/{repo}/issues/{num}/comments?per_page=20", token=token
     )
     # Native GitHub sub-issues (parenting), not the body checklist.
     # 404/empty for issues without children — treat any failure as none.
     try:
-        sub_raw = await _to_thread(
-            _gh_api,
+        sub_raw = await ctx.github.get(
             f"/repos/{repo}/issues/{num}/sub_issues?per_page=100",
-            token,
+            token=token,
         )
     except urllib.error.HTTPError:
         sub_raw = []
@@ -2675,12 +2666,11 @@ async def _handle_get_github_issue(
     return result_text, False
 
 
-async def _handle_list_github_prs(
-    inp: dict, guild_id: str, token: str, username: str
-) -> tuple[str, bool]:
+async def _handle_list_github_prs(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
+    _, token, _ = ctx.guild_id, ctx.github_token, ctx.github_username
     repo = inp["repo"]
     state = inp.get("state", "open")
-    prs = await _to_thread(_gh_api, f"/repos/{repo}/pulls?state={state}&per_page=20", token)
+    prs = await ctx.github.get(f"/repos/{repo}/pulls?state={state}&per_page=20", token=token)
     result_text = json.dumps(
         [
             {
@@ -2696,9 +2686,8 @@ async def _handle_list_github_prs(
     return result_text, False
 
 
-async def _handle_claim_github_issue(
-    inp: dict, guild_id: str, token: str, username: str
-) -> tuple[str, bool]:
+async def _handle_claim_github_issue(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
+    _, token, username = ctx.guild_id, ctx.github_token, ctx.github_username
     repo = inp["repo"]
     num = int(inp["issue_number"])
     await _to_thread(
@@ -2710,9 +2699,8 @@ async def _handle_claim_github_issue(
     return f"Issue #{num} in {repo} assigned to {username}.", False
 
 
-async def _handle_create_github_issue(
-    inp: dict, guild_id: str, token: str, username: str
-) -> tuple[str, bool]:
+async def _handle_create_github_issue(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
+    _, token, _ = ctx.guild_id, ctx.github_token, ctx.github_username
     repo = inp["repo"]
     payload: dict = {"title": inp["title"], "body": inp.get("body", "")}
     if inp.get("labels"):
@@ -2728,17 +2716,15 @@ async def _handle_create_github_issue(
     return result_text, False
 
 
-async def _handle_get_pr_status(
-    inp: dict, guild_id: str, token: str, username: str
-) -> tuple[str, bool]:
+async def _handle_get_pr_status(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
+    _, token, _ = ctx.guild_id, ctx.github_token, ctx.github_username
     repo = inp["repo"]
     num = int(inp["pr_number"])
     return json.dumps(await fetch_pr_status(repo, num, token)), False
 
 
-async def _handle_create_pr(
-    inp: dict, guild_id: str, token: str, username: str
-) -> tuple[str, bool]:
+async def _handle_create_pr(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
+    guild_id, token, _ = ctx.guild_id, ctx.github_token, ctx.github_username
     repo = inp["repo"]
     branch = inp["branch"]
     base = inp.get("base") or "main"
@@ -2773,9 +2759,8 @@ async def _handle_create_pr(
     return result_text, False
 
 
-async def _handle_search_github_issues(
-    inp: dict, guild_id: str, token: str, username: str
-) -> tuple[str, bool]:
+async def _handle_search_github_issues(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
+    _, token, _ = ctx.guild_id, ctx.github_token, ctx.github_username
     repo = inp["repo"]
     query = inp["query"]
     state = inp.get("state", "open")
@@ -2784,7 +2769,7 @@ async def _handle_search_github_issues(
         f"/search/issues?q={urllib.parse.quote(query)}"
         f"+repo:{repo}{state_q}&per_page=10&sort=created&order=desc"
     )
-    data = await _to_thread(_gh_api, search_url, token)
+    data = await ctx.github.get(search_url, token=token)
     items = data.get("items", []) if isinstance(data, dict) else data
     result_text = json.dumps(
         [
@@ -2802,9 +2787,8 @@ async def _handle_search_github_issues(
     return result_text, False
 
 
-async def _handle_review_pr_internal(
-    inp: dict, guild_id: str, token: str, username: str
-) -> tuple[str, bool]:
+async def _handle_review_pr_internal(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
+    guild_id, token, username = ctx.guild_id, ctx.github_token, ctx.github_username
     # Review action policy (mirrors the worker-driven `gh pr review` path):
     #   APPROVE           - functionally correct; issues are minor nits
     #                       (style, naming, formatting). Note nits inline.
@@ -2835,10 +2819,9 @@ async def _handle_review_pr_internal(
     pr_repo = pr_match.group(1)
     pr_number = int(pr_match.group(2))
     pr_data, diff_text = await asyncio.gather(
-        _to_thread(
-            _gh_api,
+        ctx.github.get(
             f"/repos/{pr_repo}/pulls/{pr_number}",
-            token,
+            token=token,
         ),
         _to_thread(
             _gh_api_diff,
@@ -3019,25 +3002,23 @@ async def _handle_review_pr_internal(
     return result_text, False
 
 
-async def _handle_analyze_epic(
-    inp: dict, guild_id: str, token: str, username: str
-) -> tuple[str, bool]:
+async def _handle_analyze_epic(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
+    _, token, _ = ctx.guild_id, ctx.github_token, ctx.github_username
     repo = inp["repo"]
     num = int(inp["issue_number"])
     force = inp.get("force", False)
     trigger_deep = inp.get("trigger_deep_analysis", False)
 
     # Fetch the epic issue
-    epic = await _to_thread(_gh_api, f"/repos/{repo}/issues/{num}", token)
+    epic = await ctx.github.get(f"/repos/{repo}/issues/{num}", token=token)
     epic_labels = [l["name"] for l in epic.get("labels", [])]
 
     # Safeguard: skip if already reported (unless forced)
     if "pm-reported" in epic_labels and not force:
         # Check if report was recent (within 7 days)
-        comments_raw = await _to_thread(
-            _gh_api,
+        comments_raw = await ctx.github.get(
             f"/repos/{repo}/issues/{num}/comments?per_page=50",
-            token,
+            token=token,
         )
         recent_report = False
         for c in reversed(comments_raw):
@@ -3064,10 +3045,9 @@ async def _handle_analyze_epic(
     # --- Level 1: Lightweight status fetch ---
     # Fetch sub-issues
     try:
-        sub_raw = await _to_thread(
-            _gh_api,
+        sub_raw = await ctx.github.get(
             f"/repos/{repo}/issues/{num}/sub_issues?per_page=100",
-            token,
+            token=token,
         )
     except urllib.error.HTTPError:
         sub_raw = []
@@ -3075,10 +3055,9 @@ async def _handle_analyze_epic(
     # Fetch linked PRs (single search, no per-sub-issue queries)
     mention_q = urllib.parse.quote(f"repo:{repo} is:pr #{num}")
     try:
-        mention_prs_data = await _to_thread(
-            _gh_api,
+        mention_prs_data = await ctx.github.get(
             f"/search/issues?q={mention_q}&per_page=30",
-            token,
+            token=token,
         )
         all_prs = mention_prs_data.get("items", [])
     except urllib.error.HTTPError:
@@ -3227,7 +3206,7 @@ async def _handle_analyze_epic(
 # ---------------------------------------------------------------------------
 
 
-async def _handle_dnsid(inp: dict, guild_id: str) -> tuple[str, bool]:
+async def _handle_dnsid(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
     logger.info("dnsid tool: input=%s", inp)
     command = inp.get("command", "")
     if not command:
@@ -3240,7 +3219,7 @@ async def _handle_dnsid(inp: dict, guild_id: str) -> tuple[str, bool]:
         return f"dnsid {command} failed: {exc}", True
 
 
-async def _handle_call_agent(inp: dict, guild_id: str) -> tuple[str, bool]:
+async def _handle_call_agent(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
     logger.info("call_agent: input=%s", inp)
     agent_url = (inp.get("agent_url") or "").rstrip("/")
     skill_id = inp.get("skill") or ""
@@ -3346,44 +3325,55 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
 
     inp = tu.input
 
+    db = None
     try:
-        if tool.context == _CTX_DB:
+        try:
+            from auth_deps import get_guild_pk  # noqa: PLC0415
+
             db = await get_db()
-            try:
-                from auth_deps import get_guild_pk  # noqa: PLC0415
+            ctx = ToolContext(
+                guild_id=guild_id,
+                user_id=user_id,
+                db=db,
+                guild_pk=await get_guild_pk(db, guild_id),
+                events=RealEvents(),
+                github=RealGithub(),
+                clock=SystemClock(),
+                scheduler=RealScheduler(),
+            )
 
-                guild_pk = await get_guild_pk(db, guild_id)
-                result_text, is_error = await tool.handler(inp, guild_id, guild_pk, db, user_id)
-            finally:
-                await db.close()
+            if tool.context == _CTX_DB:
+                result_text, is_error = await tool.handler(inp, ctx)
 
-        elif tool.context == _CTX_GITHUB:
-            logger.info("Executing GitHub tool %s with input %s", tu.name, inp)
-            creds = await _guild_github_token(guild_id, user_id)
-            if not creds:
-                result_text = (
-                    "No GitHub token found for this guild — user must connect GitHub first."
-                )
-                is_error = True
-            else:
-                token, username = creds
-                try:
-                    result_text, is_error = await tool.handler(inp, guild_id, token, username)
-                except urllib.error.HTTPError as exc:
-                    result_text = f"GitHub API error: {exc.code} {exc.reason}"
+            elif tool.context == _CTX_GITHUB:
+                logger.info("Executing GitHub tool %s with input %s", tu.name, inp)
+                creds = await _guild_github_token(guild_id, user_id)
+                if not creds:
+                    result_text = (
+                        "No GitHub token found for this guild — user must connect GitHub first."
+                    )
                     is_error = True
-                except Exception as exc:
-                    result_text = f"GitHub error: {exc}"
-                    is_error = True
+                else:
+                    ctx.github_token, ctx.github_username = creds
+                    try:
+                        result_text, is_error = await tool.handler(inp, ctx)
+                    except urllib.error.HTTPError as exc:
+                        result_text = f"GitHub API error: {exc.code} {exc.reason}"
+                        is_error = True
+                    except Exception as exc:
+                        result_text = f"GitHub error: {exc}"
+                        is_error = True
 
-        else:  # _CTX_NONE
-            result_text, is_error = await tool.handler(inp, guild_id)
+            else:  # _CTX_NONE
+                result_text, is_error = await tool.handler(inp, ctx)
 
-    except Exception as exc:
-        result_text = f"Tool {tu.name} failed: {exc}"
-        is_error = True
+        except Exception as exc:
+            result_text = f"Tool {tu.name} failed: {exc}"
+            is_error = True
 
     finally:
+        if db is not None:
+            await db.close()
         _api_call_log = _api_calls_ctx.get([])
         _api_calls_ctx.reset(_ctx_token)
 
