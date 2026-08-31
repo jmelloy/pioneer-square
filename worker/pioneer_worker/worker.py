@@ -1281,11 +1281,10 @@ class Worker:
                     task_id = msg.get("taskId")
                     if not task_id or task_id in self._known_task_ids:
                         continue
-                    logger.info(
-                        "Task assigned: %s — %s",
-                        task_id,
-                        (msg.get("description") or "")[:80],
-                    )
+                    desc_preview = (msg.get("description") or "")[:80]
+                    with contextlib.suppress(Exception):
+                        await self._emit(f"Task assigned: {task_id} — {desc_preview}")
+                    logger.info("Task assigned: %s — %s", task_id, desc_preview)
                     logger.info(
                         "Task %s metadata received: phase=%s issue_repo=%s pr_number=%s "
                         "pr_repo=%s branch=%s pr_url=%s head_sha=%s",
@@ -1341,9 +1340,13 @@ class Worker:
                         continue
                     # The backend noticed this worker is running an older version.
                     # Informational only — the worker keeps running its current work.
+                    reason = msg.get("reason", "version mismatch")
+                    with contextlib.suppress(Exception):
+                        await self._emit(
+                            f"Backend reports this worker is out of date ({reason}); continuing"
+                        )
                     logger.info(
-                        "Backend reports this worker is out of date (%s); continuing",
-                        msg.get("reason", "version mismatch"),
+                        "Backend reports this worker is out of date (%s); continuing", reason
                     )
 
                 elif mtype == "task-followup":
@@ -1358,11 +1361,9 @@ class Worker:
                     # follow-up is now a fresh enqueue: reuse the existing
                     # worktree if it's still on disk, otherwise attach one to the
                     # branch the original worker pushed.
-                    logger.info(
-                        "Follow-up received for task %s: %s",
-                        task_id,
-                        instructions[:80],
-                    )
+                    with contextlib.suppress(Exception):
+                        await self._emit(f"Follow-up received for {task_id}: {instructions[:80]}")
+                    logger.info("Follow-up received for task %s: %s", task_id, instructions[:80])
                     task = {
                         "id": task_id,
                         "worker_id": self.cfg.worker_id,
@@ -1398,6 +1399,8 @@ class Worker:
                     task_id = msg.get("taskId")
                     if not task_id:
                         continue
+                    with contextlib.suppress(Exception):
+                        await self._emit(f"Finalize signal for {task_id} — releasing worktree")
                     logger.info("Finalize signal for task %s — releasing worktree", task_id)
                     self._clear_cancelled(task_id)
                     await self._release_task_worktrees(task_id)
@@ -1408,12 +1411,16 @@ class Worker:
                     task_id = msg.get("taskId")
                     if not task_id:
                         continue
+                    with contextlib.suppress(Exception):
+                        await self._emit(f"Cancel signal for {task_id}")
                     logger.info("Cancel signal for task %s", task_id)
                     self._mark_cancelled(task_id)
                     # Kill subprocess if this task is currently running
                     active = next((s for s in self.agents if s.current_task_id == task_id), None)
                     if active and active.current_claude:
                         await active.current_claude.terminate()
+                        with contextlib.suppress(Exception):
+                            await self._emit(f"Terminated subprocess for cancelled task {task_id}")
                         logger.info("Terminated subprocess for cancelled task %s", task_id)
                     # Wake the redirect/cancel-aware inner loop if the task is
                     # mid-run; finalize-time cleanup happens through task-finalize.
@@ -1440,6 +1447,8 @@ class Worker:
                     instructions = msg.get("instructions", "")
                     if not task_id or not instructions:
                         continue
+                    with contextlib.suppress(Exception):
+                        await self._emit(f"Redirect for {task_id}: {instructions[:80]}")
                     logger.info("Redirect for task %s: %s", task_id, instructions[:80])
                     active = next((s for s in self.agents if s.current_task_id == task_id), None)
                     if active and active.current_claude:
@@ -1447,6 +1456,10 @@ class Worker:
                         # in-flight redirect loop, which resumes claude with the
                         # full prior session id.
                         await active.current_claude.terminate()
+                        with contextlib.suppress(Exception):
+                            await self._emit(
+                                f"Terminated subprocess for redirect of task {task_id}"
+                            )
                         logger.info("Terminated subprocess for redirect of task %s", task_id)
                         rq = self._redirect_queues.get(task_id)
                         if rq is not None:
@@ -1548,6 +1561,9 @@ class Worker:
 
         self._broadcast_repos = merged
         logger.info("GitHub repos refreshed: %d total (was %d)", len(merged), prev_count)
+        if self._joined:
+            with contextlib.suppress(Exception):
+                await self._emit(f"GitHub repos refreshed: {len(merged)} total (was {prev_count})")
         if self.cfg.worker_id:
             primary_tool = self.cfg.tool or (
                 self._available_tools[0] if self._available_tools else None
@@ -1718,17 +1734,26 @@ class Worker:
                 # Dropping this silently left the backend's task in whatever
                 # state it was dispatched in, with no task-rejected to tell the
                 # foreman the work never started.
+                with contextlib.suppress(Exception):
+                    await self._emit(f"Skipping cancelled task {task_id}")
                 logger.info("Skipping cancelled task %s", task_id)
                 self._clear_cancelled(task_id)
                 await self._reject_assignment(task_id, "task was cancelled before it started")
                 continue
 
+            queue_depth = self.task_queue.qsize()
+            desc_preview = (task.get("description") or "")[:80]
+            with contextlib.suppress(Exception):
+                await self._emit(
+                    f"Dequeued task {task_id} on {slot.agent_id} (queue depth {queue_depth}): "
+                    f"{desc_preview}"
+                )
             logger.info(
                 "Dequeued task %s (agent=%s queue depth %d): %s",
                 task_id,
                 slot.agent_id,
-                self.task_queue.qsize(),
-                (task.get("description") or "")[:80],
+                queue_depth,
+                desc_preview,
             )
             slot.current_task_id = task_id
             try:
@@ -2155,17 +2180,28 @@ class Worker:
                 return
 
             while True:
+                model = task.get("model") or None
+                provider = task.get("provider") or None
+                await emit(
+                    f"Launching {tool} (model={model or 'default'} provider={provider or 'default'} "
+                    f"resume={'yes' if resume_session_id else 'no'})",
+                    level=LEVEL_WORKER,
+                )
                 logger.info(
                     "Task %s: launching %s in %s (model=%s provider=%s resume=%s)",
                     task_id,
                     tool,
                     primary_wt,
-                    task.get("model") or None,
-                    task.get("provider") or None,
+                    model,
+                    provider,
                     resume_session_id,
                 )
                 _apply_result(await _run_current_desc())
                 _capture_session_and_clear()
+                await emit(
+                    f"Run done: success={success} stop={stop_reason} session={resume_session_id or '-'}",
+                    level=LEVEL_WORKER,
+                )
                 logger.info(
                     "Task %s: run done success=%s stop=%s session=%s",
                     task_id,
@@ -2207,6 +2243,7 @@ class Worker:
 
                 break  # normal exit from redirect loop
 
+            await emit(f"Final result: success={success} stop={stop_reason}", level=LEVEL_WORKER)
             logger.info(
                 "Task %s: final success=%s stop_reason=%s",
                 task_id,
