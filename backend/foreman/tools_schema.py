@@ -118,7 +118,7 @@ FOREMAN_TOOLS = [
                 },
                 "provider": {
                     "type": "string",
-                    "description": "Provider override for pi tasks (e.g. 'anthropic', 'openai', 'google'). Ignored for claude and codex.",
+                    "description": "Optional provider override for pi tasks only. Omit unless the user explicitly asked for a provider; Pi will otherwise use its normal local default model/provider selection.",
                 },
                 "parent_task_id": {
                     "type": "string",
@@ -250,9 +250,7 @@ FOREMAN_TOOLS = [
                 "provider": {
                     "type": "string",
                     "description": (
-                        "Optional: provider override for pi follow-ups (e.g. "
-                        "'anthropic', 'openai', 'google'). Ignored for claude and "
-                        "codex. Defaults to the task's current provider."
+                        "Optional provider override for pi follow-ups only. Omit unless the user explicitly asked for a provider; Pi will otherwise use its normal local default model/provider selection. Ignored for claude and codex."
                     ),
                 },
                 "create_pr": {

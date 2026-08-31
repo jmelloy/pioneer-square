@@ -26,6 +26,9 @@ ignore = [
     "B904",  # raise-without-from-inside-except; tighten later
 ]
 
+[lint.isort]
+known-third-party = ["foreman"]
+
 [lint.per-file-ignores]
 # Tests can be loose with unused imports/fixtures.
 "**/tests/**" = ["F401", "F811", "B"]

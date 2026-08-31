@@ -222,3 +222,31 @@ class TestAssignTaskAutoModelSelection:
         # model must be persisted (non-null) on the DB row
         assert task.model is not None
         assert len(task.model) > 0
+
+    @pytest.mark.asyncio
+    async def test_pi_worker_uses_pi_default_model_selection(self, db_session):
+        """Pi tasks should not get a catalog-selected Claude model forced onto them."""
+        guild_id = "g-am005"
+        worker_id = "w-am005"
+        insert_guild(db_session, guild_id)
+        insert_worker(
+            db_session, guild_id, worker_id, state="idle", tools='["pi"]', provider="anthropic"
+        )
+        await _seed_catalog(db_session, "anthropic", ["claude-sonnet-4-6"])
+
+        tu = _tool(
+            "assign_task",
+            {"worker_id": worker_id, "description": "Let pi pick", "tool": "pi"},
+            "tool-005",
+        )
+        with (
+            patch("foreman.tools.broadcast", new=AsyncMock()),
+            patch("foreman.tools.emit_terminal_line", new=AsyncMock()),
+        ):
+            results = await exec_tools(guild_id, [tu])
+
+        assert not results[0].get("is_error"), results[0]["content"]
+        task = await _get_task(worker_id)
+        assert task is not None
+        assert task.model is None
+        assert task.provider is None
