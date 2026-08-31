@@ -156,8 +156,13 @@ class TestAssignTaskAutoModelSelection:
         assert task.model == "claude-haiku-4-5-20251001"
 
     @pytest.mark.asyncio
-    async def test_explicit_model_override_is_respected(self, db_session):
-        """When model= is explicitly passed, auto-selection is skipped."""
+    async def test_model_input_is_ignored_model_auto_selected_from_tier(self, db_session):
+        """model= in tool input is not in the schema and is ignored; tier drives selection.
+
+        The refactor (issue #1235) removed inp.get("model") from assign_task so that
+        the schema (which exposes tier, not model) is the single source of truth.
+        The handler always auto-selects from catalog using the resolved tier.
+        """
         guild_id = "g-am003"
         worker_id = "w-am003"
         insert_guild(db_session, guild_id)
@@ -176,7 +181,9 @@ class TestAssignTaskAutoModelSelection:
                 "worker_id": worker_id,
                 "description": "Big complex task",
                 "phase": "execute",
-                "model": "claude-opus-4-8",
+                # model= is not in the schema; passing it has no effect.
+                # tier drives auto-selection; execute → standard → sonnet.
+                "tier": "standard",
             },
             "tool-003",
         )
@@ -191,7 +198,10 @@ class TestAssignTaskAutoModelSelection:
 
         task = await _get_task(worker_id)
         assert task is not None
-        assert task.model == "claude-opus-4-8", "Explicit model override must be preserved"
+        # tier=standard for execute phase → sonnet is the standard-tier model
+        assert task.model == "claude-sonnet-4-6", (
+            "Tier-driven auto-selection must resolve correctly"
+        )
 
     @pytest.mark.asyncio
     async def test_auto_selected_model_persisted_on_task_row(self, db_session):
