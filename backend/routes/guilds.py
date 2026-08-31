@@ -19,7 +19,6 @@ from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException
 from models import Agent, Guild, GuildInvite, GuildMember, Message, User, Worker
 from pydantic import BaseModel, Field, field_validator
-from spawn_config import get_spawn_row, upsert_spawn_row
 from sqlalchemy import delete, func, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
@@ -69,9 +68,6 @@ class GuildUpdate(BaseModel):
 
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MAX_FOREMAN_ENV_VARS = 20
-# Worker tools whose env vars can be scoped per-tool (passed only to that tool's
-# runner, never leaked into the others' environment).
-_SCOPED_TOOLS = {"claude", "pi", "codex"}
 _MAX_ENV_VALUE_LEN = 4096
 
 # Foreman LLM settings that can be supplied by the process environment. Surfaced
@@ -167,46 +163,29 @@ def _merge_env_var_list(submitted: list[EnvVarItem], existing: list[dict] | None
 
 
 class ForemanConfigUpdate(BaseModel):
+    """The foreman's own orchestrator-LLM settings only.
+
+    Worker-facing settings (repos/tools/env vars/per-tool defaults) live
+    exclusively in spawn_settings — see spawn_config.py and the
+    /guilds/{guild_id}/spawn-settings, /spawn-defaults endpoints in routes/workers.py.
+    """
+
     model: str | None = None
     provider: str | None = None
     system_prompt_suffix: str | None = Field(default=None, max_length=10000)
     max_rounds: int | None = Field(default=None, gt=0)
     poll_min_interval: int | None = Field(default=None, gt=0)
     poll_max_interval: int | None = Field(default=None, gt=0)
-    # Default model/provider used when the foreman assigns a task to the Pi tool
-    # without an explicit override (Pi is provider-agnostic, unlike claude/codex).
-    pi_default_model: str | None = Field(default=None, max_length=200)
-    pi_default_provider: str | None = Field(default=None, max_length=100)
-    # Default model used when the foreman assigns a task to the Codex tool
-    # without an explicit override.
-    codex_default_model: str | None = Field(default=None, max_length=200)
     # None (field absent) → leave existing env_vars unchanged.
     # Empty list → clear all env_vars.
     # Foreman-only env vars for the orchestrator LLM. The deprecated per-item
     # forward flag is ignored; worker env belongs in spawn_settings.
     env_vars: list[EnvVarItem] | None = None
-    # Deprecated/no-op on this endpoint. Kept for backwards compatibility while
-    # worker tool env moves fully to spawn_settings.
-    # None → leave unchanged; a tool mapped to [] clears that tool's vars.
-    tool_env_vars: dict[str, list[EnvVarItem]] | None = None
 
     @field_validator("env_vars")
     @classmethod
     def validate_env_vars(cls, v: list[EnvVarItem] | None) -> list[EnvVarItem] | None:
         return _validate_env_var_list(v)
-
-    @field_validator("tool_env_vars")
-    @classmethod
-    def validate_tool_env_vars(
-        cls, v: dict[str, list[EnvVarItem]] | None
-    ) -> dict[str, list[EnvVarItem]] | None:
-        if v is None:
-            return v
-        for tool, items in v.items():
-            if tool not in _SCOPED_TOOLS:
-                raise ValueError(f"Unknown tool {tool!r}; must be one of {sorted(_SCOPED_TOOLS)}")
-            _validate_env_var_list(items)
-        return v
 
 
 class MemberCreate(BaseModel):
@@ -555,88 +534,6 @@ async def set_github_app_installation(
     return {"slug": guild_id, "github_app_installation_id": guild.github_app_installation_id}
 
 
-async def _move_worker_config_to_spawn_settings(db: AsyncSession, guild: Guild) -> dict:
-    """Move legacy worker-facing foreman_config keys into spawn_settings.
-
-    Foreman config should describe the orchestrator LLM only. Older rows may
-    still contain worker env vars (forward=true), per-tool env vars, and Pi/Codex
-    defaults; migrate those into the guild baseline spawn_settings row on read
-    or write so the UI can edit/delete them in Worker Settings.
-    """
-    config = dict(guild.foreman_config or {})
-    worker_env: dict[str, str] = {}
-    foreman_env: list[dict] = []
-    changed = False
-    for item in config.get("env_vars") or []:
-        if not isinstance(item, dict):
-            continue
-        key = item.get("key")
-        if not key:
-            continue
-        if item.get("forward"):
-            worker_env[key] = item.get("value") or ""
-            changed = True
-        else:
-            foreman_env.append({"key": key, "value": item.get("value") or ""})
-    if changed:
-        if foreman_env:
-            config["env_vars"] = foreman_env
-        else:
-            config.pop("env_vars", None)
-
-    tool_env_vars = config.pop("tool_env_vars", None) or {}
-    if tool_env_vars:
-        changed = True
-    tool_defaults: dict[str, dict[str, str]] = {}
-    pi_provider = config.pop("pi_default_provider", None)
-    pi_model = config.pop("pi_default_model", None)
-    if pi_provider or pi_model:
-        changed = True
-        tool_defaults["pi"] = {}
-        if pi_provider:
-            tool_defaults["pi"]["provider"] = pi_provider
-        if pi_model:
-            tool_defaults["pi"]["model"] = pi_model
-    codex_model = config.pop("codex_default_model", None)
-    if codex_model:
-        changed = True
-        tool_defaults["codex"] = {"model": codex_model}
-
-    if changed:
-        row = await get_spawn_row(db, guild.id, None)
-        merged_env = dict((row.env_vars if row else {}) or {})
-        merged_env.update(worker_env)
-        merged_tool_env = dict((row.tool_env_vars if row else {}) or {})
-        for tool, pairs in tool_env_vars.items():
-            # Preserve the legacy foreman-config PATCH semantics: tools absent
-            # from the payload keep their stored vars, while a submitted tool
-            # replaces that tool's list (and [] clears it).
-            if isinstance(pairs, list):
-                merged_tool_env[tool] = {
-                    pair["key"]: pair.get("value") or ""
-                    for pair in pairs
-                    if isinstance(pair, dict) and pair.get("key")
-                }
-            elif isinstance(pairs, dict):
-                merged_tool_env[tool] = {k: v for k, v in pairs.items() if k}
-        merged_defaults = dict((getattr(row, "tool_defaults", None) if row else {}) or {})
-        for tool, defaults in tool_defaults.items():
-            current = dict(merged_defaults.get(tool) or {})
-            current.update(defaults)
-            merged_defaults[tool] = current
-        await upsert_spawn_row(
-            db,
-            guild.id,
-            None,
-            env_vars=merged_env,
-            tool_env_vars=merged_tool_env,
-            tool_defaults=merged_defaults,
-        )
-        guild.foreman_config = config
-        await db.commit()
-    return config
-
-
 @router.get("/api/guilds/{guild_id}/foreman-config")
 async def get_foreman_config(
     guild_id: str,
@@ -652,7 +549,7 @@ async def get_foreman_config(
     guild = res.one_or_none()
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")
-    config = await _move_worker_config_to_spawn_settings(db, guild)
+    config = dict(guild.foreman_config or {})
     return {**config, "env_defaults": _foreman_env_defaults()}
 
 
@@ -673,7 +570,7 @@ async def update_foreman_config(
     guild = res.one_or_none()
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")
-    config: dict = await _move_worker_config_to_spawn_settings(db, guild)
+    config: dict = dict(guild.foreman_config or {})
     for field in data.model_fields_set:
         value = getattr(data, field)
         if field == "env_vars":
@@ -686,23 +583,10 @@ async def update_foreman_config(
                 # keeping a non-empty value over a blank one so a stray blank
                 # can't shadow the real value at spawn time.
                 config["env_vars"] = _merge_env_var_list(value, config.get("env_vars"))
-        elif field == "tool_env_vars":
-            if value is None:
-                config.pop("tool_env_vars", None)
-            else:
-                # Merge each submitted tool independently; tools absent from the
-                # payload keep their stored vars. A tool mapped to [] clears it.
-                existing_tools: dict = dict(config.get("tool_env_vars") or {})
-                for tool, items in value.items():
-                    existing_tools[tool] = _merge_env_var_list(items, existing_tools.get(tool))
-                config["tool_env_vars"] = existing_tools
         elif value is None:
             config.pop(field, None)
         else:
             config[field] = value
-
-    guild.foreman_config = config
-    config = await _move_worker_config_to_spawn_settings(db, guild)
 
     # Bedrock inference-profile ARNs are AWS-account-scoped, so there is no safe
     # default model to fall back to at run time (see #817). Reject the save now
