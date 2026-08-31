@@ -1019,6 +1019,59 @@ class TestExecToolsDispatching:
         assert task.tool == "codex"
         assert task.model is None
 
+    async def test_send_followup_tool_override_to_pi_drops_stale_provider_model(self, db_session):
+        insert_guild(db_session, "g-followup-piswitch")
+        insert_worker(
+            db_session,
+            "g-followup-piswitch",
+            "w-piswitch",
+            tools='["codex", "pi"]',
+            provider="bedrock",
+        )
+        _insert_agent(db_session, "g-followup-piswitch", "w-piswitch", "a-piswitch")
+        insert_task(
+            db_session,
+            "g-followup-piswitch",
+            "t-piswitch1",
+            worker_id="w-piswitch",
+            tool="claude",
+            model="claude-sonnet-4-6",
+            provider="bedrock",
+            branch="claude/test-branch-piswitch",
+        )
+        broadcast_calls = []
+
+        async def capture(gid, msg):
+            broadcast_calls.append(msg)
+
+        with patch("foreman.tools.broadcast", side_effect=capture):
+            results = await exec_tools(
+                "g-followup-piswitch",
+                [
+                    _fake_tool_use(
+                        "send_followup",
+                        {
+                            "task_id": "t-piswitch1",
+                            "instructions": "Retry with pi",
+                            "tool": "pi",
+                            "tier": "cheap",
+                        },
+                    )
+                ],
+            )
+        assert not results[0].get("is_error"), results[0]["content"]
+        followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
+        assert len(followup_msgs) == 1
+        assert followup_msgs[0]["tool"] == "pi"
+        assert "model" not in followup_msgs[0]
+        assert "provider" not in followup_msgs[0]
+
+        with _sync_session(db_session) as session:
+            task = session.execute(select(Task).where(col(Task.id) == "t-piswitch1")).scalar_one()
+        assert task.tool == "pi"
+        assert task.model is None
+        assert task.provider is None
+
     async def test_send_followup_unsupported_tool_override_errors(self, db_session):
         insert_guild(db_session, "g-followup-badtool")
         insert_worker(db_session, "g-followup-badtool", "w-badtool", tools='["claude"]')

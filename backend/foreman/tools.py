@@ -145,13 +145,9 @@ async def _apply_spawn_tool_defaults(
     resolved = await resolve_spawn(db, guild_pk, user_id)
     defaults = resolved.tool_defaults.get(tool, {})
     if provider is None:
-        provider = defaults.get("provider") or resolved.provider
+        provider = defaults.get("provider") or (resolved.provider if tool != "pi" else None)
     if model is None:
-        model = defaults.get("model") or resolved.model
-    if tool == "pi" and (provider is None or model is None):
-        provider, model = _apply_pi_defaults(
-            tool, provider, model, await _guild_foreman_config(db, guild_pk)
-        )
+        model = defaults.get("model") or (resolved.model if tool != "pi" else None)
     return provider, model
 
 
@@ -1736,7 +1732,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     model_tier = _select_tier(phase, complexity_hint=requested_tier)
 
                     # Filter model selection to only provider-compatible models.
-                    if worker_provider and not is_error:
+                    # Pi already has its own default model/provider selection; don't second-guess it.
+                    if worker_provider and tool != "pi" and not is_error:
                         from models import ModelCatalog  # noqa: PLC0415
 
                         if model:
@@ -1762,7 +1759,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             model = get_model_for_tier(model_tier, worker_provider, catalog)
                     # For Bedrock workers, resolve the short model ID to the
                     # canonical inference-profile ARN the Claude CLI requires.
-                    if not is_error:
+                    if not is_error and tool != "pi":
                         model = await _resolve_bedrock_model_id(db, worker_provider, model)
                     if not is_error and repos:
                         worker_repos: list[str] = json.loads(worker_row.repos or "[]")
@@ -2147,13 +2144,14 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 effective_model = None
                             else:
                                 effective_model = task_model
-                            effective_provider = (
-                                requested_provider
-                                if requested_provider is not None
-                                else task_provider
-                                if task_provider is not None
-                                else followup_worker_provider
-                            )
+                            if requested_provider is not None:
+                                effective_provider = requested_provider
+                            elif requested_tool and requested_tool != task_tool:
+                                # Switching tools invalidates a stale provider too; Pi/Codex should
+                                # get their own defaults unless the caller explicitly pins one.
+                                effective_provider = None
+                            else:
+                                effective_provider = task_provider or followup_worker_provider
                             # Worker-tool defaults live in spawn_settings.
                             if effective_tool in {"pi", "codex"} and (
                                 effective_provider is None or effective_model is None
@@ -2186,6 +2184,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             if (
                                 requested_tier
                                 and requested_model is None
+                                and effective_tool != "pi"
                                 and effective_provider
                                 and not is_error
                             ):
@@ -2200,7 +2199,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 effective_model = _get_model_for_tier(
                                     effective_tier, effective_provider, _catalog
                                 )
-                            if effective_model and effective_provider:
+                            if effective_tool != "pi" and effective_model and effective_provider:
                                 from models import ModelCatalog  # noqa: PLC0415
 
                                 catalog_check = await db.exec(
@@ -2219,7 +2218,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             # Validation matches on the short models.dev ID, so
                             # swap to the Bedrock inference-profile ARN only after
                             # it passes (no-op for non-Bedrock providers).
-                            if not is_error:
+                            if not is_error and effective_tool != "pi":
                                 effective_model = await _resolve_bedrock_model_id(
                                     db, effective_provider, effective_model
                                 )
