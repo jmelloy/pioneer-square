@@ -187,21 +187,28 @@ def test_reset_poll_cancels_and_restarts_when_recently_active():
 
 
 def test_run_foreman_ai_records_action_on_tool_calls():
-    """_run_foreman_ai must call _record_guild_action when tool_uses are present."""
+    """ForemanRun must call _record_guild_action when a round produces tool_uses.
+
+    Pre-#1241 this drove the whole ``_run_foreman_ai`` monolith through 13
+    patches of private module functions. #1241 extracted the round loop into
+    ``ForemanRun``, which takes a scripted LLM/tools/journal/history — no
+    ``patch()`` of private functions needed (see issue #1241's testing
+    strategy: FakeLLM/ScriptedToolExecutor/RecordingJournal/FakeHistory).
+    """
 
     async def _test():
         import foreman.runner as runner
+        from foreman.ports import LLMResult
+        from foreman.run import ForemanRun, RunConfig
 
         guild = "g-action-record"
         runner._guild_last_action_at.pop(guild, None)
 
-        # Build a minimal fake response with one tool_use block
         tool_use_block = MagicMock()
         tool_use_block.type = "tool_use"
         tool_use_block.name = "get_task_status"
         tool_use_block.id = "tu-1"
         tool_use_block.input = {"task_id": "t-1"}
-        # _serialize_content calls b.model_dump(); return a proper dict so json.dumps works.
         tool_use_block.model_dump.return_value = {
             "type": "tool_use",
             "id": "tu-1",
@@ -214,84 +221,69 @@ def test_run_foreman_ai_records_action_on_tool_calls():
         end_turn_block.text = "done"
         end_turn_block.model_dump.return_value = {"type": "text", "text": "done"}
 
-        first_resp = MagicMock()
-        first_resp.stop_reason = "tool_use"
-        first_resp.content = [tool_use_block]
-        first_resp.usage = MagicMock(
-            input_tokens=10,
-            output_tokens=5,
-            cache_read_input_tokens=0,
-            cache_creation_input_tokens=0,
+        class FakeLLM:
+            def __init__(self):
+                self.calls = 0
+
+            async def call(self, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return LLMResult(content=[tool_use_block], stop_reason="tool_use", api_log_id=1)
+                return LLMResult(content=[end_turn_block], stop_reason="end_turn", api_log_id=2)
+
+        class ScriptedToolExecutor:
+            async def exec(self, guild_id, tool_uses, *, user_id=None):
+                return [{"type": "tool_result", "tool_use_id": "tu-1", "content": "ok"}]
+
+        class RecordingJournal:
+            def __init__(self):
+                self.calls: list = []
+
+            async def system(self, content):
+                self.calls.append(("system", content))
+                return 1
+
+            async def human(self, content):
+                self.calls.append(("human", content))
+                return 1
+
+            async def assistant_turn(self, blocks, *, api_log_id):
+                self.calls.append(("assistant_turn", blocks))
+                return 1
+
+            async def tool_response_turn(self, results, *, parent_id):
+                self.calls.append(("tool_response_turn", results))
+                return 1
+
+            async def text(self, content):
+                self.calls.append(("text", content))
+
+            async def tool_use(self, tu):
+                self.calls.append(("tool_use", tu))
+
+            async def tool_result(self, result):
+                self.calls.append(("tool_result", result))
+
+        class FakeHistory:
+            async def load_for_llm(self, guild_id, user_id):
+                return []
+
+        journal = RecordingJournal()
+        run = ForemanRun(
+            RunConfig(guild_id=guild, user_id="u-1", task_id=None, trigger=None, max_rounds=10),
+            llm=FakeLLM(),
+            tools=ScriptedToolExecutor(),
+            journal=journal,
+            history=FakeHistory(),
+        )
+        await run.execute(
+            "check tasks",
+            system_blocks=[{"type": "text", "text": "sys"}],
+            state_preamble="",
+            audit_system="sys",
         )
 
-        second_resp = MagicMock()
-        second_resp.stop_reason = "end_turn"
-        second_resp.content = [end_turn_block]
-        second_resp.usage = MagicMock(
-            input_tokens=10,
-            output_tokens=5,
-            cache_read_input_tokens=0,
-            cache_creation_input_tokens=0,
-        )
-
-        call_count = 0
-
-        async def _fake_create(**kwargs):
-            nonlocal call_count
-            call_count += 1
-            resp = first_resp if call_count == 1 else second_resp
-            raw = MagicMock()
-            raw.parse.return_value = resp
-            raw.headers = {"request-id": "req-1"}
-            return raw
-
-        fake_client = MagicMock()
-        fake_client.messages.with_raw_response.create = _fake_create
-
-        from unittest.mock import AsyncMock
-
-        with (
-            patch.object(runner, "_get_anthropic_client", return_value=fake_client),
-            patch.object(runner, "HAS_ANTHROPIC", True),
-            patch.object(runner, "_get_guild_user_id", AsyncMock(return_value="u-1")),
-            patch.object(runner, "_load_foreman_config", AsyncMock(return_value={})),
-            patch.object(runner, "_save_turn", AsyncMock(return_value=1)),
-            patch.object(runner, "_load_history", AsyncMock(return_value=[])),
-            patch.object(runner, "_create_api_request_log", AsyncMock(return_value=1)),
-            patch.object(runner, "_complete_api_request_log", AsyncMock()),
-            patch.object(runner, "broadcast_msg", AsyncMock()),
-            patch.object(
-                runner,
-                "exec_tools",
-                AsyncMock(
-                    return_value=[
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": "tu-1",
-                            "content": "ok",
-                        }
-                    ]
-                ),
-            ),
-            patch.object(runner, "_fetch_online_workers", AsyncMock(return_value=[])),
-            patch("foreman.runner.get_db") as mock_get_db,
-            patch("foreman.runner.get_guild_pk", AsyncMock(return_value=1)),
-        ):
-            mock_db = AsyncMock()
-            mock_db.close = AsyncMock()
-            mock_db.commit = AsyncMock()
-            mock_db.add = MagicMock()
-            mock_db.rollback = AsyncMock()
-            mock_db.exec = AsyncMock(
-                return_value=MagicMock(
-                    one_or_none=MagicMock(return_value=None),
-                    all=MagicMock(return_value=[]),
-                )
-            )
-            mock_get_db.return_value = mock_db
-
-            await runner._run_foreman_ai(guild, "check tasks")
-
+        assert ("tool_use", tool_use_block) in journal.calls
         assert guild in runner._guild_last_action_at, "_record_guild_action should have been called"
         assert runner._guild_active_recently(guild) is True
 

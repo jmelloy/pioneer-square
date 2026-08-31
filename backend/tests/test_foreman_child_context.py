@@ -178,51 +178,101 @@ def test_load_history_signature_has_no_task_id_param():
     assert "task_id" not in params
 
 
-# ── _emit_foreman_chat: frontend badge vs Discord routing ────────────────────
+# ── TurnJournal.text: frontend badge vs Discord routing ──────────────────────
+#
+# _emit_foreman_chat (which these tests used to drive directly) was folded
+# into TurnJournal by issue #1241 — narration now goes through
+# TurnJournal.text()/tool_use()/tool_result() instead of a standalone
+# function. These tests port the same badge-vs-Discord-routing assertions to
+# the new seam: a TurnJournal built from a ForemanReply, with fake Events/
+# Scheduler ports instead of patching module globals.
 
 
-def _patch_emit(monkeypatch):
-    """Patch broadcast_msg / discord mirror / spawn on foreman.runner.
+class _FakeEvents:
+    """Records broadcast_msg calls; broadcast()/emit_terminal_line() are no-ops."""
 
-    Returns ``(sent_msgs, discord_calls)`` — the ChatMsg objects broadcast to
-    WS clients and the ``(content, task_id)`` tuples passed to the Discord
-    mirror. ``spawn`` is replaced with a version that actually awaits the
-    coroutine so the Discord call is observed.
+    def __init__(self) -> None:
+        self.sent: list = []
+
+    async def broadcast(self, guild_id, message):
+        pass
+
+    async def broadcast_msg(self, guild_id, message):
+        self.sent.append(message)
+
+    async def emit_terminal_line(self, guild_id, agent_id, line):
+        pass
+
+
+class _FakeScheduler:
+    """Actually runs spawned coroutines (via ensure_future) so the Discord
+    mirror call is observable in the same test, unlike a no-op scheduler."""
+
+    def spawn(self, coro, *, name=None):
+        return asyncio.ensure_future(coro)
+
+
+class _FakeDB:
+    def add(self, obj):
+        pass
+
+    async def commit(self):
+        pass
+
+    async def close(self):
+        pass
+
+
+def _build_journal(monkeypatch, *, task_id, discord_task_id, discord_channel_id=None):
+    """Build a TurnJournal wired to fakes, and patch its Discord/DB side effects.
+
+    Returns ``(journal, sent_msgs, discord_calls)`` — the ChatMsg objects
+    broadcast to WS clients and the ``(content, task_id)`` tuples passed to
+    the Discord mirror.
     """
-    import foreman.runner as runner
+    import foreman.journal as journal_mod
+    from foreman.journal import ForemanReply, TurnJournal
+    from foreman.ports import SystemClock
 
-    sent_msgs: list = []
     discord_calls: list = []
-
-    async def fake_broadcast(guild_id, msg):
-        sent_msgs.append(msg)
 
     async def fake_notify(guild_id, content, task_id=None, channel_id=None, user_id=None):
         discord_calls.append((content, task_id))
 
-    def fake_spawn(coro, name=None):
-        return asyncio.ensure_future(coro)
+    async def fake_get_db():
+        return _FakeDB()
 
-    monkeypatch.setattr(runner, "broadcast_msg", fake_broadcast)
-    monkeypatch.setattr(runner.discord_notifier, "notify_foreman_chat", fake_notify)
-    monkeypatch.setattr(runner, "spawn", fake_spawn)
-    return sent_msgs, discord_calls
+    monkeypatch.setattr(journal_mod, "get_db", fake_get_db)
+    monkeypatch.setattr(journal_mod.discord_notifier, "notify_foreman_chat", fake_notify)
+
+    events = _FakeEvents()
+    journal = TurnJournal(
+        guild_id="g1",
+        guild_pk=1,
+        user_id=None,
+        reply=ForemanReply(
+            guild_id="g1",
+            user_id=None,
+            task_id=task_id,
+            thread_id=None,
+            discord_task_id=discord_task_id,
+            discord_channel_id=discord_channel_id,
+        ),
+        events=events,
+        scheduler=_FakeScheduler(),
+        clock=SystemClock(),
+    )
+    return journal, events.sent, discord_calls
 
 
 async def test_emit_task_scoped_run_badges_and_routes_to_task_thread(monkeypatch):
     """A run concerning a task tags the WS message and mirrors to that task's
     Discord thread."""
-    import foreman.runner as runner
-
-    sent_msgs, discord_calls = _patch_emit(monkeypatch)
-
-    await runner._emit_foreman_chat(
-        "g1",
-        "working on it",
-        "2026-01-01T00:00:00Z",
-        task_id="t-abc",
-        discord_task_id="t-abc",
+    journal, sent_msgs, discord_calls = _build_journal(
+        monkeypatch, task_id="t-abc", discord_task_id="t-abc"
     )
+
+    await journal.text("working on it")
     await asyncio.sleep(0)  # let the spawned Discord mirror run
 
     assert sent_msgs[0].taskId == "t-abc"
@@ -233,13 +283,11 @@ async def test_emit_routes_to_task_thread_without_badge_when_task_id_omitted(mon
     """A caller can route the Discord mirror to a task's thread without
     stamping a task_id badge on the WS message (discord_task_id is
     independent of task_id)."""
-    import foreman.runner as runner
-
-    sent_msgs, discord_calls = _patch_emit(monkeypatch)
-
-    await runner._emit_foreman_chat(
-        "g1", "here you go", "2026-01-01T00:00:00Z", task_id=None, discord_task_id="t-abc"
+    journal, sent_msgs, discord_calls = _build_journal(
+        monkeypatch, task_id=None, discord_task_id="t-abc"
     )
+
+    await journal.text("here you go")
     await asyncio.sleep(0)
 
     assert sent_msgs[0].taskId is None
@@ -248,13 +296,11 @@ async def test_emit_routes_to_task_thread_without_badge_when_task_id_omitted(mon
 
 async def test_emit_plain_run_has_no_task_routing(monkeypatch):
     """A run with no task concern badges nothing and posts to the main channel."""
-    import foreman.runner as runner
-
-    sent_msgs, discord_calls = _patch_emit(monkeypatch)
-
-    await runner._emit_foreman_chat(
-        "g1", "guild status", "2026-01-01T00:00:00Z", task_id=None, discord_task_id=None
+    journal, sent_msgs, discord_calls = _build_journal(
+        monkeypatch, task_id=None, discord_task_id=None
     )
+
+    await journal.text("guild status")
     await asyncio.sleep(0)
 
     assert sent_msgs[0].taskId is None
