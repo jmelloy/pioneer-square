@@ -222,10 +222,11 @@
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { ApiError } from '../utils/api'
 import { useGitHubStore } from '../stores/github'
-import { groupAndSortRepos } from '../utils/repoGroups'
+import { useRepoSelection } from '../composables/useRepoSelection'
 import { useModels } from '../composables/useModels'
 import type { EnvVarRow } from '../composables/useForemanConfig'
 import { SPAWN_TOOLS, loadSpawnPipeline, saveSpawnSettings } from '../composables/useSpawnPipeline'
+import { serializeSpawnSettings, toolDefaultsFrom } from '../composables/useSpawnSettings'
 
 const AVAILABLE_TOOLS = SPAWN_TOOLS
 
@@ -257,7 +258,11 @@ let envRowSeq = 0
 const workerEnvRows = ref<EnvVarRow[]>([])
 const toolEnvRows = reactive<Record<string, EnvVarRow[]>>({ claude: [], pi: [], codex: [] })
 
-const groupedRepos = computed(() => groupAndSortRepos(ghStore.repos))
+// The repo/org/tool checkbox behaviour, shared with the Launch form and Guild
+// Settings instead of copy-pasted into each (#1240).
+const { groupedRepos, toggleRepo, orgAllSelected, toggleOrg, setOrgCheckboxRef, toggleTool } =
+  useRepoSelection(repos, tools)
+
 const activeToolLabel = computed(
   () => WORKER_SUBTABS.find((t) => t.id === subTab.value)?.label ?? '',
 )
@@ -274,44 +279,6 @@ function addEnvRow(rows: EnvVarRow[]) {
 function removeEnvRow(rows: EnvVarRow[], row: EnvVarRow) {
   const i = rows.indexOf(row)
   if (i >= 0) rows.splice(i, 1)
-}
-
-function toggleRepo(fullName: string) {
-  const idx = repos.value.indexOf(fullName)
-  if (idx >= 0) repos.value.splice(idx, 1)
-  else repos.value.push(fullName)
-}
-
-function orgAllSelected(owner: string): boolean {
-  const rs = groupedRepos.value.find((g) => g.owner === owner)?.repos ?? []
-  return rs.length > 0 && rs.every((r) => repos.value.includes(r.full_name))
-}
-
-function orgSomeSelected(owner: string): boolean {
-  const rs = groupedRepos.value.find((g) => g.owner === owner)?.repos ?? []
-  return rs.some((r) => repos.value.includes(r.full_name))
-}
-
-function toggleOrg(owner: string) {
-  const rs = groupedRepos.value.find((g) => g.owner === owner)?.repos ?? []
-  if (orgAllSelected(owner)) {
-    const names = new Set(rs.map((r) => r.full_name))
-    repos.value = repos.value.filter((n) => !names.has(n))
-  } else {
-    for (const repo of rs) {
-      if (!repos.value.includes(repo.full_name)) repos.value.push(repo.full_name)
-    }
-  }
-}
-
-function setOrgCheckboxRef(el: HTMLInputElement | null, owner: string) {
-  if (el) el.indeterminate = orgSomeSelected(owner) && !orgAllSelected(owner)
-}
-
-function toggleTool(tool: string) {
-  const idx = tools.value.indexOf(tool)
-  if (idx >= 0) tools.value.splice(idx, 1)
-  else tools.value.push(tool)
 }
 
 async function load() {
@@ -355,30 +322,23 @@ async function save() {
   status.value = ''
   errorMsg.value = ''
   try {
-    const toolDefaults: Record<string, Record<string, string>> = {}
-    if (piDefaultProvider.value || piDefaultModel.value) {
-      toolDefaults.pi = {}
-      if (piDefaultProvider.value) toolDefaults.pi.provider = piDefaultProvider.value
-      if (piDefaultModel.value) toolDefaults.pi.model = piDefaultModel.value
-    }
-    if (codexDefaultModel.value) toolDefaults.codex = { model: codexDefaultModel.value }
-
-    const toolEnvVars: Record<string, { key: string; value: string }[]> = {}
-    for (const tool of ['claude', 'pi', 'codex']) {
-      toolEnvVars[tool] = toolEnvRows[tool]
-        .filter((r) => r.key.trim())
-        .map((r) => ({ key: r.key.trim(), value: r.value }))
-    }
-
-    await saveSpawnSettings(props.guildId, {
-      repos: repos.value,
-      tools: tools.value,
-      envVars: workerEnvRows.value
-        .filter((r) => r.key.trim())
-        .map((r) => ({ key: r.key.trim(), value: r.value })),
-      toolDefaults,
-      toolEnvVars,
-    })
+    // One serialisation path for every spawn-settings write, so blanking an env
+    // var here does the same thing it does in the Launch form and Guild
+    // Settings (see useSpawnSettings.serializeSpawnSettings).
+    await saveSpawnSettings(
+      props.guildId,
+      serializeSpawnSettings({
+        repos: repos.value,
+        tools: tools.value,
+        envVars: workerEnvRows.value,
+        toolDefaults: toolDefaultsFrom({
+          piProvider: piDefaultProvider.value,
+          piModel: piDefaultModel.value,
+          codexModel: codexDefaultModel.value,
+        }),
+        toolEnvVars: toolEnvRows,
+      }),
+    )
     status.value = 'saved'
   } catch (e) {
     status.value = 'error'

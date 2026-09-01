@@ -395,9 +395,10 @@ def test_foreman_config_env_vars_round_trip_in_clear(client):
     }
 
 
-def test_legacy_foreman_config_tool_env_vars_migrate_to_spawn_settings(client):
-    """Legacy per-tool env vars sent to foreman-config move into spawn_settings,
-    isolated per tool, and merge independently of the shared env_vars list."""
+def test_foreman_config_ignores_legacy_worker_fields(client):
+    """foreman-config is orchestrator-LLM only. Worker-facing fields from older
+    clients parse (no 4xx) but are neither persisted nor mirrored into
+    spawn_settings — PUT /spawn-settings is the only writer for those."""
     test_client, db_url = client
     token = make_auth_token(db_url)  # owner of g-ftool
     insert_guild(db_url, "g-ftool")
@@ -410,28 +411,54 @@ def test_legacy_foreman_config_tool_env_vars_migrate_to_spawn_settings(client):
             "env_vars": [{"key": "GITHUB_TOKEN", "value": "shared"}],
             "tool_env_vars": {
                 "claude": [{"key": "CLAUDE_CODE_OAUTH_TOKEN", "value": "claude-tok"}],
-                "pi": [{"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "pi-bedrock"}],
-                "codex": [],
             },
+            "pi_default_provider": "bedrock",
+            "codex_default_model": "gpt-5",
         },
     )
     assert patch.status_code == 200
-    cfg = test_client.get("/guilds/g-ftool/spawn-credentials", headers=headers).json()
-    assert [e["key"] for e in cfg["guild_tool_env_vars"]["claude"]] == ["CLAUDE_CODE_OAUTH_TOKEN"]
-    assert [e["key"] for e in cfg["guild_tool_env_vars"]["pi"]] == ["AWS_BEARER_TOKEN_BEDROCK"]
-    assert cfg["guild_tool_env_vars"].get("codex", []) == []
-    assert patch.json()["env_vars"] == [{"key": "GITHUB_TOKEN", "value": "shared"}]
+    body = patch.json()
+    assert body["env_vars"] == [{"key": "GITHUB_TOKEN", "value": "shared"}]
+    for dropped in ("tool_env_vars", "pi_default_provider", "codex_default_model"):
+        assert dropped not in body
 
-    # A later legacy PATCH touching only claude leaves pi's scoped vars intact.
-    patch2 = test_client.patch(
-        "/api/guilds/g-ftool/foreman-config",
-        headers=headers,
-        json={"tool_env_vars": {"claude": [{"key": "ANTHROPIC_API_KEY", "value": "sk-x"}]}},
-    )
-    assert patch2.status_code == 200
-    cfg2 = test_client.get("/guilds/g-ftool/spawn-credentials", headers=headers).json()
-    assert [e["key"] for e in cfg2["guild_tool_env_vars"]["pi"]] == ["AWS_BEARER_TOKEN_BEDROCK"]
-    assert {e["key"] for e in cfg2["guild_tool_env_vars"]["claude"]} == {"ANTHROPIC_API_KEY"}
+    creds = test_client.get("/guilds/g-ftool/spawn-credentials", headers=headers).json()
+    assert creds["guild_tool_env_vars"] == {}
+    # ...and the foreman's own env var never leaks to workers.
+    assert creds["guild_env_vars"] == []
+
+
+def test_foreman_config_get_does_not_write(client):
+    """Acceptance for #1240: no GET handler mutates the database. The stored
+    config is unchanged after a read, and no spawn_settings row appears."""
+    from models import SpawnSettings
+
+    test_client, db_url = client
+    token = make_auth_token(db_url)  # owner of g-fget
+    insert_guild(db_url, "g-fget")
+    headers = {"Authorization": f"Bearer {token}"}
+    # Seed a row in the legacy shape the lazy migration used to rewrite on read.
+    legacy = {
+        "provider": "anthropic",
+        "env_vars": [{"key": "FORWARDED", "value": "v", "forward": True}],
+        "tool_env_vars": {"claude": [{"key": "CLAUDE_CODE_OAUTH_TOKEN", "value": "t"}]},
+        "pi_default_provider": "bedrock",
+    }
+    with _sync_session(db_url) as session:
+        session.execute(
+            update(Guild).where(col(Guild.slug) == "g-fget").values(foreman_config=legacy)
+        )
+        session.commit()
+
+    assert test_client.get("/api/guilds/g-fget/foreman-config", headers=headers).status_code == 200
+
+    with _sync_session(db_url) as session:
+        stored = session.execute(
+            select(col(Guild.foreman_config)).where(col(Guild.slug) == "g-fget")
+        ).scalar_one()
+        spawn_rows = session.execute(select(func.count()).select_from(SpawnSettings)).scalar_one()
+    assert stored == legacy
+    assert spawn_rows == 0
 
 
 def test_foreman_config_tool_env_vars_rejects_unknown_tool(client):

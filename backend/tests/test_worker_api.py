@@ -585,26 +585,25 @@ def test_get_spawn_credentials_returns_the_guild_baseline_not_the_callers_own_va
     assert [e["key"] for e in body["guild_env_vars"]] == ["GUILD_KEY"]
 
 
-def test_foreman_config_tool_env_vars_migrate_to_spawn_credentials(client):
-    """Legacy foreman_config tool_env_vars are moved into spawn_settings."""
+def test_spawn_credentials_masks_tool_env_vars_from_spawn_settings(client):
+    """Per-tool guild credentials come from spawn_settings — the one store — and
+    are masked on the way out."""
     test_client, db_url = client
     insert_guild(db_url, "guild-cred6")
-    resp = test_client.patch(
-        "/api/guilds/guild-cred6/foreman-config",
-        headers=_auth(db_url),
-        json={"tool_env_vars": {"claude": [{"key": "TOOL_KEY", "value": "tool-secret-value"}]}},
+    _set_guild_spawn_env(
+        db_url, "guild-cred6", tool_env_vars={"claude": {"TOOL_KEY": "tool-secret-value"}}
     )
-    assert resp.status_code == 200, resp.text
 
     resp = test_client.get("/guilds/guild-cred6/spawn-credentials", headers=_auth(db_url))
     assert resp.json()["guild_tool_env_vars"] == {
-        "claude": [{"key": "TOOL_KEY", "masked_value": "to…alue"}]
+        "claude": [{"key": "TOOL_KEY", "masked_value": "to\u2026alue"}]
     }
     assert "tool-secret-value" not in resp.text
 
 
-def test_spawn_worker_migrates_legacy_foreman_config_forward_flag(client, monkeypatch):
-    """Legacy foreman_config forward=True env vars are moved into spawn_settings."""
+def test_foreman_config_env_vars_never_reach_a_worker(client, monkeypatch):
+    """foreman_config env vars are the orchestrator's own, whatever ``forward``
+    an older client sends. Worker env comes only from spawn_settings (#1240)."""
     test_client, db_url = client
     insert_guild(db_url, "guild-fwd")
     _set_guild_env(
@@ -612,10 +611,11 @@ def test_spawn_worker_migrates_legacy_foreman_config_forward_flag(client, monkey
         db_url,
         "guild-fwd",
         [
-            {"key": "SHARED_TOKEN", "value": "yes", "forward": True},
-            {"key": "FOREMAN_ONLY", "value": "no", "forward": False},  # not forwarded
+            {"key": "LEGACY_FORWARDED", "value": "no", "forward": True},
+            {"key": "FOREMAN_ONLY", "value": "no", "forward": False},
         ],
     )
+    _set_guild_spawn_env(db_url, "guild-fwd", env_vars={"SHARED_TOKEN": "yes"})
 
     import worker_runtime
 
@@ -641,6 +641,7 @@ def test_spawn_worker_migrates_legacy_foreman_config_forward_flag(client, monkey
     assert resp.status_code == 200
     assert captured_env["SHARED_TOKEN"] == "yes"
     assert "FOREMAN_ONLY" not in captured_env
+    assert "LEGACY_FORWARDED" not in captured_env
 
 
 def test_spawn_worker_empty_user_value_does_not_clobber_guild_credential(client, monkeypatch):

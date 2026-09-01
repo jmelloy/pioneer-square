@@ -137,10 +137,14 @@
     <span v-if="foremanStatus" class="save-status" :class="'save-status-' + foremanStatus">
       {{ foremanStatus === 'saved' ? 'Saved' : 'Error' }}
     </span>
+    <!-- The Save button writes two independent stores. Say which half failed
+         instead of one undifferentiated "Error" (issue #1240). -->
+    <span v-if="saveDetail" class="save-detail">{{ saveDetail }}</span>
   </div>
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { ForemanConfig } from '../composables/useForemanConfig'
 
 const props = defineProps<{ config: ForemanConfig }>()
@@ -160,6 +164,8 @@ const {
   foremanPollMax,
   foremanSaving,
   foremanStatus,
+  foremanConfigError,
+  workerSettingsError,
   envDefaults,
   envDefaultKeys,
   envDefaultsSummary,
@@ -170,6 +176,14 @@ const {
   removeEnvRow,
   saveForemanConfig,
 } = props.config
+
+const saveDetail = computed(() => {
+  if (foremanConfigError.value) return foremanConfigError.value
+  if (workerSettingsError.value) {
+    return `Foreman settings saved. Worker Settings failed: ${workerSettingsError.value}`
+  }
+  return ''
+})
 
 // Common foreman env-var keys, surfaced as datalist suggestions on the Foreman
 // tab. Users can still type any other key.
@@ -228,6 +242,14 @@ const FOREMAN_ENV_KEYS = [
 }
 .save-status-error {
   color: var(--color-red);
+}
+
+.save-detail {
+  font-size: 10px;
+  color: var(--color-red);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .foreman-divider {

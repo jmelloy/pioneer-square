@@ -251,3 +251,63 @@ describe('GuildSettingsPanel worker vs foreman env split', () => {
     ])
   })
 })
+
+describe('GuildSettingsPanel partial-save reporting', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  /** Mount a tab whose spawn-settings PUT fails while foreman-config succeeds
+   *  (or vice versa), then click Save. */
+  async function saveWith(label: string, failing: 'spawn-settings' | 'foreman-config') {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        const method = init?.method ?? 'GET'
+        if (url.includes('/api/models')) return Promise.resolve(jsonResponse([]))
+        const writing = method !== 'GET'
+        if (writing && url.includes(failing)) {
+          return Promise.resolve(jsonResponse({ detail: 'nope' }, 500))
+        }
+        return Promise.resolve(jsonResponse({}))
+      },
+    )
+    const guild = useGuildStore()
+    guild.currentGuild = { id: 'g1', name: 'Test Guild' }
+    useAuthStore().loginToken = 'tok'
+    const wrapper = mount(GuildSettingsPanel)
+    await flushPromises()
+    const tab = wrapper.findAll('.settings-tab').find((t) => t.text() === label)
+    await tab!.trigger('click')
+    await flushPromises()
+    await wrapper.find('.settings-save-btn').trigger('click')
+    await flushPromises()
+    return wrapper
+  }
+
+  it('names the failing half when the spawn-settings PUT fails', async () => {
+    // The Save button writes two independent stores. A green foreman PATCH plus
+    // a red spawn-settings PUT used to surface as one "Error" (issue #1240).
+    const wrapper = await saveWith('Foreman', 'spawn-settings')
+    const detail = wrapper.find('.save-detail')
+    expect(detail.exists()).toBe(true)
+    expect(detail.text()).toContain('Worker Settings failed')
+    expect(detail.text()).toContain('nope')
+  })
+
+  it('names the failing half when the foreman-config PATCH fails', async () => {
+    const wrapper = await saveWith('Worker Settings', 'foreman-config')
+    const detail = wrapper.find('.save-detail')
+    expect(detail.exists()).toBe(true)
+    expect(detail.text()).toContain('Foreman config failed')
+    expect(detail.text()).toContain('nope')
+  })
+
+  it('shows no detail line when both halves land', async () => {
+    const wrapper = await saveWith('Foreman', 'nothing-fails' as 'spawn-settings')
+    expect(wrapper.find('.save-detail').exists()).toBe(false)
+  })
+})

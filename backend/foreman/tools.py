@@ -115,16 +115,6 @@ async def _to_thread(fn, /, *args, **kwargs):
     )
 
 
-async def _guild_foreman_config(db, guild_pk: int | None) -> dict:
-    """Read a guild's foreman_config via the in-scope session (not a fresh one,
-    so it stays inside the caller's transaction and test fixtures apply)."""
-    if guild_pk is None:
-        return {}
-    res = await db.exec(select(col(Guild.foreman_config)).where(col(Guild.id) == guild_pk))
-    cfg = res.one_or_none()
-    return cfg if isinstance(cfg, dict) else {}
-
-
 async def _apply_spawn_tool_defaults(
     db,
     *,
@@ -134,11 +124,13 @@ async def _apply_spawn_tool_defaults(
     provider: str | None,
     model: str | None,
 ) -> tuple[str | None, str | None]:
-    """Fill worker-tool defaults from spawn_settings.
+    """Fill worker-tool defaults from spawn_settings — the only store for them.
 
     Worker-facing defaults belong with spawn_settings because they affect the
-    spawned worker/task, not the foreman's own LLM. Legacy foreman_config Pi
-    defaults are kept as a fallback while old guild rows are migrated by use.
+    spawned worker/task, not the foreman's own LLM. Pi is provider-agnostic and
+    has no built-in default that authenticates, so without a resolved default a
+    pi task launches with no --provider/--model and fails per-task (see #1040).
+    An explicit provider/model from the foreman's tool call always wins.
     """
     if (
         tool not in {"pi", "codex"}
@@ -150,32 +142,12 @@ async def _apply_spawn_tool_defaults(
 
     resolved = await resolve_spawn(db, guild_pk, user_id)
     defaults = resolved.tool_defaults.get(tool, {})
+    # resolved.provider/model are the *worker's* generic provider/model; they are
+    # a sensible fallback for codex but not for pi, whose defaults are per-tool.
     if provider is None:
         provider = defaults.get("provider") or (resolved.provider if tool != "pi" else None)
     if model is None:
         model = defaults.get("model") or (resolved.model if tool != "pi" else None)
-    return provider, model
-
-
-def _apply_pi_defaults(
-    tool: str | None,
-    provider: str | None,
-    model: str | None,
-    guild_cfg: dict | None,
-) -> tuple[str | None, str | None]:
-    """Fill pi's provider/model from the guild's foreman config when a dispatch
-    left them unset. Pi is provider-agnostic and has no built-in default that
-    authenticates, so without this a pi task launches with no --provider/--model
-    and fails per-task (see #1040). Only applies to the pi tool; an explicit
-    provider/model from the foreman's tool call always wins.
-    """
-    if tool != "pi":
-        return provider, model
-    cfg = guild_cfg or {}
-    if provider is None:
-        provider = cfg.get("pi_default_provider") or None
-    if model is None:
-        model = cfg.get("pi_default_model") or None
     return provider, model
 
 
