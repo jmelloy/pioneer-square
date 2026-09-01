@@ -2,8 +2,18 @@ import { ref, computed, reactive, type ComputedRef } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { useModels } from './useModels'
 import { loadSpawnPipeline, saveSpawnSettings } from './useSpawnPipeline'
+import { normalizeEnvPairs, serializeSpawnSettings, toolDefaultsFrom } from './useSpawnSettings'
+import { API_BASE, ApiError } from '../utils/api'
 
-const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
+/** Pull the server's `detail` string off a failed response, falling back to
+ *  the status code — the same shape `api()` puts on ApiError. */
+async function _detail(res: Response): Promise<string> {
+  try {
+    return ((await res.json()) as { detail?: string }).detail ?? `HTTP ${res.status}`
+  } catch {
+    return `HTTP ${res.status}`
+  }
+}
 
 export interface EnvVarRow {
   id: number
@@ -12,10 +22,12 @@ export interface EnvVarRow {
 }
 
 /**
- * Shared load/save state for a guild's foreman-config: the foreman's own
- * orchestrator LLM settings plus the per-worker-tool defaults/env vars. Both
- * the Foreman tab and the Worker Settings tab read and write this same
- * config, so the panel creates one instance and passes it to both.
+ * Shared load/save state for a guild's settings dialogue: the foreman's own
+ * orchestrator LLM settings (foreman_config) plus the guild's worker-facing
+ * spawn baseline (spawn_settings). Two stores, two endpoints — the Foreman tab
+ * and the Worker Settings tab share one instance, and `saveForemanConfig`
+ * reports each half's outcome separately via `foremanConfigError` /
+ * `workerSettingsError`.
  */
 export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
   const authStore = useAuthStore()
@@ -55,6 +67,11 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
   const foremanPollMax = ref<number | ''>('')
   const foremanSaving = ref(false)
   const foremanStatus = ref<'' | 'saved' | 'error'>('')
+  // Which half of the save failed, if either. The two halves hit different
+  // endpoints (foreman-config PATCH, spawn-settings PUT) and can fail
+  // independently, so they report independently.
+  const foremanConfigError = ref('')
+  const workerSettingsError = ref('')
   let foremanStatusTimer: ReturnType<typeof setTimeout> | null = null
 
   // Masked foreman defaults supplied by the server's process environment (see
@@ -76,10 +93,10 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
   })
 
   let envRowSeq = 0
-  // Guild env vars split by destination instead of a per-row `forward` checkbox:
-  // workerEnvRows reach every worker tool (persisted with forward=true), while
-  // foremanEnvRows stay with the foreman's own LLM (forward=false). The wire
-  // format still carries the flag; the UI derives it from which list a var is in.
+  // Guild env vars split by destination, which is also how they are stored:
+  // workerEnvRows reach every worker tool (spawn_settings.env_vars), while
+  // foremanEnvRows stay with the foreman's own LLM (foreman_config.env_vars).
+  // There is no `forward` flag any more — the store a var lives in decides.
   const workerEnvRows = ref<EnvVarRow[]>([])
   const foremanEnvRows = ref<EnvVarRow[]>([])
 
@@ -93,7 +110,7 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
   }
 
   // Per-tool env var rows, keyed by tool id. Each tool's rows are saved under
-  // foreman_config.tool_env_vars[tool] and reach only that tool's runner.
+  // spawn_settings.tool_env_vars[tool] and reach only that tool's runner.
   const toolEnvRows = reactive<Record<string, EnvVarRow[]>>({ claude: [], pi: [], codex: [] })
 
   function addToolEnvVar(tool: string) {
@@ -172,6 +189,8 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
     if (!guildId.value) return
     foremanSaving.value = true
     foremanStatus.value = ''
+    foremanConfigError.value = ''
+    workerSettingsError.value = ''
     try {
       const body: Record<string, unknown> = {}
       if (foremanModel.value) body.model = foremanModel.value
@@ -188,15 +207,12 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
       else body.poll_max_interval = null
       // Foreman config now stores only foreman-only env vars. Worker-facing
       // env/defaults are saved to spawn_settings below.
-      const envByKey = new Map<string, string>()
-      for (const r of foremanEnvRows.value) {
-        const key = r.key.trim()
-        if (!key) continue
-        const existing = envByKey.get(key)
-        if (existing && r.value === '' && existing !== '') continue
-        envByKey.set(key, r.value)
-      }
-      body.env_vars = [...envByKey].map(([key, value]) => ({ key, value, forward: false }))
+      // Same empty-value rule as spawn settings; `forward: false` is sent
+      // explicitly to clear the flag off any legacy row still carrying it.
+      body.env_vars = normalizeEnvPairs(foremanEnvRows.value).map((p) => ({
+        ...p,
+        forward: false,
+      }))
       const res = await fetch(
         `${API_BASE}/api/guilds/${encodeURIComponent(guildId.value)}/foreman-config`,
         {
@@ -205,51 +221,40 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
           body: JSON.stringify(body),
         },
       )
-      const toolEnvVars: Record<string, { key: string; value: string }[]> = {}
-      for (const tool of ['claude', 'pi', 'codex']) {
-        const byKey = new Map<string, string>()
-        for (const r of toolEnvRows[tool]) {
-          const key = r.key.trim()
-          if (!key) continue
-          const existing = byKey.get(key)
-          if (existing && r.value === '' && existing !== '') continue
-          byKey.set(key, r.value)
-        }
-        toolEnvVars[tool] = [...byKey].map(([key, value]) => ({ key, value }))
-      }
-      const toolDefaults: Record<string, Record<string, string>> = {}
-      if (piDefaultProvider.value || piDefaultModel.value) {
-        toolDefaults.pi = {}
-        if (piDefaultProvider.value) toolDefaults.pi.provider = piDefaultProvider.value
-        if (piDefaultModel.value) toolDefaults.pi.model = piDefaultModel.value
-      }
-      if (codexDefaultModel.value) toolDefaults.codex = { model: codexDefaultModel.value }
-      const workerBody = {
+      // One serialisation path for every spawn-settings write (see
+      // useSpawnSettings.serializeSpawnSettings) so blanking an env var here
+      // does what it does in User Preferences and the Launch form.
+      const workerBody = serializeSpawnSettings({
         repos: workerRepos.value,
         tools: workerTools.value,
-        envVars: workerEnvRows.value
-          .filter((r) => r.key.trim())
-          .map((r) => ({ key: r.key.trim(), value: r.value })),
-        provider: null,
-        model: null,
-        toolDefaults,
-        toolEnvVars,
-      }
-      let workerOk = false
+        envVars: workerEnvRows.value,
+        toolDefaults: toolDefaultsFrom({
+          piProvider: piDefaultProvider.value,
+          piModel: piDefaultModel.value,
+          codexModel: codexDefaultModel.value,
+        }),
+        toolEnvVars: toolEnvRows,
+      })
+      let workerError = ''
       try {
         await saveSpawnSettings(guildId.value, workerBody)
-        workerOk = true
-      } catch {
-        workerOk = false
+      } catch (e) {
+        workerError = e instanceof ApiError ? e.message : 'Failed to save worker settings'
       }
-      if (res.ok && workerOk) {
+      // Report the halves separately: a successful foreman PATCH plus a failed
+      // spawn-settings PUT used to surface as one undifferentiated "error" and
+      // the user couldn't tell which landed (issue #1240).
+      foremanConfigError.value = res.ok ? '' : await _detail(res)
+      workerSettingsError.value = workerError
+      if (res.ok && !workerError) {
         foremanStatus.value = 'saved'
         await loadForemanConfig()
       } else {
         foremanStatus.value = 'error'
       }
-    } catch {
+    } catch (e) {
       foremanStatus.value = 'error'
+      foremanConfigError.value = e instanceof Error ? e.message : 'Failed to save'
     } finally {
       foremanSaving.value = false
       if (foremanStatusTimer) clearTimeout(foremanStatusTimer)
@@ -279,6 +284,8 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
     foremanPollMax,
     foremanSaving,
     foremanStatus,
+    foremanConfigError,
+    workerSettingsError,
     envDefaults,
     envDefaultKeys,
     envDefaultsSummary,

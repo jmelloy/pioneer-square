@@ -24,9 +24,7 @@ function mockFetch(routes: Routes, onSpawn?: (body: unknown) => unknown) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input)
     if (url.includes('/spawn-credentials')) {
-      return Promise.resolve(
-        jsonResponse(routes.credentials ?? { guild_env_vars: [] }),
-      )
+      return Promise.resolve(jsonResponse(routes.credentials ?? { guild_env_vars: [] }))
     }
     if (url.includes('/spawn-worker')) {
       const body = init?.body ? JSON.parse(init.body as string) : {}
@@ -247,6 +245,33 @@ describe('SpawnWorkerForm guild defaults and saved settings', () => {
       .find((b) => b.text() === 'Use last launch')
     await useLast!.trigger('click')
     expect(checkedRepos(wrapper)).toEqual(['beta'])
+  })
+
+  it("keeps the user's own env vars when resetting to the guild defaults", async () => {
+    // "Use guild defaults" is about the launch shape (repos/tools/agent count).
+    // The guild's credentials are a separate, masked list — so resetting must
+    // not silently drop env vars the user typed and saved (#1240).
+    mockFetch({
+      defaults: { repos: ['org/alpha'], tools: ['pi'], agent_count: 2 },
+      settings: { repos: ['org/beta'], envVars: [{ key: 'MY_TOKEN', value: 'mine' }] },
+    })
+    const wrapper = mountForm(TWO_REPOS)
+    await flushPromises()
+
+    const useGuild = wrapper
+      .findAll('.spawn-defaults-reset')
+      .find((b) => b.text() === 'Use guild defaults')
+    await useGuild!.trigger('click')
+
+    expect(checkedRepos(wrapper)).toEqual(['alpha'])
+    expect(wrapper.text()).toContain('Showing the guild defaults.')
+
+    await switchTab(wrapper, 'Environment')
+    const keys = wrapper
+      .findAll('.spawn-env-row input')
+      .map((i) => (i.element as HTMLInputElement).value)
+    expect(keys).toContain('MY_TOKEN')
+    expect(keys).toContain('mine')
   })
 
   it('marks the form as customised once a repo is toggled by hand', async () => {

@@ -159,7 +159,7 @@
                   min="1"
                   max="16"
                   :placeholder="String(guildDefaults?.agent_count ?? 4)"
-                  @input="formSource = 'custom'"
+                  @input="edited = true"
                 />
                 <div class="spawn-defaults-row">
                   <span class="spawn-defaults-note">
@@ -388,18 +388,14 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useGuildStore } from '../../stores/guild'
 import { useGitHubStore } from '../../stores/github'
 import { api } from '../../utils/api'
-import { groupAndSortRepos } from '../../utils/repoGroups'
+import { useRepoSelection } from '../../composables/useRepoSelection'
 import { useModels } from '../../composables/useModels'
 import {
   SPAWN_TOOLS,
-  loadSpawnPipeline,
-  saveSpawnSettings as persistSpawnSettings,
   type EnvPair,
-  type SpawnSettings,
-  type GuildSpawnDefaults,
   type GuildEnvVarStatus,
-  type SpawnCredentials,
 } from '../../composables/useSpawnPipeline'
+import { toolDefaultsFrom, useSpawnSettings } from '../../composables/useSpawnSettings'
 
 const emit = defineEmits<{ (e: 'launched'): void; (e: 'close'): void }>()
 
@@ -422,13 +418,19 @@ const AVAILABLE_TOOLS = SPAWN_TOOLS
 
 const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
 
-const guildDefaults = ref<GuildSpawnDefaults | null>(null)
-// The caller's own settings from their last launch, kept so they can be
-// restored after an experiment with the guild baseline.
-const savedSettings = ref<SpawnSettings | null>(null)
+// One resolver for the whole override chain: guild defaults < this user's saved
+// settings < their edits for this launch. The precedence rules are a pure
+// function in useSpawnSettings, not logic buried in this component (#1240).
+const spawn = useSpawnSettings(computed(() => guildStore.currentGuild?.id))
+const { hasGuildDefaults, hasSavedSettings } = spawn
+const guildDefaults = computed(() => spawn.layers.value.guild)
+const credentials = spawn.credentials
+// Set as soon as the user touches a field: the resolved layers no longer
+// describe what the form shows.
+const edited = ref(false)
 // Which layer the form currently shows: the guild baseline, this user's last
 // launch, or values they have since edited.
-const formSource = ref<'guild' | 'saved' | 'custom'>('custom')
+const formSource = computed(() => (edited.value ? 'custom' : spawn.source.value))
 const selectedRepos = ref<string[]>([])
 const name = ref('')
 const selectedTools = ref<string[]>([])
@@ -450,7 +452,6 @@ const loadingRepos = ref(false)
 const repoFetchFailed = ref(false)
 const launched = ref(false)
 const launchedWorkerId = ref('')
-const credentials = ref<SpawnCredentials | null>(null)
 const credentialsLoading = ref(false)
 const credentialsError = ref('')
 // Per-key opt-out for this launch only; a key defaults to included until unchecked.
@@ -460,7 +461,13 @@ const hasCredentials = computed(
   () => !!credentials.value && credentials.value.guild_env_vars.length > 0,
 )
 
-const groupedRepos = computed(() => groupAndSortRepos(ghStore.repos))
+// The repo/org/tool checkbox behaviour, shared with User Preferences and Guild
+// Settings instead of copy-pasted into each (#1240). Every toggle marks the form
+// as edited, so the "showing the guild defaults" label stops claiming that.
+const { groupedRepos, toggleRepo, orgAllSelected, toggleOrg, setOrgCheckboxRef, toggleTool } =
+  useRepoSelection(selectedRepos, selectedTools, () => {
+    edited.value = true
+  })
 
 const guildCredKeys = computed(
   () => new Set((credentials.value?.guild_env_vars ?? []).map((c) => c.key)),
@@ -490,18 +497,6 @@ const guildToolEnv = computed<GuildEnvVarStatus[]>(
 
 const guildDefaultRepos = computed(() => new Set(guildDefaults.value?.repos ?? []))
 const guildDefaultTools = computed(() => new Set(guildDefaults.value?.tools ?? []))
-
-const hasSavedSettings = computed(() => {
-  const s = savedSettings.value
-  if (!s) return false
-  return !!(
-    s.repos?.length ||
-    s.tools?.length ||
-    s.envVars?.length ||
-    Object.values(s.toolDefaults ?? {}).some((d) => d.provider || d.model) ||
-    Object.values(s.toolEnvVars ?? {}).some((p) => p.length)
-  )
-})
 
 function toggleCredential(key: string) {
   includedKeys.value[key] = includedKeys.value[key] === false ? true : false
@@ -544,51 +539,33 @@ function availableOnly(repos: string[] | undefined): string[] {
   return (repos ?? []).filter((r) => availableRepoNames.has(r))
 }
 
-/** Apply the guild defaults as the current form values. Used both for the
- *  initial pre-fill (when the user has no saved settings) and the explicit
- *  "reset to guild defaults" button. Leaves env vars alone: those are the
- *  user's own, and the guild's are shown separately in the Environment tab. */
-function applyGuildDefaults(defaults: GuildSpawnDefaults) {
-  selectedRepos.value = availableOnly(defaults.repos)
-  selectedTools.value = [...(defaults.tools ?? [])]
-  agentCount.value = defaults.agent_count ?? null
-  formSource.value = 'guild'
-}
-
-/** Apply this user's last-used settings, falling back to the guild baseline for
- *  anything they never set. */
-function applySavedSettings(saved: SpawnSettings) {
-  if (saved.repos?.length) selectedRepos.value = availableOnly(saved.repos)
-  else selectedRepos.value = availableOnly(guildDefaults.value?.repos)
-  if (saved.tools?.length) selectedTools.value = [...saved.tools]
-  else selectedTools.value = [...(guildDefaults.value?.tools ?? [])]
-  agentCount.value = guildDefaults.value?.agent_count ?? null
-  envVars.value = (saved.envVars ?? []).map((p) => ({ ...p }))
-  const defaults = saved.toolDefaults ?? {}
-  piDefaultProvider.value = defaults.pi?.provider ?? ''
-  piDefaultModel.value = defaults.pi?.model ?? ''
-  codexDefaultModel.value = defaults.codex?.model ?? ''
+/** Copy the resolved layers into the editable form fields. The resolution
+ *  itself lives in useSpawnSettings; this only projects it onto the inputs
+ *  (and filters repos down to the ones this user can actually see). */
+function seedForm() {
+  const r = spawn.resolved.value
+  selectedRepos.value = availableOnly(r.repos)
+  selectedTools.value = [...r.tools]
+  agentCount.value = r.agentCount
+  envVars.value = r.envVars.map((p) => ({ ...p }))
+  piDefaultProvider.value = r.toolDefaults.pi?.provider ?? ''
+  piDefaultModel.value = r.toolDefaults.pi?.model ?? ''
+  codexDefaultModel.value = r.toolDefaults.codex?.model ?? ''
   for (const tool of AVAILABLE_TOOLS) {
-    toolEnvVars[tool] = (saved.toolEnvVars?.[tool] ?? []).map((p) => ({ ...p }))
+    toolEnvVars[tool] = (r.toolEnvVars[tool] ?? []).map((p) => ({ ...p }))
   }
-  formSource.value = 'saved'
+  edited.value = false
 }
 
 function resetToGuildDefaults() {
-  if (guildDefaults.value) applyGuildDefaults(guildDefaults.value)
+  spawn.resetToGuild()
+  seedForm()
 }
 
 function restoreSavedSettings() {
-  if (savedSettings.value) applySavedSettings(savedSettings.value)
+  spawn.restoreSaved()
+  seedForm()
 }
-
-const hasGuildDefaults = computed(
-  () =>
-    !!guildDefaults.value &&
-    ((guildDefaults.value.repos?.length ?? 0) > 0 ||
-      (guildDefaults.value.tools?.length ?? 0) > 0 ||
-      guildDefaults.value.agent_count != null),
-)
 
 const guildRepoSummary = computed(() => {
   const repos = guildDefaults.value?.repos ?? []
@@ -605,30 +582,26 @@ const sourceLabel = computed(() => {
     : 'No guild defaults or saved settings yet — pick repos to launch.'
 })
 
-async function saveSettings(guildId: string) {
+async function saveSettings() {
   try {
-    const toolDefaults: Record<string, Record<string, string>> = {}
-    if (piDefaultProvider.value || piDefaultModel.value) {
-      toolDefaults.pi = {}
-      if (piDefaultProvider.value) toolDefaults.pi.provider = piDefaultProvider.value
-      if (piDefaultModel.value) toolDefaults.pi.model = piDefaultModel.value
-    }
-    if (codexDefaultModel.value) toolDefaults.codex = { model: codexDefaultModel.value }
-    await persistSpawnSettings(guildId, {
-      repos: selectedRepos.value,
-      tools: selectedTools.value,
-      // Persist only meaningful pairs so a stale blank row can't reappear.
-      // A pair whose key matches a guild credential is kept on purpose: it is
-      // this user's deliberate override and must survive to the next launch.
-      envVars: envVars.value.filter((e) => e.key.trim() !== '' && e.value.trim() !== ''),
-      toolDefaults,
-      toolEnvVars: Object.fromEntries(
-        AVAILABLE_TOOLS.map((tool) => [
-          tool,
-          toolEnvVars[tool].filter((e) => e.key.trim() !== '' && e.value.trim() !== ''),
-        ]),
-      ),
-    })
+    // One serialisation path for every spawn-settings write, with one
+    // empty-value rule (see useSpawnSettings.serializeSpawnSettings). A pair
+    // whose key matches a guild credential is kept on purpose: it is this
+    // user's deliberate override and must survive to the next launch.
+    await spawn.save(
+      {
+        repos: selectedRepos.value,
+        tools: selectedTools.value,
+        envVars: envVars.value,
+        toolDefaults: toolDefaultsFrom({
+          piProvider: piDefaultProvider.value,
+          piModel: piDefaultModel.value,
+          codexModel: codexDefaultModel.value,
+        }),
+        toolEnvVars,
+      },
+      'user',
+    )
   } catch {
     // Settings persistence failure is non-fatal — the spawn already succeeded.
   }
@@ -688,87 +661,27 @@ onMounted(async () => {
 
   if (guild) {
     credentialsLoading.value = true
-    const pipeline = await loadSpawnPipeline(guild.id)
-    guildDefaults.value = pipeline.defaults
-    credentials.value = pipeline.credentials
-    credentialsError.value = pipeline.credentials ? '' : 'Failed to load credentials'
-    for (const cred of pipeline.credentials?.guild_env_vars ?? []) {
+    await spawn.load()
+    credentialsError.value = credentials.value ? '' : 'Failed to load credentials'
+    for (const cred of credentials.value?.guild_env_vars ?? []) {
       if (!(cred.key in includedKeys.value)) includedKeys.value[cred.key] = true
     }
     credentialsLoading.value = false
-    savedSettings.value = pipeline.settings
-  } else {
-    guildDefaults.value = null
-    savedSettings.value = null
   }
 
-  if (hasSavedSettings.value && savedSettings.value) {
-    // The user has settings from a previous launch — those win over the guild
-    // baseline, and "Reset to guild defaults" undoes that.
-    applySavedSettings(savedSettings.value)
-  } else if (guildDefaults.value && hasGuildDefaults.value) {
-    // Nothing saved yet — start from the guild's spawn defaults.
-    applyGuildDefaults(guildDefaults.value)
+  if (hasSavedSettings.value || hasGuildDefaults.value) {
+    seedForm()
   } else {
+    // Nothing to resolve from — fall back to whatever repos the user has
+    // selected elsewhere in the app.
     selectedRepos.value = repoFetchFailed.value ? [] : [...ghStore.selectedRepos]
-    formSource.value = 'custom'
+    edited.value = true
   }
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKeydown)
 })
-
-function toggleRepo(fullName: string) {
-  formSource.value = 'custom'
-  const idx = selectedRepos.value.indexOf(fullName)
-  if (idx >= 0) {
-    selectedRepos.value.splice(idx, 1)
-  } else {
-    selectedRepos.value.push(fullName)
-  }
-}
-
-function orgAllSelected(owner: string): boolean {
-  const repos = groupedRepos.value.find((g) => g.owner === owner)?.repos ?? []
-  return repos.length > 0 && repos.every((r) => selectedRepos.value.includes(r.full_name))
-}
-
-function orgSomeSelected(owner: string): boolean {
-  const repos = groupedRepos.value.find((g) => g.owner === owner)?.repos ?? []
-  return repos.some((r) => selectedRepos.value.includes(r.full_name))
-}
-
-function toggleOrg(owner: string) {
-  formSource.value = 'custom'
-  const repos = groupedRepos.value.find((g) => g.owner === owner)?.repos ?? []
-  if (orgAllSelected(owner)) {
-    const names = new Set(repos.map((r) => r.full_name))
-    selectedRepos.value = selectedRepos.value.filter((n) => !names.has(n))
-  } else {
-    for (const repo of repos) {
-      if (!selectedRepos.value.includes(repo.full_name)) {
-        selectedRepos.value.push(repo.full_name)
-      }
-    }
-  }
-}
-
-function setOrgCheckboxRef(el: HTMLInputElement | null, owner: string) {
-  if (el) {
-    el.indeterminate = orgSomeSelected(owner) && !orgAllSelected(owner)
-  }
-}
-
-function toggleTool(tool: string) {
-  formSource.value = 'custom'
-  const idx = selectedTools.value.indexOf(tool)
-  if (idx >= 0) {
-    selectedTools.value.splice(idx, 1)
-  } else {
-    selectedTools.value.push(tool)
-  }
-}
 
 function addEnvVar() {
   envVars.value.push({ key: '', value: '' })
@@ -816,7 +729,7 @@ async function launch() {
         exclude_env_keys: excludeEnvKeys.value.length ? excludeEnvKeys.value : undefined,
       },
     })
-    await saveSettings(guild.id)
+    await saveSettings()
     launchedWorkerId.value = result?.worker_id ?? ''
     launched.value = true
     setTimeout(() => emit('launched'), 2500)

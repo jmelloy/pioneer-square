@@ -18,8 +18,8 @@
   <!-- General: env vars every worker tool in this guild receives -->
   <template v-if="workerSubTab === 'general'">
     <p class="foreman-hint">
-      Every worker tool in this guild inherits these variables. Use the Claude / Pi / Codex tabs
-      to override a value for a single tool.
+      Every worker tool in this guild inherits these variables. Use the Claude / Pi / Codex tabs to
+      override a value for a single tool.
     </p>
     <div class="env-var-list">
       <div class="env-var-row env-var-head">
@@ -51,7 +51,10 @@
           ✕
         </button>
       </div>
-      <button class="pixel-btn env-var-add-btn" @click="config.addEnvRow(config.workerEnvRows.value)">
+      <button
+        class="pixel-btn env-var-add-btn"
+        @click="config.addEnvRow(config.workerEnvRows.value)"
+      >
         + Add Variable
       </button>
     </div>
@@ -80,7 +83,12 @@
         autocomplete="off"
       />
       <datalist id="pi-model-hints">
-        <option v-for="m in config.piProviderModels.value" :key="m.id" :value="m.id" :label="m.name" />
+        <option
+          v-for="m in config.piProviderModels.value"
+          :key="m.id"
+          :value="m.id"
+          :label="m.name"
+        />
       </datalist>
     </div>
     <p class="foreman-hint">
@@ -167,9 +175,16 @@
     >
       {{ config.foremanSaving.value ? 'Saving…' : 'Save' }}
     </button>
-    <span v-if="config.foremanStatus.value" class="save-status" :class="'save-status-' + config.foremanStatus.value">
+    <span
+      v-if="config.foremanStatus.value"
+      class="save-status"
+      :class="'save-status-' + config.foremanStatus.value"
+    >
       {{ config.foremanStatus.value === 'saved' ? 'Saved' : 'Error' }}
     </span>
+    <!-- The Save button writes two independent stores. Say which half failed
+         instead of one undifferentiated "Error" (issue #1240). -->
+    <span v-if="saveDetail" class="save-detail">{{ saveDetail }}</span>
   </div>
 </template>
 
@@ -184,6 +199,13 @@ const props = defineProps<{ guildId: string; config: ForemanConfig }>()
 // mutating these refs isn't flagged as a prop mutation — they're shared state
 // owned by the composable, not this prop.
 const { piDefaultProvider, piDefaultModel, codexDefaultModel } = props.config
+
+const saveDetail = computed(() => {
+  const worker = props.config.workerSettingsError.value
+  if (worker) return worker
+  const foreman = props.config.foremanConfigError.value
+  return foreman ? `Worker Settings saved. Foreman config failed: ${foreman}` : ''
+})
 
 // Worker Settings sub-tabs: General (vars every tool receives) + one override
 // tab per worker tool.
@@ -299,6 +321,14 @@ const TOOL_ENV_KEYS: Record<string, string[]> = {
 }
 .save-status-error {
   color: var(--color-red);
+}
+
+.save-detail {
+  font-size: 10px;
+  color: var(--color-red);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .foreman-tool-tabs {

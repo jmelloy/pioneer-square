@@ -14,7 +14,10 @@
         </div>
         <div v-else class="gsd-repo-list">
           <template v-for="group in groupedRepos" :key="group.owner">
-            <label class="gsd-repo-row gsd-org-row" :class="{ selected: orgAllSelected(group.owner) }">
+            <label
+              class="gsd-repo-row gsd-org-row"
+              :class="{ selected: orgAllSelected(group.owner) }"
+            >
               <input
                 type="checkbox"
                 :ref="(el) => setOrgCheckboxRef(el as HTMLInputElement | null, group.owner)"
@@ -104,7 +107,7 @@ import { ref, computed, onMounted } from 'vue'
 import { api, ApiError } from '../utils/api'
 import { useAuthStore } from '../stores/auth'
 import { useGitHubStore } from '../stores/github'
-import { groupAndSortRepos } from '../utils/repoGroups'
+import { useRepoSelection } from '../composables/useRepoSelection'
 
 const AVAILABLE_TOOLS = ['claude', 'codex', 'pi'] as const
 
@@ -135,7 +138,11 @@ const agentCount = ref<number | null>(null)
 const myRole = ref<string | null>(null)
 
 const canManage = computed(() => myRole.value === 'owner')
-const groupedRepos = computed(() => groupAndSortRepos(ghStore.repos))
+
+// The repo/org/tool checkbox behaviour, shared with the Launch form and User
+// Preferences instead of copy-pasted into each (#1240).
+const { groupedRepos, toggleRepo, orgAllSelected, toggleOrg, setOrgCheckboxRef, toggleTool } =
+  useRepoSelection(repos, tools)
 
 let statusTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -164,7 +171,9 @@ async function loadRole() {
 
 async function loadDefaults() {
   try {
-    const d = await api<SpawnDefaults>(`/guilds/${encodeURIComponent(props.guildId)}/spawn-defaults`)
+    const d = await api<SpawnDefaults>(
+      `/guilds/${encodeURIComponent(props.guildId)}/spawn-defaults`,
+    )
     repos.value = d.repos ?? []
     tools.value = d.tools ?? []
     agentCount.value = d.agent_count ?? null
@@ -173,44 +182,6 @@ async function loadDefaults() {
     tools.value = []
     agentCount.value = null
   }
-}
-
-function toggleRepo(fullName: string) {
-  const idx = repos.value.indexOf(fullName)
-  if (idx >= 0) repos.value.splice(idx, 1)
-  else repos.value.push(fullName)
-}
-
-function orgAllSelected(owner: string): boolean {
-  const rs = groupedRepos.value.find((g) => g.owner === owner)?.repos ?? []
-  return rs.length > 0 && rs.every((r) => repos.value.includes(r.full_name))
-}
-
-function orgSomeSelected(owner: string): boolean {
-  const rs = groupedRepos.value.find((g) => g.owner === owner)?.repos ?? []
-  return rs.some((r) => repos.value.includes(r.full_name))
-}
-
-function toggleOrg(owner: string) {
-  const rs = groupedRepos.value.find((g) => g.owner === owner)?.repos ?? []
-  if (orgAllSelected(owner)) {
-    const names = new Set(rs.map((r) => r.full_name))
-    repos.value = repos.value.filter((n) => !names.has(n))
-  } else {
-    for (const repo of rs) {
-      if (!repos.value.includes(repo.full_name)) repos.value.push(repo.full_name)
-    }
-  }
-}
-
-function setOrgCheckboxRef(el: HTMLInputElement | null, owner: string) {
-  if (el) el.indeterminate = orgSomeSelected(owner) && !orgAllSelected(owner)
-}
-
-function toggleTool(tool: string) {
-  const idx = tools.value.indexOf(tool)
-  if (idx >= 0) tools.value.splice(idx, 1)
-  else tools.value.push(tool)
 }
 
 async function save() {
