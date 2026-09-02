@@ -102,9 +102,12 @@ async def test_returns_failed_on_push_failure():
 
 
 @pytest.mark.asyncio
-async def test_success_but_no_commits_marks_error(tmp_path):
-    """A 'successful' run that produced no commits (e.g. pi blocked on every
-    tool call) must be flagged, not marked awaiting-review."""
+async def test_success_with_dirty_tree_marks_error(tmp_path):
+    """A 'successful' run that leaves the work tree dirty (e.g. pi blocked on
+    every tool call, so push_branch's auto-commit had nothing committable to
+    push) must be flagged, not marked awaiting-review. Only a dirty tree is a
+    failure (#1259) — "nothing to push" with a clean tree is not, since the
+    agent may have already committed and pushed earlier in the task."""
     cfg = Config(
         backend_url="ws://localhost:8000",
         guild_id="g",
@@ -136,6 +139,10 @@ async def test_success_but_no_commits_marks_error(tmp_path):
             new=AsyncMock(return_value="nothing"),  # ...but produced no commits
         ),
         patch("pioneer_worker.worker.github_pr.find_existing_pr", new=AsyncMock(return_value=None)),
+        patch(
+            "pioneer_worker.worker.git_ops.run_git",
+            new=AsyncMock(return_value=(0, "M some_file.py\n", "")),  # dirty tree
+        ),
     ):
         await worker._execute_task(task, agent)
 

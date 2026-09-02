@@ -29,7 +29,7 @@ def _make_cfg(**kwargs) -> Config:
     )
 
 
-async def _run_with_push(tmp_path, push_result: str) -> dict:
+async def _run_with_push(tmp_path, push_result: str, *, dirty: bool = False) -> dict:
     """Run one successful claude task whose push returns *push_result*.
 
     Returns the kwargs of the final _task_update call — the outcome the
@@ -41,6 +41,7 @@ async def _run_with_push(tmp_path, push_result: str) -> dict:
     worker._release_task_worktrees = AsyncMock()  # type: ignore[assignment]
 
     task = {"id": "t-outcome", "description": "do something", "name": "do something"}
+    dirty_status = (0, "M some_file.py\n" if dirty else "", "")
     with (
         patch(
             "pioneer_worker.worker.git_ops.ensure_repo",
@@ -56,6 +57,10 @@ async def _run_with_push(tmp_path, push_result: str) -> dict:
             new=AsyncMock(return_value=push_result),
         ),
         patch("pioneer_worker.worker.github_pr.find_existing_pr", new=AsyncMock(return_value=None)),
+        patch(
+            "pioneer_worker.worker.git_ops.run_git",
+            new=AsyncMock(return_value=dirty_status),
+        ),
     ):
         await worker._execute_task(task, worker.agents[0])
 
@@ -73,12 +78,22 @@ async def test_push_failure_downgrades_agent_success(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_empty_branch_downgrades_agent_success(tmp_path):
-    """ "Success" with no commits means the agent never did the work."""
-    kwargs = await _run_with_push(tmp_path, "nothing")
+async def test_dirty_tree_after_no_push_downgrades_agent_success(tmp_path):
+    """ "Success" with nothing pushed AND a dirty work tree is a real failure."""
+    kwargs = await _run_with_push(tmp_path, "nothing", dirty=True)
 
     assert kwargs["state"] == "error"
     assert kwargs["stopReason"] is StopReason.NO_CHANGES
+
+
+@pytest.mark.asyncio
+async def test_nothing_to_push_with_clean_tree_keeps_agent_success(tmp_path):
+    """Nothing new to push (e.g. already committed & pushed earlier) with a
+    clean work tree is not a failure (#1259) — only a dirty tree is."""
+    kwargs = await _run_with_push(tmp_path, "nothing", dirty=False)
+
+    assert kwargs["success"] is True
+    assert kwargs["stopReason"] is StopReason.SUCCESS
 
 
 @pytest.mark.asyncio
