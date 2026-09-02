@@ -19,7 +19,7 @@ async def _run_foreman_ai_patched(guild_id: str, impl_event: asyncio.Event | Non
     import foreman.runner as runner
 
     async def _slow_impl(
-        gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None, trigger=None
+        gid, msg, extra="", uid=None, task_id=None, reply_channel_id=None, trigger=None
     ):
         if impl_event is not None:
             await impl_event.wait()
@@ -55,7 +55,6 @@ def test_concurrent_same_guild_drops_second():
             extra="",
             uid=None,
             task_id=None,
-            child=False,
             reply_channel_id=None,
             trigger=None,
         ):
@@ -98,7 +97,6 @@ def test_concurrent_different_guilds_both_run():
             extra="",
             uid=None,
             task_id=None,
-            child=False,
             reply_channel_id=None,
             trigger=None,
         ):
@@ -133,7 +131,6 @@ def test_lock_released_after_completion():
             extra="",
             uid=None,
             task_id=None,
-            child=False,
             reply_channel_id=None,
             trigger=None,
         ):
@@ -165,7 +162,6 @@ def test_lock_released_after_impl_exception():
             extra="",
             uid=None,
             task_id=None,
-            child=False,
             reply_channel_id=None,
             trigger=None,
         ):
@@ -205,7 +201,6 @@ def test_human_message_queued_when_busy_then_drained():
             extra="",
             uid=None,
             task_id=None,
-            child=False,
             reply_channel_id=None,
             trigger=None,
         ):
@@ -251,7 +246,6 @@ def test_automated_still_drops_while_human_queue_exists():
             extra="",
             uid=None,
             task_id=None,
-            child=False,
             reply_channel_id=None,
             trigger=None,
         ):
@@ -293,7 +287,6 @@ def test_human_queue_bounded_drops_oldest():
             extra="",
             uid=None,
             task_id=None,
-            child=False,
             reply_channel_id=None,
             trigger=None,
         ):
@@ -350,7 +343,6 @@ def test_drain_snapshots_queue_before_processing():
             extra="",
             uid=None,
             task_id=None,
-            child=False,
             reply_channel_id=None,
             trigger=None,
         ):
