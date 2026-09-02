@@ -65,7 +65,7 @@
     <div class="foreman-field">
       <label class="foreman-field-label">Provider Override</label>
       <select v-model="piDefaultProvider" class="settings-input">
-        <option value="">default (anthropic)</option>
+        <option value="">default (Pi CLI)</option>
         <option v-for="p in config.modelsStore.providers" :key="p.id" :value="p.id">
           {{ p.name }}
         </option>
@@ -92,11 +92,8 @@
       </datalist>
     </div>
     <p class="foreman-hint">
-      Overrides the model Pi runs when the foreman assigns it a task without an explicit
-      model/provider. Setting a provider forces Pi onto that provider's models (Pi ignores a bare
-      provider unless the model is pinned too). Select "Amazon Bedrock" to run Pi against Bedrock;
-      set its AWS credentials in the Pi Environment section below (or the General forwarded
-      variables, which apply to every tool).
+      Blank lets Pi use its own configured default. Set a provider only when you want Pioneer to
+      force Pi onto that provider's models.
     </p>
   </template>
 
