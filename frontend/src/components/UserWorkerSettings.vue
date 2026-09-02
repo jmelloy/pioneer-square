@@ -121,7 +121,7 @@
         <div class="uws-field">
           <label class="uws-field-label">Provider Override</label>
           <select v-model="piDefaultProvider" class="uws-input">
-            <option value="">default (anthropic)</option>
+            <option value="">default (Pi CLI)</option>
             <option v-for="p in modelsStore.providers" :key="p.id" :value="p.id">
               {{ p.name }}
             </option>
@@ -134,7 +134,7 @@
             class="uws-input"
             list="uws-pi-model-hints"
             :placeholder="
-              piDefaultProvider === 'bedrock' ? 'inference-profile ARN' : 'e.g. claude-sonnet-4-6'
+              piDefaultProvider === 'bedrock' ? 'inference-profile ARN' : 'model override'
             "
             autocomplete="off"
           />

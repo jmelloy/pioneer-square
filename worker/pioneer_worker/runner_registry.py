@@ -21,6 +21,6 @@ def build(cfg: config.Config) -> dict[str, Runner]:
         "pi": pi_runner.PiRunner(
             pi_path=cfg.pi_path,
             model=cfg.pi_model,
-            provider=cfg.pi_provider or cfg.provider,
+            provider=cfg.pi_provider,
         ),
     }

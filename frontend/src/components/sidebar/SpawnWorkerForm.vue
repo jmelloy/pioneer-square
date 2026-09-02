@@ -286,7 +286,7 @@
                 <template v-if="envToolTab === 'pi'">
                   <div class="spawn-env-row spawn-model-row">
                     <select v-model="piDefaultProvider" class="spawn-input spawn-env-input">
-                      <option value="">default (anthropic)</option>
+                      <option value="">default (Pi CLI)</option>
                       <option v-for="p in modelsStore.providers" :key="p.id" :value="p.id">
                         {{ p.name }}
                       </option>
@@ -582,12 +582,10 @@ const sourceLabel = computed(() => {
     : 'No guild defaults or saved settings yet — pick repos to launch.'
 })
 
-async function saveSettings() {
+async function saveSettings(): Promise<boolean> {
   try {
-    // One serialisation path for every spawn-settings write, with one
-    // empty-value rule (see useSpawnSettings.serializeSpawnSettings). A pair
-    // whose key matches a guild credential is kept on purpose: it is this
-    // user's deliberate override and must survive to the next launch.
+    // Save before spawning so clearing a Pi provider override affects this launch,
+    // not just the next one.
     await spawn.save(
       {
         repos: selectedRepos.value,
@@ -602,8 +600,9 @@ async function saveSettings() {
       },
       'user',
     )
+    return true
   } catch {
-    // Settings persistence failure is non-fatal — the spawn already succeeded.
+    return false
   }
 }
 
@@ -710,6 +709,10 @@ async function launch() {
   spawning.value = true
   error.value = ''
   try {
+    if (!(await saveSettings())) {
+      error.value = 'Failed to save launch settings.'
+      return
+    }
     const envVarsPayload = Object.fromEntries(
       envVars.value
         // Drop blank keys and blank values (a blank pair sets nothing). A key
@@ -729,7 +732,6 @@ async function launch() {
         exclude_env_keys: excludeEnvKeys.value.length ? excludeEnvKeys.value : undefined,
       },
     })
-    await saveSettings()
     launchedWorkerId.value = result?.worker_id ?? ''
     launched.value = true
     setTimeout(() => emit('launched'), 2500)
