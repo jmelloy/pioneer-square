@@ -53,8 +53,7 @@ class Config:
     openai_api_key: str | None = None
     # AI provider this worker communicates with. Used to advertise to the backend
     # so the foreman can filter the model catalog to only provider-compatible models.
-    # e.g. 'anthropic', 'bedrock', 'openai'. NULL = not configured (falls back to
-    # per-runner defaults: pi_provider for pi, 'anthropic' for claude, 'openai' for codex).
+    # e.g. 'anthropic', 'bedrock', 'openai'. NULL = not configured.
     provider: str | None = None
     # Primary tool runner this worker is intended for. Auto-derived from the first
     # detected tool if not explicitly set. e.g. 'claude', 'pi', 'codex'.
