@@ -27,7 +27,7 @@ import database as database_module
 from _test_config import TEST_DATABASE_URL
 from foreman.tools import exec_tools
 from helpers import create_db, insert_guild, insert_worker, truncate_all
-from models import ModelCatalog, Task
+from models import Guild, ModelCatalog, SpawnSettings, Task
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -77,6 +77,19 @@ async def _seed_catalog(db_url: str, provider: str, model_ids: list[str]) -> Non
 async def _get_task(worker_id: str) -> Task | None:
     async with database_module.AsyncSessionLocal() as db:
         return (await db.exec(select(Task).where(col(Task.worker_id) == worker_id))).one_or_none()
+
+
+async def _set_tool_defaults(db_url: str, guild_id: str, defaults: dict) -> None:
+    async with database_module.AsyncSessionLocal() as db:
+        guild_pk = (await db.exec(select(col(Guild.id)).where(col(Guild.slug) == guild_id))).one()
+        row = SpawnSettings(
+            guild_id=guild_pk,
+            user_id=None,
+            tool_defaults=defaults,
+            updated_at=datetime.now(UTC),
+        )
+        db.add(row)
+        await db.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -234,20 +247,45 @@ class TestAssignTaskAutoModelSelection:
         assert len(task.model) > 0
 
     @pytest.mark.asyncio
-    async def test_pi_worker_uses_pi_default_model_selection(self, db_session):
-        """Pi tasks should not get a catalog-selected Claude model forced onto them."""
+    async def test_claude_uses_worker_provider_catalog_not_spawn_tool_defaults(self, db_session):
         guild_id = "g-am005"
         worker_id = "w-am005"
         insert_guild(db_session, guild_id)
         insert_worker(
-            db_session, guild_id, worker_id, state="idle", tools='["pi"]', provider="anthropic"
+            db_session, guild_id, worker_id, state="idle", tools='["claude"]', provider="anthropic"
+        )
+        await _set_tool_defaults(
+            db_session,
+            guild_id,
+            {"pi": {"provider": "bedrock"}, "codex": {"model": "gpt-5-codex"}},
         )
         await _seed_catalog(db_session, "anthropic", ["claude-sonnet-4-6"])
 
+        tu = _tool("assign_task", {"worker_id": worker_id, "description": "Use Claude"})
+        with (
+            patch("foreman.tools.broadcast", new=AsyncMock()),
+            patch("foreman.tools.emit_terminal_line", new=AsyncMock()),
+        ):
+            results = await exec_tools(guild_id, [tu])
+
+        assert not results[0].get("is_error"), results[0]["content"]
+        task = await _get_task(worker_id)
+        assert task is not None
+        assert task.tool == "claude"
+        assert task.model == "claude-sonnet-4-6"
+        assert task.provider is None
+
+    @pytest.mark.asyncio
+    async def test_codex_uses_spawn_settings_default_model(self, db_session):
+        guild_id = "g-am006"
+        worker_id = "w-am006"
+        insert_guild(db_session, guild_id)
+        insert_worker(db_session, guild_id, worker_id, state="idle", tools='["codex"]')
+        await _set_tool_defaults(db_session, guild_id, {"codex": {"model": "gpt-5-codex"}})
+
         tu = _tool(
             "assign_task",
-            {"worker_id": worker_id, "description": "Let pi pick", "tool": "pi"},
-            "tool-005",
+            {"worker_id": worker_id, "description": "Use Codex", "tool": "codex"},
         )
         with (
             patch("foreman.tools.broadcast", new=AsyncMock()),
@@ -258,5 +296,59 @@ class TestAssignTaskAutoModelSelection:
         assert not results[0].get("is_error"), results[0]["content"]
         task = await _get_task(worker_id)
         assert task is not None
+        assert task.tool == "codex"
+        assert task.model == "gpt-5-codex"
+        assert task.provider is None
+
+    @pytest.mark.asyncio
+    async def test_pi_blank_spawn_settings_leaves_provider_and_model_blank(self, db_session):
+        """Pi tasks should let the Pi CLI pick unless spawn_settings pins a Pi default."""
+        guild_id = "g-am007"
+        worker_id = "w-am007"
+        insert_guild(db_session, guild_id)
+        insert_worker(
+            db_session, guild_id, worker_id, state="idle", tools='["pi"]', provider="anthropic"
+        )
+        await _seed_catalog(db_session, "anthropic", ["claude-sonnet-4-6"])
+
+        tu = _tool(
+            "assign_task",
+            {"worker_id": worker_id, "description": "Let pi pick", "tool": "pi"},
+        )
+        with (
+            patch("foreman.tools.broadcast", new=AsyncMock()),
+            patch("foreman.tools.emit_terminal_line", new=AsyncMock()),
+        ):
+            results = await exec_tools(guild_id, [tu])
+
+        assert not results[0].get("is_error"), results[0]["content"]
+        task = await _get_task(worker_id)
+        assert task is not None
+        assert task.tool == "pi"
         assert task.model is None
         assert task.provider is None
+
+    @pytest.mark.asyncio
+    async def test_pi_uses_explicit_spawn_settings_default_provider(self, db_session):
+        guild_id = "g-am008"
+        worker_id = "w-am008"
+        insert_guild(db_session, guild_id)
+        insert_worker(db_session, guild_id, worker_id, state="idle", tools='["pi"]')
+        await _set_tool_defaults(db_session, guild_id, {"pi": {"provider": "bedrock"}})
+
+        tu = _tool(
+            "assign_task",
+            {"worker_id": worker_id, "description": "Use Pi default", "tool": "pi"},
+        )
+        with (
+            patch("foreman.tools.broadcast", new=AsyncMock()),
+            patch("foreman.tools.emit_terminal_line", new=AsyncMock()),
+        ):
+            results = await exec_tools(guild_id, [tu])
+
+        assert not results[0].get("is_error"), results[0]["content"]
+        task = await _get_task(worker_id)
+        assert task is not None
+        assert task.tool == "pi"
+        assert task.model is None
+        assert task.provider == "bedrock"
