@@ -33,9 +33,13 @@ class StopReason(enum.StrEnum):
     for a runner that detects it needs human input mid-run (no runner emits
     it today). PUSH_FAILED and NO_CHANGES are never produced by a runner —
     they are downgrades the worker applies afterwards, once it knows whether
-    the agent's "success" actually produced a pushable commit (see
-    ``RunResult.with_stop_reason``); they live in the same closed union so
-    that downgrade is a typed transition instead of overwriting a bare string.
+    the agent's "success" actually left the work tree in a resolved state
+    (see ``RunResult.with_stop_reason``); they live in the same closed union
+    so that downgrade is a typed transition instead of overwriting a bare
+    string. NO_CHANGES specifically means the work tree was still dirty after
+    the push attempt — a clean tree with nothing new to push (e.g. because
+    the agent already committed and pushed earlier in the task) is not a
+    downgrade (#1259).
     """
 
     SUCCESS = "success"

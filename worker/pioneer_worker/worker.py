@@ -2065,10 +2065,13 @@ class Worker:
                         "it without checking the issue first. Use assertive language in commit messages "
                         'and PR replies ("Keeping X as required by issue #NNN"), not apologetic '
                         'language ("I\'ve decided not to change this").\n\n'
-                        "Make the requested changes, then commit and push:\n"
+                        "Commit and push often as you go — after each meaningful chunk of "
+                        "progress, not just at the very end:\n"
                         f'  git add -A && git commit -m "<concise commit message>"\n'
                         f"  git push origin {branch}\n"
-                        "If a PR already exists for this branch, no new PR is needed."
+                        "This keeps partial work visible and safe even if the task is "
+                        "interrupted. If a PR already exists for this branch, no new PR is "
+                        "needed."
                     )
             else:
                 current_desc = desc
@@ -2098,6 +2101,16 @@ class Worker:
                         "        -f 'comments[][path]=file.py' -f 'comments[][line]=42' \\\n"
                         "        -f 'comments[][body]=inline comment'\n"
                         "Do NOT push any commits or open a PR as part of this review.\n"
+                    )
+                elif phase == "execute":
+                    current_desc = (
+                        f"{desc}\n\n"
+                        "IMPORTANT — commit and push your work often as you go, not just at "
+                        "the very end:\n"
+                        f'  git add -A && git commit -m "<concise commit message>"\n'
+                        f"  git push origin {branch}\n"
+                        "This keeps partial work visible and safe even if the task is "
+                        "interrupted or runs out of turns."
                     )
 
                 # plan / ephemeral / automation phases: leave current_desc = desc unchanged
@@ -2297,18 +2310,27 @@ class Worker:
                     )
                     _apply_result(result.with_stop_reason(StopReason.PUSH_FAILED))
                 elif push_result == "nothing" and success:
-                    # The agent claimed success but left no commits — usually it
-                    # was blocked (e.g. every tool call denied) and never did the
-                    # work. Don't mask that as a reviewable result.
-                    logger.warning(
-                        "Task %s: agent reported success but produced no commits — marking error",
-                        task_id,
+                    # "nothing" just means this call had no new commits to push —
+                    # that's expected when the agent already committed and pushed
+                    # earlier in the task (per the commit-often guidance in its
+                    # instructions), and isn't itself a failure (#1259). The only
+                    # real signal of an incomplete task is a dirty work tree:
+                    # uncommitted changes that push_branch's auto-commit couldn't
+                    # clean up.
+                    rc_dirty, dirty_out, _ = await git_ops.run_git(
+                        ["status", "--porcelain"], cwd=primary_wt
                     )
-                    await emit(
-                        "Agent reported success but produced no commits — flagging for review.",
-                        level=LEVEL_WORKER,
-                    )
-                    _apply_result(result.with_stop_reason(StopReason.NO_CHANGES))
+                    if rc_dirty == 0 and dirty_out.strip():
+                        logger.warning(
+                            "Task %s: agent reported success but work tree is dirty — "
+                            "marking error",
+                            task_id,
+                        )
+                        await emit(
+                            "Uncommitted changes remain in the work tree — flagging for review.",
+                            level=LEVEL_WORKER,
+                        )
+                        _apply_result(result.with_stop_reason(StopReason.NO_CHANGES))
 
                 pr_url = await github_pr.find_existing_pr(
                     branch=branch, worktree_path=primary_wt, token=push_token
