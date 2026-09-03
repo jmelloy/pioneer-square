@@ -554,9 +554,7 @@ class TestDebounce:
         """
         self._foreman_calls: list[tuple[str, str, str | None, str | None]] = []
 
-        async def fake_run_foreman(
-            guild_id, summary, *, user_id=None, task_id=None, child=False, trigger=None
-        ):
+        async def fake_run_foreman(guild_id, summary, *, user_id=None, task_id=None, trigger=None):
             self._foreman_calls.append((guild_id, summary, user_id, task_id))
 
         queue = wh.DebounceQueue(window_seconds=0.05)
@@ -1486,3 +1484,37 @@ def test_prompt_describes_devready_issue_webhook_behavior():
     assert "issues/reopened" in FOREMAN_SYSTEM
     assert "claim_github_issue" in FOREMAN_SYSTEM
     assert "devReady pickup flow" in FOREMAN_SYSTEM
+
+
+# ---------------------------------------------------------------------------
+# Regression: _deliver must call run_foreman_ai with a valid signature (#1263)
+# ---------------------------------------------------------------------------
+
+
+async def test_deliver_kwargs_match_run_foreman_ai_signature():
+    """_deliver's call must bind against the real run_foreman_ai signature.
+
+    Guards against drift like the `child=` kwarg (removed in #1200) that made
+    every debounced batch raise TypeError against a patched-out foreman.
+    """
+    import inspect
+
+    import routes.webhooks as wh
+    from foreman.runner import run_foreman_ai
+
+    recorded: list[tuple[tuple, dict]] = []
+
+    async def recorder(*args, **kwargs):
+        recorded.append((args, kwargs))
+
+    queue = wh.DebounceQueue(window_seconds=0.05)
+    with (
+        patch.object(wh, "run_foreman_ai", new=recorder),
+        patch.object(wh, "ensure_poll_loop"),
+    ):
+        await queue._deliver("g-sig:t-sig1", "g-sig", [("event", "u-sig", "t-sig1")])
+
+    assert len(recorded) == 1
+    args, kwargs = recorded[0]
+    # Raises TypeError if _deliver passes an unknown or misspelled kwarg.
+    inspect.signature(run_foreman_ai).bind(*args, **kwargs)
