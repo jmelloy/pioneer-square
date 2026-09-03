@@ -11,7 +11,7 @@ import re
 from collections import defaultdict
 from datetime import UTC, datetime
 
-from auth_deps import get_guild_pk, require_member
+from auth_deps import ensure_membership, get_guild_pk, require_member, require_user
 from database import get_db_dep
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException
@@ -50,6 +50,33 @@ class RedirectCreate(BaseModel):
 
 class TaskMessageCreate(BaseModel):
     message: str
+
+
+async def _fetch_log_rows(db: AsyncSession, task_id: str) -> list[dict]:
+    """Return every saved log line for *task_id*, oldest first, with `data` decoded."""
+    result = await db.exec(
+        select(
+            col(TaskLog.timestamp),
+            col(TaskLog.line),
+            col(TaskLog.worker_id),
+            col(TaskLog.agent_id),
+            col(TaskLog.data),
+            col(TaskLog.level),
+        )
+        .where(col(TaskLog.task_id) == task_id)
+        .order_by(col(TaskLog.id).asc())
+    )
+    rows = []
+    for r in result.all():
+        row = dict(r._mapping)
+        raw = row.pop("data", None)
+        if raw:
+            try:
+                row["detail"] = json.loads(raw)
+            except Exception:
+                pass
+        rows.append(row)
+    return rows
 
 
 @router.get("/guilds/{guild_id}/tasks")
@@ -118,29 +145,7 @@ async def get_task_logs(
     )
     if not result.one_or_none():
         raise HTTPException(status_code=404, detail="Task not found")
-    result = await db.exec(
-        select(
-            col(TaskLog.timestamp),
-            col(TaskLog.line),
-            col(TaskLog.worker_id),
-            col(TaskLog.agent_id),
-            col(TaskLog.data),
-            col(TaskLog.level),
-        )
-        .where(col(TaskLog.task_id) == task_id)
-        .order_by(col(TaskLog.id).asc())
-    )
-    rows = []
-    for r in result.all():
-        row = dict(r._mapping)
-        raw = row.pop("data", None)
-        if raw:
-            try:
-                row["detail"] = json.loads(raw)
-            except Exception:
-                pass
-        rows.append(row)
-    return rows
+    return await _fetch_log_rows(db, task_id)
 
 
 @router.get("/guilds/{guild_id}/logs")
@@ -550,3 +555,56 @@ async def redirect_task_endpoint(
     )
     await broadcast_msg(guild_id, TaskUpdateMsg(taskId=task_id, state="working"))
     return {"status": "redirected", "taskId": task_id}
+
+
+@router.get("/api/task/{task_id}/log")
+async def get_task_log_page(
+    task_id: str,
+    github_user_id: str = Depends(require_user),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Task metadata + full log output for the shareable ``/task/{id}/log`` view.
+
+    Guild-less on purpose: task ids are globally unique, so a commit message can
+    link straight to ``/task/t-abc123/log`` without knowing the guild. Membership
+    is still enforced — the guild is resolved from the task, then checked.
+    Read-only; there is no mutating counterpart.
+    """
+    row = (
+        await db.exec(
+            select(Task, col(Guild.slug))
+            .join(Guild, col(Task.guild_id) == col(Guild.id))
+            .where(col(Task.id) == task_id, live_tasks_filter())
+        )
+    ).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    task, guild_slug = row
+    await ensure_membership(db, guild_slug, github_user_id)
+
+    logs = await _fetch_log_rows(db, task_id)
+    # tasks has no updated_at column; the newest log line is the best proxy for
+    # "last activity" and is what the viewer shows.
+    updated_at = logs[-1]["timestamp"] if logs else task.created_at
+
+    return {
+        "task": {
+            "id": task.id,
+            "name": task.name,
+            "description": task.description,
+            "guild_id": guild_slug,
+            "worker_id": task.worker_id,
+            "state": task.state,
+            "phase": task.phase,
+            "tool": task.tool,
+            "model": task.model,
+            "branch": task.branch,
+            "created_at": task.created_at,
+            "updated_at": updated_at,
+            "issue_number": task.issue_number,
+            "issue_repo": task.issue_repo,
+            "issue_title": task.issue_title,
+            "pr_url": task.pr_url,
+        },
+        "logs": logs,
+    }

@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import LandingView from '../views/LandingView.vue'
 import AppView from '../views/AppView.vue'
 import DiscordConnectView from '../views/DiscordConnectView.vue'
+import TaskLogView from '../views/TaskLogView.vue'
 
 export function getRootOrigin(): string | null {
   const hostname = window.location.hostname
@@ -34,6 +35,10 @@ const router = createRouter({
   routes: subdomainGuild
     ? [
         {
+          path: '/task/:id/log',
+          component: TaskLogView,
+        },
+        {
           path: '/:pathMatch(.*)*',
           component: AppView,
           props: () => ({ guildId: subdomainGuild }),
@@ -43,6 +48,10 @@ const router = createRouter({
         {
           path: '/',
           component: LandingView,
+        },
+        {
+          path: '/task/:id/log',
+          component: TaskLogView,
         },
         {
           path: '/auth/discord/connect',

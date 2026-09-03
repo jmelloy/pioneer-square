@@ -321,6 +321,16 @@ frontend with the same fields in the query string.) Frontend stores the token in
 and sends it as `Authorization: Bearer <token>` on REST calls. Workers fetch the OAuth token from
 `/auth/github/token?guild_id=...` if none is in their config.
 
+### Shareable task log viewer
+
+`/task/:id/log` is a stable, guild-less permalink to one task's full log output, so commit
+messages and PR bodies can link to the run that produced them
+(`see foreman session: https://pioneer.example.com/task/t-abc123/log`). Task ids are globally
+unique, so the guild is resolved from the task rather than the URL. It is read-only and renders
+via `frontend/src/views/TaskLogView.vue`, backed by `GET /api/task/{task_id}/log`
+(`routes/tasks.py`), which requires a login token and membership of the task's guild. Unknown or
+soft-deleted tasks return 404. Keep the path stable — links to it live in git history.
+
 ### Frontend stores
 
 | Store | Owns |
