@@ -23,6 +23,12 @@ Entry points:
     ``relay_discord_thread_event`` — replaces ``_sync_thread_status``: relays
         Discord-side archive/delete events inward without treating them as
         authoritative state changes
+    ``rename_conversation_thread`` / ``archive_conversation_thread_by_id`` —
+        issue #1278: mirror a *Conversation*-driven rename/close straight from
+        ``Conversation.discord_thread_id`` (the source of truth for a
+        conversation's Discord binding), with no ``Thread`` id lookup needed —
+        used by ``foreman.conversation_service.rename_conversation``/
+        ``close_conversation``.
 
 Requires: ``DISCORD_BOT_TOKEN``, ``DISCORD_GATEWAY_ENABLED``
 """
@@ -256,6 +262,36 @@ async def relay_discord_thread_event(
             discord_thread_id,
             exc_info=True,
         )
+
+
+async def rename_conversation_thread(discord_thread_id: str, name: str) -> None:
+    """Rename the Discord thread bound to a Conversation (issue #1278).
+
+    Called by ``foreman.conversation_service.rename_conversation`` directly
+    with ``Conversation.discord_thread_id`` — the source of truth for a
+    conversation's Discord binding — so no ``Thread`` id lookup is needed
+    here, unlike ``on_thread_updated``/``mirror_foreman_message`` which are
+    keyed by the Foreman's internal ``Thread.id``. No-op if Discord isn't
+    configured. Never raises (``discord_notifier.rename_thread`` never
+    raises).
+    """
+    if not discord_notifier.is_configured():
+        return
+    await discord_notifier.rename_thread(discord_thread_id, name)
+
+
+async def archive_conversation_thread_by_id(discord_thread_id: str) -> None:
+    """Archive the Discord thread bound to a Conversation (issue #1278).
+
+    Called by ``foreman.conversation_service.close_conversation`` directly
+    with ``Conversation.discord_thread_id`` — see
+    ``rename_conversation_thread``'s docstring for why this skips the
+    ``Thread``-id-keyed path. No-op if Discord isn't configured. Never
+    raises.
+    """
+    if not discord_notifier.is_configured():
+        return
+    await discord_notifier.archive_thread(discord_thread_id)
 
 
 async def _get_discord_thread_id(thread_id: str) -> str | None:

@@ -10,9 +10,11 @@ import pytest
 from discord.thread_mirror import (
     _get_discord_thread_id,
     _stamp_discord_thread_id,
+    archive_conversation_thread_by_id,
     on_thread_created,
     on_thread_updated,
     relay_discord_thread_event,
+    rename_conversation_thread,
 )
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -235,3 +237,36 @@ class TestStampDiscordThreadIdMirrorsConversation:
         async with database_module.AsyncSessionLocal() as db:
             conversation = await db.get(Conversation, thread.conversation_id)
         assert conversation.discord_thread_id == "discord-thread-mirrored"
+
+
+class TestRenameConversationThread:
+    """Issue #1278: renaming/archiving a Conversation's Discord thread directly
+    from Conversation.discord_thread_id, with no Thread id lookup involved."""
+
+    async def test_renames_via_discord_thread_id(self, mock_bot_token, mock_bot_request):
+        await rename_conversation_thread("discord-thread-999", "New Name")
+        mock_bot_request.assert_called_once_with(
+            "patch", "/channels/discord-thread-999", {"name": "New Name"}
+        )
+
+    async def test_rename_truncates_to_100_chars(self, mock_bot_token, mock_bot_request):
+        long_name = "x" * 150
+        await rename_conversation_thread("discord-thread-999", long_name)
+        args = mock_bot_request.call_args[0]
+        assert len(args[2]["name"]) == 100
+
+    async def test_rename_noop_when_not_configured(self, mock_bot_request):
+        with patch("discord_notifier.is_configured", return_value=False):
+            await rename_conversation_thread("discord-thread-999", "New Name")
+        mock_bot_request.assert_not_called()
+
+    async def test_archives_via_discord_thread_id(self, mock_bot_token, mock_bot_request):
+        await archive_conversation_thread_by_id("discord-thread-999")
+        mock_bot_request.assert_called_once_with(
+            "patch", "/channels/discord-thread-999", {"archived": True}
+        )
+
+    async def test_archive_noop_when_not_configured(self, mock_bot_request):
+        with patch("discord_notifier.is_configured", return_value=False):
+            await archive_conversation_thread_by_id("discord-thread-999")
+        mock_bot_request.assert_not_called()

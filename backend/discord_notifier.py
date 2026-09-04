@@ -684,6 +684,11 @@ async def archive_thread(thread_id: str) -> None:
     await _bot_request("patch", f"/channels/{thread_id}", {"archived": True})
 
 
+async def rename_thread(thread_id: str, name: str) -> None:
+    """Rename a Discord thread. Never raises."""
+    await _bot_request("patch", f"/channels/{thread_id}", {"name": name[:100]})
+
+
 # ---------------------------------------------------------------------------
 # New-member welcome DM
 # ---------------------------------------------------------------------------

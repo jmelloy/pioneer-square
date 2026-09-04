@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import sys
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -25,13 +26,16 @@ import database as database_module
 from _test_config import TEST_DATABASE_URL
 from auth_deps import get_guild_pk
 from foreman.conversation_service import (
+    close_conversation,
+    get_conversation_by_discord_thread_id,
     get_or_create_conversation,
+    rename_conversation,
     resolve_conversation_id,
     touch_conversation,
 )
 from foreman.thread_service import get_or_create_active_thread
 from helpers import create_db, insert_guild, insert_task, truncate_all
-from models import Task
+from models import Task, Thread
 from sqlalchemy import update
 from sqlmodel import col
 
@@ -163,3 +167,133 @@ class TestConversationIdDualWrite:
             conv = await get_or_create_conversation(db, guild_pk, "user-1")
 
         assert thread.conversation_id == conv.id
+
+
+# ── issue #1278: Conversation.discord_thread_id as the source of truth ──────
+
+
+class TestGetConversationByDiscordThreadId:
+    async def test_finds_conversation_by_discord_thread_id(self, db_session):
+        insert_guild(db_session, "g-dt1")
+        guild_pk = await _guild_pk("g-dt1")
+
+        async with database_module.AsyncSessionLocal() as db:
+            thread, _ = await get_or_create_active_thread(db, guild_pk, "user-1")
+            thread.discord_thread_id = "discord-thread-abc"
+            db.add(thread)
+            await db.commit()
+
+        from discord.thread_mirror import _stamp_discord_thread_id
+
+        await _stamp_discord_thread_id(thread.id, "discord-thread-abc")
+
+        async with database_module.AsyncSessionLocal() as db:
+            conversation = await get_conversation_by_discord_thread_id(
+                db, guild_pk, "discord-thread-abc"
+            )
+
+        assert conversation is not None
+        assert conversation.id == thread.conversation_id
+
+    async def test_returns_none_when_unbound(self, db_session):
+        insert_guild(db_session, "g-dt2")
+        guild_pk = await _guild_pk("g-dt2")
+
+        async with database_module.AsyncSessionLocal() as db:
+            conversation = await get_conversation_by_discord_thread_id(
+                db, guild_pk, "no-such-thread"
+            )
+
+        assert conversation is None
+
+    async def test_scoped_to_guild(self, db_session):
+        """A discord_thread_id bound in one guild must not resolve in another."""
+        insert_guild(db_session, "g-dt3")
+        insert_guild(db_session, "g-dt4")
+        guild_pk_3 = await _guild_pk("g-dt3")
+        guild_pk_4 = await _guild_pk("g-dt4")
+
+        async with database_module.AsyncSessionLocal() as db:
+            thread, _ = await get_or_create_active_thread(db, guild_pk_3, "user-1")
+
+        from discord.thread_mirror import _stamp_discord_thread_id
+
+        await _stamp_discord_thread_id(thread.id, "discord-thread-scoped")
+
+        async with database_module.AsyncSessionLocal() as db:
+            conversation = await get_conversation_by_discord_thread_id(
+                db, guild_pk_4, "discord-thread-scoped"
+            )
+
+        assert conversation is None
+
+
+class TestRenameConversation:
+    async def test_renames_conversation_and_active_thread(self, db_session):
+        insert_guild(db_session, "g-rn1")
+        guild_pk = await _guild_pk("g-rn1")
+
+        async with database_module.AsyncSessionLocal() as db:
+            thread, _ = await get_or_create_active_thread(db, guild_pk, "user-1")
+
+        from discord.thread_mirror import _stamp_discord_thread_id
+
+        await _stamp_discord_thread_id(thread.id, "discord-thread-rn")
+
+        with patch(
+            "discord.thread_mirror.rename_conversation_thread", new_callable=AsyncMock
+        ) as mock_rename:
+            async with database_module.AsyncSessionLocal() as db:
+                conversation = await get_or_create_conversation(db, guild_pk, "user-1")
+                await rename_conversation(db, conversation, "New Conversation Name")
+
+        mock_rename.assert_called_once_with("discord-thread-rn", "New Conversation Name")
+
+        async with database_module.AsyncSessionLocal() as db:
+            conversation = await get_or_create_conversation(db, guild_pk, "user-1")
+            refreshed_thread = await db.get(Thread, thread.id)
+
+        assert conversation.name == "New Conversation Name"
+        assert refreshed_thread.name == "New Conversation Name"
+
+    async def test_skips_discord_call_when_no_thread_bound(self, db_session):
+        insert_guild(db_session, "g-rn2")
+        guild_pk = await _guild_pk("g-rn2")
+
+        with patch(
+            "discord.thread_mirror.rename_conversation_thread", new_callable=AsyncMock
+        ) as mock_rename:
+            async with database_module.AsyncSessionLocal() as db:
+                conversation = await get_or_create_conversation(db, guild_pk, "user-1")
+                await rename_conversation(db, conversation, "New Name")
+
+        mock_rename.assert_not_called()
+
+
+class TestCloseConversation:
+    async def test_closes_conversation_and_active_thread(self, db_session):
+        insert_guild(db_session, "g-cc1")
+        guild_pk = await _guild_pk("g-cc1")
+
+        async with database_module.AsyncSessionLocal() as db:
+            thread, _ = await get_or_create_active_thread(db, guild_pk, "user-1")
+
+        from discord.thread_mirror import _stamp_discord_thread_id
+
+        await _stamp_discord_thread_id(thread.id, "discord-thread-cc")
+
+        with patch(
+            "discord.thread_mirror.archive_conversation_thread_by_id", new_callable=AsyncMock
+        ) as mock_archive:
+            async with database_module.AsyncSessionLocal() as db:
+                conversation = await get_or_create_conversation(db, guild_pk, "user-1")
+                await close_conversation(db, conversation)
+
+        mock_archive.assert_called_once_with("discord-thread-cc")
+
+        async with database_module.AsyncSessionLocal() as db:
+            conversation = await get_or_create_conversation(db, guild_pk, "user-1")
+            refreshed_thread = await db.get(Thread, thread.id)
+
+        assert conversation.status == "closed"
+        assert refreshed_thread.status == "closed"

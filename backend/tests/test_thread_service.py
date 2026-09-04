@@ -31,6 +31,7 @@ from foreman.thread_service import (
     get_or_create_active_thread,
     get_or_create_conversation,
     get_thread_for_task,
+    reactivate_conversation_thread,
     sync_conversation_after_thread_update,
 )
 from helpers import create_db, insert_guild, insert_task, truncate_all
@@ -391,3 +392,82 @@ class TestConversationMirroring:
 
         assert conversation.status == "active"
         assert conversation.name == "new session"
+
+
+# ── reactivate_conversation_thread (issue #1278) ─────────────────────────────
+
+
+class TestReactivateConversationThread:
+    async def test_reactivates_archived_thread_and_unarchives_discord(self, db_session):
+        insert_guild(db_session, "g-react1")
+        guild_pk = await _guild_pk("g-react1")
+
+        async with database_module.AsyncSessionLocal() as db:
+            thread, _ = await get_or_create_active_thread(db, guild_pk, "user-1")
+            thread.discord_thread_id = "discord-thread-react"
+            thread.status = "archived"
+            db.add(thread)
+            conversation = await db.get(Conversation, thread.conversation_id)
+            conversation.discord_thread_id = "discord-thread-react"
+            conversation.status = "archived"
+            db.add(conversation)
+            await db.commit()
+
+        with patch(
+            "discord.thread_mirror.on_thread_updated", new_callable=AsyncMock
+        ) as mock_unarchive:
+            async with database_module.AsyncSessionLocal() as db:
+                conversation = await db.get(Conversation, conversation.id)
+                reactivated = await reactivate_conversation_thread(
+                    db, conversation, "discord-thread-react"
+                )
+
+        assert reactivated is not None
+        assert reactivated.id == thread.id
+        assert reactivated.status == "active"
+        mock_unarchive.assert_called_once_with(thread_id=thread.id, status="active")
+
+        async with database_module.AsyncSessionLocal() as db:
+            conversation = await db.get(Conversation, conversation.id)
+        assert conversation.status == "active"
+
+    async def test_noop_discord_call_when_thread_already_active(self, db_session):
+        insert_guild(db_session, "g-react2")
+        guild_pk = await _guild_pk("g-react2")
+
+        async with database_module.AsyncSessionLocal() as db:
+            thread, _ = await get_or_create_active_thread(db, guild_pk, "user-1")
+            thread.discord_thread_id = "discord-thread-react2"
+            db.add(thread)
+            conversation = await db.get(Conversation, thread.conversation_id)
+            conversation.discord_thread_id = "discord-thread-react2"
+            db.add(conversation)
+            await db.commit()
+
+        with patch(
+            "discord.thread_mirror.on_thread_updated", new_callable=AsyncMock
+        ) as mock_unarchive:
+            async with database_module.AsyncSessionLocal() as db:
+                conversation = await db.get(Conversation, conversation.id)
+                reactivated = await reactivate_conversation_thread(
+                    db, conversation, "discord-thread-react2"
+                )
+
+        assert reactivated.status == "active"
+        mock_unarchive.assert_not_called()
+
+    async def test_returns_none_when_no_matching_thread_row(self, db_session):
+        insert_guild(db_session, "g-react3")
+        guild_pk = await _guild_pk("g-react3")
+
+        async with database_module.AsyncSessionLocal() as db:
+            conversation = await get_or_create_conversation(db, guild_pk, "user-1")
+            await db.commit()
+
+        async with database_module.AsyncSessionLocal() as db:
+            conversation = await db.get(Conversation, conversation.id)
+            reactivated = await reactivate_conversation_thread(
+                db, conversation, "no-such-discord-thread"
+            )
+
+        assert reactivated is None
