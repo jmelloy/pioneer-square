@@ -667,15 +667,22 @@ class ForemanTurn(SQLModel, table=True):
     # Task this turn was produced for (mirrors api_request_log.task_id for convenience).
     task_id: str | None = Field(default=None, foreign_key="tasks.id")
     # Owning Conversation (#1271). Nullable during the migration window;
-    # backfilled best-effort from (guild_id, user_id) for existing rows —
-    # see Message.conversation_id. History still loads by (guild_id, user_id)
-    # (issue #1200's whole-guild-conversation window); this column is the
-    # planned scoping key for a future conversation-scoped history load.
+    # backfilled best-effort from (guild_id, user_id) for existing rows — see
+    # Message.conversation_id. History (foreman.history.ConversationHistory)
+    # scopes by conversation_id when the caller has one resolved (#1279),
+    # falling back to (guild_id, user_id) for rows this column is still NULL
+    # on (a Conversation is 1:1 with (guild_id, user_id), so that fallback
+    # can't leak another conversation's turns in).
     conversation_id: int | None = Field(default=None, foreign_key="conversations.id", index=True)
 
-    # History fetch filters on (guild_id, user_id) and orders by id DESC; the
-    # trailing id lets Postgres satisfy the ORDER BY via a backward index scan.
-    __table_args__ = (Index("ix_foreman_turns_guild_id_user_id_id", "guild_id", "user_id", "id"),)
+    # History fetch filters on conversation_id, OR-falling-back to
+    # (guild_id, user_id) for unstamped legacy rows (#1279), and orders by id
+    # DESC; the trailing id on each index lets Postgres satisfy the ORDER BY
+    # via a backward index scan either way.
+    __table_args__ = (
+        Index("ix_foreman_turns_guild_id_user_id_id", "guild_id", "user_id", "id"),
+        Index("ix_foreman_turns_conversation_id_id", "conversation_id", "id"),
+    )
 
 
 class GithubEvent(SQLModel, table=True):

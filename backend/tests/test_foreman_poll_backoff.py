@@ -265,7 +265,7 @@ def test_run_foreman_ai_records_action_on_tool_calls():
                 self.calls.append(("tool_result", result))
 
         class FakeHistory:
-            async def load_for_llm(self, guild_id, user_id):
+            async def load_for_llm(self, guild_id, user_id, conversation_id=None):
                 return []
 
         journal = RecordingJournal()

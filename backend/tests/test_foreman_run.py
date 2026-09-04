@@ -103,7 +103,7 @@ class FakeHistory:
     def __init__(self, messages: list[dict] | None = None) -> None:
         self._messages = messages or []
 
-    async def load_for_llm(self, guild_id, user_id) -> list[dict]:
+    async def load_for_llm(self, guild_id, user_id, conversation_id=None) -> list[dict]:
         return list(self._messages)
 
 

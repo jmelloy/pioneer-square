@@ -23,6 +23,7 @@ import discord_notifier
 from auth_deps import require_member, require_worker_or_member_path
 from database import get_db_dep
 from fastapi import APIRouter, Depends, HTTPException
+from foreman.conversation_service import resolve_conversation_id
 from foreman.runner import clear_foreman_history, get_foreman_history
 from models import (
     Guild,
@@ -48,10 +49,12 @@ async def get_foreman_context(
     db: AsyncSession = Depends(get_db_dep),
 ):
     """Return the stored foreman conversation turns for this guild+user (debug view)."""
-    result = await db.exec(select(col(Guild.slug)).where(col(Guild.slug) == guild_id))
-    if result.one_or_none() is None:
+    result = await db.exec(select(col(Guild.id)).where(col(Guild.slug) == guild_id))
+    guild_pk = result.one_or_none()
+    if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")
-    history = await get_foreman_history(guild_id, github_user_id)
+    conversation_id = await resolve_conversation_id(db, guild_pk, user_id=github_user_id)
+    history = await get_foreman_history(guild_id, github_user_id, conversation_id)
     return {
         "system": history["system"],
         "messages": history["messages"],
