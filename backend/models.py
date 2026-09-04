@@ -724,6 +724,10 @@ class GithubIssue(SQLModel, table=True):
     labels: list = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
     milestone: str | None = None
     author: str | None = None
+    # Owning Conversation (#1271), resolved from a task linked to this issue
+    # (issue_repo/issue_number) at upsert time. NULL when no task has claimed
+    # this issue yet, or the linked task predates the conversation_id backfill.
+    conversation_id: int | None = Field(default=None, foreign_key="conversations.id", index=True)
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     closed_at: datetime | None = Field(
@@ -767,6 +771,10 @@ class GithubPullRequest(SQLModel, table=True):
     author: str | None = None
     assignees: list = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
     labels: list = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    # Owning Conversation (#1271), resolved from the task linked to this PR
+    # (pr_repo/pr_number) at upsert time. NULL when no task is linked yet, or
+    # the linked task predates the conversation_id backfill.
+    conversation_id: int | None = Field(default=None, foreign_key="conversations.id", index=True)
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     closed_at: datetime | None = Field(

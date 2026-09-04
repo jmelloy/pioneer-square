@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from models import GithubIssue, GithubPullRequest
+from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -41,8 +42,17 @@ def _assignee_logins(payload: dict) -> list[str]:
     return [a["login"] for a in assignees if isinstance(a, dict) and a.get("login")]
 
 
-async def upsert_issue(db: AsyncSession, repo: str, payload: dict) -> GithubIssue:
-    """Insert or update the cached issue row for *repo* from a GitHub issue payload."""
+async def upsert_issue(
+    db: AsyncSession, repo: str, payload: dict, *, conversation_id: int | None = None
+) -> GithubIssue:
+    """Insert or update the cached issue row for *repo* from a GitHub issue payload.
+
+    *conversation_id* (#1271) is best-effort — callers resolve it from a task
+    linked to this issue, which may not exist yet (e.g. backfill, or a
+    webhook that arrives before the issue is claimed). Passing ``None`` never
+    clobbers a conversation_id set by an earlier upsert; see the COALESCE in
+    the ON CONFLICT clause below.
+    """
     milestone = payload.get("milestone")
     values = {
         "repo": repo,
@@ -54,6 +64,7 @@ async def upsert_issue(db: AsyncSession, repo: str, payload: dict) -> GithubIssu
         "labels": _label_names(payload),
         "milestone": milestone.get("title") if isinstance(milestone, dict) else None,
         "author": _login(payload.get("user")),
+        "conversation_id": conversation_id,
         "created_at": _parse_dt_or_now(payload.get("created_at")),
         "updated_at": _parse_dt_or_now(payload.get("updated_at")),
         "closed_at": _parse_dt(payload.get("closed_at")),
@@ -61,10 +72,11 @@ async def upsert_issue(db: AsyncSession, repo: str, payload: dict) -> GithubIssu
         "last_refreshed_at": datetime.now(UTC),
     }
     stmt = pg_insert(GithubIssue).values(**values)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["repo", "number"],
-        set_={k: stmt.excluded[k] for k in values if k not in ("repo", "number")},
+    set_ = {k: stmt.excluded[k] for k in values if k not in ("repo", "number", "conversation_id")}
+    set_["conversation_id"] = func.coalesce(
+        stmt.excluded.conversation_id, GithubIssue.conversation_id
     )
+    stmt = stmt.on_conflict_do_update(index_elements=["repo", "number"], set_=set_)
     await db.exec(stmt)
     await db.commit()
     result = await db.exec(
@@ -75,8 +87,13 @@ async def upsert_issue(db: AsyncSession, repo: str, payload: dict) -> GithubIssu
     return result.one()
 
 
-async def upsert_pr(db: AsyncSession, repo: str, payload: dict) -> GithubPullRequest:
-    """Insert or update the cached PR row for *repo* from a GitHub pull_request payload."""
+async def upsert_pr(
+    db: AsyncSession, repo: str, payload: dict, *, conversation_id: int | None = None
+) -> GithubPullRequest:
+    """Insert or update the cached PR row for *repo* from a GitHub pull_request payload.
+
+    See ``upsert_issue`` for *conversation_id*'s best-effort, non-clobbering semantics.
+    """
     head = payload.get("head") or {}
     base = payload.get("base") or {}
     # The REST "list pull requests" endpoint omits the "merged" boolean present
@@ -97,6 +114,7 @@ async def upsert_pr(db: AsyncSession, repo: str, payload: dict) -> GithubPullReq
         "author": _login(payload.get("user")),
         "assignees": _assignee_logins(payload),
         "labels": _label_names(payload),
+        "conversation_id": conversation_id,
         "created_at": _parse_dt_or_now(payload.get("created_at")),
         "updated_at": _parse_dt_or_now(payload.get("updated_at")),
         "closed_at": _parse_dt(payload.get("closed_at")),
@@ -105,10 +123,11 @@ async def upsert_pr(db: AsyncSession, repo: str, payload: dict) -> GithubPullReq
         "last_refreshed_at": datetime.now(UTC),
     }
     stmt = pg_insert(GithubPullRequest).values(**values)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["repo", "number"],
-        set_={k: stmt.excluded[k] for k in values if k not in ("repo", "number")},
+    set_ = {k: stmt.excluded[k] for k in values if k not in ("repo", "number", "conversation_id")}
+    set_["conversation_id"] = func.coalesce(
+        stmt.excluded.conversation_id, GithubPullRequest.conversation_id
     )
+    stmt = stmt.on_conflict_do_update(index_elements=["repo", "number"], set_=set_)
     await db.exec(stmt)
     await db.commit()
     result = await db.exec(
