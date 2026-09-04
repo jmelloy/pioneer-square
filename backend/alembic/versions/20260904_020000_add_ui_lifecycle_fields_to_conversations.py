@@ -1,7 +1,7 @@
 """Move Thread UI/lifecycle fields (name, status, discord_thread_id) into Conversation.
 
-Revision ID: 20260904_000001_add_ui_lifecycle_fields_to_conversations
-Revises: 20260831_000000
+Revision ID: 20260904_020000_add_ui_lifecycle_fields_to_conversations
+Revises: 20260904_000001_add_foreman_turns_conversation_id_index, 20260904_010000_add_conversation_id_to_github_cache
 Create Date: 2026-09-04
 
 Issue #1274 (epic #1271, "make Conversation the core Foreman thread model"):
@@ -12,6 +12,11 @@ each one's most-recently-updated, non-deleted thread. ``threads`` keeps its
 own copies of these columns — a conversation can have many threads over its
 lifetime (see ``models.Thread``'s docstring) — so this is additive, not a
 column move at the schema level.
+
+Also merges the two sibling heads left by #1275/#1276/#1277's independent
+``conversation_id``-column migrations (``...foreman_turns_conversation_id_index``
+and ``...conversation_id_to_github_cache``), which both branched off
+``20260904_000000_add_conversation_id_columns`` without merging back.
 """
 
 from __future__ import annotations
@@ -21,8 +26,11 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "20260904_000001_add_ui_lifecycle_fields_to_conversations"
-down_revision: str | Sequence[str] | None = "20260831_000000"
+revision: str = "20260904_020000_add_ui_lifecycle_fields_to_conversations"
+down_revision: str | Sequence[str] | None = (
+    "20260904_000001_add_foreman_turns_conversation_id_index",
+    "20260904_010000_add_conversation_id_to_github_cache",
+)
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
