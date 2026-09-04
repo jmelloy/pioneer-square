@@ -1530,6 +1530,7 @@ async def _run_foreman_ai(
                 task_id=task_id,
                 trigger=trigger,
                 max_rounds=cfg_max_rounds,
+                thread_id=thread_id,
             ),
             llm=RealLLM(
                 guild_id=guild_id,

@@ -16,7 +16,18 @@ import psycopg2
 import psycopg2.extras
 from alembic import command
 from alembic.config import Config as AlembicConfig
-from models import Agent, GithubToken, Guild, GuildMember, Task, User, UserSession, Worker
+from models import (
+    Agent,
+    Conversation,
+    GithubToken,
+    Guild,
+    GuildMember,
+    Task,
+    Thread,
+    User,
+    UserSession,
+    Worker,
+)
 from sqlalchemy import create_engine, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine.url import make_url
@@ -355,6 +366,70 @@ def insert_task(
                 parent_task_id=parent_task_id,
                 claude_session_id=claude_session_id,
                 created_at=now,
+            )
+            .on_conflict_do_nothing(index_elements=["id"])
+        )
+        session.commit()
+
+
+def insert_conversation(
+    db_url: str,
+    guild_id: str,
+    user_id: str | None = None,
+) -> int:
+    """Insert a Conversation row and return its id."""
+    now = datetime.now(UTC)
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(
+            select(col(Guild.id)).where(
+                col(Guild.slug) == guild_id, col(Guild.deleted_at).is_(None)
+            )
+        )
+        assert guild_pk is not None, f"Guild {guild_id!r} not found"
+        conv = Conversation(guild_id=guild_pk, user_id=user_id, created_at=now, updated_at=now)
+        session.add(conv)
+        session.flush()
+        conv_id = conv.id
+        session.commit()
+        assert conv_id is not None
+        return conv_id
+
+
+def insert_thread(
+    db_url: str,
+    guild_id: str,
+    thread_id: str,
+    *,
+    conversation_id: int | None = None,
+    user_id: str | None = None,
+    status: str = "active",
+    name: str | None = None,
+) -> None:
+    """Insert a Thread row. Creates a Conversation if conversation_id not provided."""
+    now = datetime.now(UTC)
+    with _sync_session(db_url) as session:
+        if conversation_id is None:
+            # Create a conversation first
+            guild_pk = session.scalar(
+                select(col(Guild.id)).where(
+                    col(Guild.slug) == guild_id, col(Guild.deleted_at).is_(None)
+                )
+            )
+            assert guild_pk is not None, f"Guild {guild_id!r} not found"
+            conv = Conversation(guild_id=guild_pk, user_id=user_id, created_at=now, updated_at=now)
+            session.add(conv)
+            session.flush()
+            conversation_id = conv.id
+
+        session.execute(
+            pg_insert(Thread)
+            .values(
+                id=thread_id,
+                conversation_id=conversation_id,
+                status=status,
+                name=name,
+                created_at=now,
+                updated_at=now,
             )
             .on_conflict_do_nothing(index_elements=["id"])
         )

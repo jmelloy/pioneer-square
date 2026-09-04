@@ -11,6 +11,10 @@ query, thread resolution) stays in ``foreman.runner`` as ordinary DB reads —
 ``ForemanRun.execute`` receives the rendered ``system_blocks``/
 ``state_preamble``/``audit_system`` as arguments rather than building them
 itself, so this module has no DB dependency of its own.
+
+Issue #1271: History loading now prefers ``thread_id`` when available via
+``HistoryByThread`` protocol, falling back to the legacy (guild_id, user_id)
+pair for compatibility.
 """
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from foreman.github_url_parser import annotate_message as _annotate_github_urls
-from foreman.history import History
+from foreman.history import History, HistoryByThread
 from foreman.journal import Journal
 from foreman.message_utils import (
     _inject_state_preamble,
@@ -65,13 +69,22 @@ class RunConfig:
     task_id: str | None
     trigger: str | None
     max_rounds: int
+    # Thread the foreman is operating in (#1271). When set, enables
+    # thread-scoped history retrieval without (guild_id, user_id) pair lookup.
+    thread_id: str | None = None
 
 
 class ForemanRun:
     """One Foreman turn: system+human -> round loop -> (forced wrap-up if capped)."""
 
     def __init__(
-        self, cfg: RunConfig, *, llm: LLM, tools: ToolExecutor, journal: Journal, history: History
+        self,
+        cfg: RunConfig,
+        *,
+        llm: LLM,
+        tools: ToolExecutor,
+        journal: Journal,
+        history: History | HistoryByThread,
     ) -> None:
         self._cfg = cfg
         self._llm = llm
@@ -94,7 +107,13 @@ class ForemanRun:
         # at send time below — the DB still holds just the human's literal text.
         await self._journal.system(audit_system)
         await self._journal.human(human_message)
-        messages = await self._history.load_for_llm(self._cfg.guild_id, self._cfg.user_id)
+
+        # Prefer thread-scoped history when thread_id is available (#1271),
+        # falling back to (guild_id, user_id) pair for legacy compatibility.
+        if self._cfg.thread_id and hasattr(self._history, "load_for_llm_by_thread"):
+            messages = await self._history.load_for_llm_by_thread(self._cfg.thread_id)
+        else:
+            messages = await self._history.load_for_llm(self._cfg.guild_id, self._cfg.user_id)
         _inject_state_preamble(messages, state_preamble)
 
         capped = True
