@@ -46,6 +46,11 @@
         <div class="log-detail-label">FULL THOUGHT</div>
         <pre class="log-detail-body log-detail-thinking">{{ log.detail.fullText }}</pre>
       </template>
+      <!-- Fallback for unknown/unrecognized toolTypes: show full JSON payload -->
+      <template v-else>
+        <div class="log-detail-label">RAW JSON</div>
+        <pre class="log-detail-body log-detail-raw">{{ formatDetailJson(log) }}</pre>
+      </template>
     </div>
   </div>
 </template>
@@ -68,6 +73,8 @@ const isExpandable = computed(() => {
     // _summarize_lines shows all lines when count <= 4; only expand when output is truncated
     return (log.detail.output?.trim().split('\n').length ?? 0) > 4
   }
+  // Known tool types are expandable (tool_use rules above). Unknown types also expand
+  // to show their raw JSON payload.
   return true
 })
 
@@ -113,6 +120,21 @@ const renderedLine = computed(() => {
 
 function inputRecord(input: Record<string, unknown> | string | undefined): Record<string, unknown> {
   return typeof input === 'object' && input !== null ? input : {}
+}
+
+function formatDetailJson(log: LogEntry): string {
+  // For unknown/unsupported toolTypes, show the full detail + line info
+  const detail = log.detail
+  if (!detail) {
+    return JSON.stringify({ line: log.line, timestamp: log.timestamp }, null, 2)
+  }
+  // Extract the raw event if it's a claude_json entry
+  if (detail.toolType === 'claude_json' && detail.event) {
+    return JSON.stringify(detail.event, null, 2)
+  }
+  // Otherwise show full detail object
+  const { ...rest } = detail
+  return JSON.stringify(rest, null, 2)
 }
 
 const lineClass = computed(() => {
@@ -213,6 +235,12 @@ const lineClass = computed(() => {
   border-color: rgba(80, 140, 220, 0.25);
   color: var(--color-blue);
   font-style: italic;
+}
+
+.log-detail-raw {
+  background: rgba(120, 60, 120, 0.1);
+  border-color: rgba(160, 100, 160, 0.25);
+  color: #d0a0d0;
 }
 
 .log-time {
