@@ -21,7 +21,7 @@ from database import get_db
 from foreman.constants import _HUMAN_TURN_WINDOW
 from foreman.message_utils import prune_history, strip_orphaned_tool_results
 from models import ForemanTurn
-from sqlmodel import col, select
+from sqlmodel import and_, col, or_, select
 
 # Upper bound on rows fetched before Python-side windowing, so query cost
 # stays flat regardless of the table's total lifetime turn count.
@@ -35,9 +35,13 @@ class DebugHistory(TypedDict):
 
 
 class History(Protocol):
-    async def load_for_llm(self, guild_id: str, user_id: str) -> list[dict]: ...
+    async def load_for_llm(
+        self, guild_id: str, user_id: str, conversation_id: int | None = None
+    ) -> list[dict]: ...
 
-    async def load_for_debug(self, guild_id: str, user_id: str) -> DebugHistory: ...
+    async def load_for_debug(
+        self, guild_id: str, user_id: str, conversation_id: int | None = None
+    ) -> DebugHistory: ...
 
 
 @dataclass
@@ -52,22 +56,42 @@ class _Window:
 class ConversationHistory:
     """Production ``History``, backed by the ``foreman_turns`` table."""
 
-    async def _windowed_turns(self, guild_id: str, user_id: str) -> _Window:
-        """Fetch the most recent ``_HISTORY_FETCH_LIMIT`` turns for (guild, user)
-        and find the backward-scan cutoff: the index of the
+    async def _windowed_turns(
+        self, guild_id: str, user_id: str, conversation_id: int | None = None
+    ) -> _Window:
+        """Fetch the most recent ``_HISTORY_FETCH_LIMIT`` turns for this
+        conversation and find the backward-scan cutoff: the index of the
         ``_HUMAN_TURN_WINDOW``-th-from-last non-tool-response user turn.
 
         Because the cutoff always lands on a human-initiated user turn, every
         assistant-turn / tool_result-user-turn pair that follows it is
         guaranteed to be included intact — no orphaned tool_use blocks, no
         synthetic repairs needed.
+
+        Scoped by ``conversation_id`` (#1271/#1279) when the caller has one
+        resolved — the ``(guild_id, user_id)`` match is kept as an OR
+        fallback rather than dropped, since turns written before the
+        conversation_id backfill migration (or for a guild/user pair that had
+        no ``Conversation`` row yet at backfill time) can still be NULL. Every
+        row a NULL match picks up here does belong to this conversation:
+        ``Conversation`` is 1:1 with ``(guild_id, user_id)`` (see
+        ``models.Conversation``), so the fallback can't leak another
+        conversation's turns in. When no ``conversation_id`` is given (a
+        caller that hasn't been threaded one yet), behavior is unchanged from
+        before #1279: plain ``(guild_id, user_id)`` matching.
         """
         db = await get_db()
         try:
             guild_pk_val = await get_guild_pk(db, guild_id)
-            stmt = select(ForemanTurn).where(
+            same_guild_user = and_(
                 col(ForemanTurn.guild_id) == guild_pk_val, col(ForemanTurn.user_id) == user_id
             )
+            where_clause = (
+                or_(col(ForemanTurn.conversation_id) == conversation_id, same_guild_user)
+                if conversation_id is not None
+                else same_guild_user
+            )
+            stmt = select(ForemanTurn).where(where_clause)
             result = await db.exec(
                 stmt.order_by(col(ForemanTurn.id).desc()).limit(_HISTORY_FETCH_LIMIT)
             )
@@ -86,7 +110,9 @@ class ConversationHistory:
                     break
         return _Window(turns=turns, cutoff=cutoff)
 
-    async def load_for_llm(self, guild_id: str, user_id: str) -> list[dict]:
+    async def load_for_llm(
+        self, guild_id: str, user_id: str, conversation_id: int | None = None
+    ) -> list[dict]:
         """Windowed turns -> plain {role, content} dicts for the Anthropic API.
 
         System turns are excluded — they're persisted for auditing but must
@@ -94,7 +120,7 @@ class ConversationHistory:
         API param, not a message). Leading non-user turns are trimmed since
         the API requires the first message to have role "user".
         """
-        window = await self._windowed_turns(guild_id, user_id)
+        window = await self._windowed_turns(guild_id, user_id, conversation_id)
         messages = [
             {"role": t.role, "content": json.loads(t.content_json)}
             for t in window.turns[window.cutoff :]
@@ -104,13 +130,15 @@ class ConversationHistory:
             messages.pop(0)
         return messages
 
-    async def load_for_debug(self, guild_id: str, user_id: str) -> DebugHistory:
+    async def load_for_debug(
+        self, guild_id: str, user_id: str, conversation_id: int | None = None
+    ) -> DebugHistory:
         """Same windowed turns, full metadata, then the same
         prune_history + strip_orphaned_tool_results pipeline ForemanRun's
         loop applies before every real API call — so the debug pane shows
         exactly what round 0 would send.
         """
-        window = await self._windowed_turns(guild_id, user_id)
+        window = await self._windowed_turns(guild_id, user_id, conversation_id)
         turns = window.turns
 
         # Most-recent system turn only (there's one per invocation; showing

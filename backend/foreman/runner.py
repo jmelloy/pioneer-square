@@ -454,7 +454,9 @@ async def _get_guild_user_id(guild_id: str) -> str | None:
         await db.close()
 
 
-async def _load_history(guild_id: str, user_id: str) -> list[dict]:
+async def _load_history(
+    guild_id: str, user_id: str, conversation_id: int | None = None
+) -> list[dict]:
     """Load the last _HUMAN_TURN_WINDOW non-tool-response turns (plus all tool exchange
     turns between them) as a list of Anthropic-API-compatible message dicts.
 
@@ -465,13 +467,15 @@ async def _load_history(guild_id: str, user_id: str) -> list[dict]:
     since it's exercised directly as a DB-layer primitive throughout
     ``tests/test_foreman.py``.
 
-    Loads the whole (guild, user) conversation regardless of ``task_id`` —
-    task-triggered turns (task-complete, followup-done, etc.) share the same
-    history as the user's other Foreman turns rather than an isolated
-    per-task slice (issue #1200). ``ForemanTurn.task_id`` is still stamped on
-    each row (see ``_save_turn``) purely as metadata, e.g. for the debug view.
+    Loads the whole conversation regardless of ``task_id`` — task-triggered
+    turns (task-complete, followup-done, etc.) share the same history as the
+    user's other Foreman turns rather than an isolated per-task slice (issue
+    #1200). ``ForemanTurn.task_id`` is still stamped on each row (see
+    ``_save_turn``) purely as metadata, e.g. for the debug view. Scoped by
+    ``conversation_id`` when given (#1271/#1279), else by ``(guild_id,
+    user_id)`` — see ``ConversationHistory._windowed_turns``.
     """
-    return await ConversationHistory().load_for_llm(guild_id, user_id)
+    return await ConversationHistory().load_for_llm(guild_id, user_id, conversation_id)
 
 
 async def _save_turn(
@@ -1541,6 +1545,7 @@ async def _run_foreman_ai(
                 task_id=task_id,
                 trigger=trigger,
                 max_rounds=cfg_max_rounds,
+                conversation_id=conversation_id,
             ),
             llm=RealLLM(
                 guild_id=guild_id,
@@ -1602,12 +1607,16 @@ async def clear_foreman_history(guild_id: str, user_id: str) -> int:
         await db.close()
 
 
-async def get_foreman_history(guild_id: str, user_id: str) -> dict:
+async def get_foreman_history(
+    guild_id: str, user_id: str, conversation_id: int | None = None
+) -> dict:
     """Return stored turns structured for the debug view.
 
     Thin compatibility wrapper over ``ConversationHistory.load_for_debug`` —
     the same windowed-turns implementation ``_load_history`` uses above, so
     the debug pane and the real LLM call can never drift apart (issue #1241).
+    Scoped by ``conversation_id`` when given (#1271/#1279), else by
+    ``(guild_id, user_id)`` — see ``ConversationHistory._windowed_turns``.
 
     Returns::
 
@@ -1617,4 +1626,4 @@ async def get_foreman_history(guild_id: str, user_id: str) -> dict:
             "total": <int>,           # total non-system turns stored (before windowing)
         }
     """
-    return await ConversationHistory().load_for_debug(guild_id, user_id)
+    return await ConversationHistory().load_for_debug(guild_id, user_id, conversation_id)

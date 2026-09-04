@@ -65,6 +65,10 @@ class RunConfig:
     task_id: str | None
     trigger: str | None
     max_rounds: int
+    # Owning Conversation (#1271/#1279) this run's history should be scoped
+    # to. Optional since not every caller has one resolved yet — History
+    # falls back to plain (guild_id, user_id) matching when it's None.
+    conversation_id: int | None = None
 
 
 class ForemanRun:
@@ -94,7 +98,9 @@ class ForemanRun:
         # at send time below — the DB still holds just the human's literal text.
         await self._journal.system(audit_system)
         await self._journal.human(human_message)
-        messages = await self._history.load_for_llm(self._cfg.guild_id, self._cfg.user_id)
+        messages = await self._history.load_for_llm(
+            self._cfg.guild_id, self._cfg.user_id, self._cfg.conversation_id
+        )
         _inject_state_preamble(messages, state_preamble)
 
         capped = True
