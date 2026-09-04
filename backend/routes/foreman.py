@@ -88,6 +88,97 @@ async def clear_foreman_context(
 
 
 # ---------------------------------------------------------------------------
+# Thread-scoped endpoints (#1271)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/guilds/{guild_id}/threads/{thread_id}/foreman/context")
+async def get_thread_foreman_context(
+    guild_id: str,
+    thread_id: str,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Return the stored foreman conversation turns for this thread (debug view).
+
+    Uses thread-scoped history loading (#1271) instead of (guild, user) pair.
+    """
+    from foreman.history import ConversationHistory
+    from models import Conversation, Thread
+
+    result = await db.exec(select(col(Guild.slug)).where(col(Guild.slug) == guild_id))
+    if result.one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+
+    # Verify thread exists and belongs to this guild
+    thread = await db.exec(
+        select(Thread)
+        .join(Conversation, col(Thread.conversation_id) == col(Conversation.id))
+        .where(
+            col(Thread.id) == thread_id,
+            col(Conversation.guild_id) == col(Guild.id),
+            col(Thread.deleted_at).is_(None),
+        )
+    )
+    if thread.first() is None:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
+    history = await ConversationHistory().load_for_debug_by_thread(thread_id)
+    return {
+        "system": history["system"],
+        "messages": history["messages"],
+        "count": len(history["messages"]),
+        "total": history["total"],
+    }
+
+
+@router.post("/guilds/{guild_id}/threads/{thread_id}/foreman/clear-context")
+async def clear_thread_foreman_context(
+    guild_id: str,
+    thread_id: str,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Delete all stored foreman turns for this thread.
+
+    Chat history in messages table is preserved.
+    Uses thread-scoped clearing (#1271).
+    """
+    from models import Conversation, ForemanTurn, Thread
+    from sqlalchemy import delete
+
+    result = await db.exec(select(col(Guild.slug)).where(col(Guild.slug) == guild_id))
+    if result.one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+
+    # Verify thread exists and belongs to this guild
+    thread = await db.exec(
+        select(Thread)
+        .join(Conversation, col(Thread.conversation_id) == col(Conversation.id))
+        .join(Guild, col(Conversation.guild_id) == col(Guild.id))
+        .where(
+            col(Thread.id) == thread_id,
+            col(Guild.slug) == guild_id,
+            col(Thread.deleted_at).is_(None),
+        )
+    )
+    if thread.first() is None:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
+    removed = await db.exec(delete(ForemanTurn).where(col(ForemanTurn.thread_id) == thread_id))
+    await db.commit()
+    removed_count = getattr(removed, "rowcount", 0) or 0
+
+    logger.info(
+        "Foreman context cleared for guild %s thread %s (%d turns removed)",
+        guild_id,
+        thread_id,
+        removed_count,
+    )
+    return {"status": "cleared", "removed": removed_count}
+
+
+# ---------------------------------------------------------------------------
 # State reads
 # ---------------------------------------------------------------------------
 
