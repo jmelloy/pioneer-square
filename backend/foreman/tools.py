@@ -127,9 +127,8 @@ async def _apply_spawn_tool_defaults(
     """Fill worker-tool defaults from spawn_settings — the only store for them.
 
     Worker-facing defaults belong with spawn_settings because they affect the
-    spawned worker/task, not the foreman's own LLM. Pi is provider-agnostic and
-    has no built-in default that authenticates, so without a resolved default a
-    pi task launches with no --provider/--model and fails per-task (see #1040).
+    spawned worker/task, not the foreman's own LLM. Pi is provider-agnostic, so
+    a blank Pi default deliberately lets the Pi CLI pick from its own config.
     An explicit provider/model from the foreman's tool call always wins.
     """
     if (
