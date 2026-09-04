@@ -18,7 +18,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260904_000000_add_thread_id_to_foreman_turns"
-down_revision: str | Sequence[str] | None = "20260831_000000_finish_spawn_settings_migration"
+down_revision: str | Sequence[str] | None = "20260831_000000"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
