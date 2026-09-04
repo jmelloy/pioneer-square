@@ -804,6 +804,7 @@ async def _persist_inbound_message(
     from auth_deps import get_guild_pk  # noqa: PLC0415
     from database import AsyncSessionLocal  # noqa: PLC0415
     from events import broadcast_msg  # noqa: PLC0415
+    from foreman.conversation_service import resolve_conversation_id  # noqa: PLC0415
     from foreman.thread_service import (  # noqa: PLC0415
         ensure_conversation_thread,
         resolve_thread_id,
@@ -813,6 +814,7 @@ async def _persist_inbound_message(
 
     created_at = datetime.now(UTC)
     thread_id: str | None = None
+    conversation_id: int | None = None
     async with AsyncSessionLocal() as db:
         guild_pk = await get_guild_pk(db, guild_slug)
         if guild_pk is None:
@@ -821,9 +823,13 @@ async def _persist_inbound_message(
         try:
             if task_id:
                 thread_id = await resolve_thread_id(db, guild_pk, task_id=task_id, user_id=user_id)
+                conversation_id = await resolve_conversation_id(
+                    db, guild_pk, task_id=task_id, user_id=user_id
+                )
             elif user_id:
                 thread = await ensure_conversation_thread(guild_slug, user_id, content)
                 thread_id = thread.id if thread else None
+                conversation_id = thread.conversation_id if thread else None
         except Exception:
             logger.warning(
                 "discord router: failed to resolve conversation thread guild=%s task=%s",
@@ -843,6 +849,7 @@ async def _persist_inbound_message(
                 user_id=user_id,
                 task_id=task_id,
                 thread_id=thread_id,
+                conversation_id=conversation_id,
                 source="discord",
             )
         )

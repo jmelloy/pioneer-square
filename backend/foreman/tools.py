@@ -1572,9 +1572,11 @@ async def _handle_create_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
     # this message; falls back to None for system/webhook-triggered
     # work with no human user_id.
     thread_id: str | None = None
+    conversation_id: int | None = None
     if guild_pk is not None and user_id:
         thread, _created = await get_or_create_active_thread(db, guild_pk, user_id, name_hint=name)
         thread_id = thread.id
+        conversation_id = thread.conversation_id
     db.add(
         Task(
             id=task_id,
@@ -1592,6 +1594,7 @@ async def _handle_create_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
             created_at=created_at,
             user_id=user_id,
             thread_id=thread_id,
+            conversation_id=conversation_id,
         )
     )
     await db.commit()
@@ -1935,11 +1938,13 @@ async def _handle_assign_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
                 # Route this task back to the conversation
                 # thread it was created from (#1167).
                 thread_id: str | None = None
+                conversation_id: int | None = None
                 if guild_pk is not None and user_id:
                     assign_thread, _created = await get_or_create_active_thread(
                         db, guild_pk, user_id, name_hint=name
                     )
                     thread_id = assign_thread.id
+                    conversation_id = assign_thread.conversation_id
                 db.add(
                     Task(
                         id=task_id,
@@ -1963,6 +1968,7 @@ async def _handle_assign_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
                         created_at=created_at,
                         user_id=user_id,
                         thread_id=thread_id,
+                        conversation_id=conversation_id,
                     )
                 )
                 await db.commit()
