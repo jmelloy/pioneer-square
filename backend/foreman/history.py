@@ -8,6 +8,10 @@ of a shared implementation. ``ConversationHistory`` is that shared
 implementation: ``_windowed_turns`` is the one place the fetch-limit +
 backward-scan cutoff logic lives, and ``load_for_llm``/``load_for_debug`` are
 its two callers, shaping the same windowed slice for their own contract.
+
+Issue #1271 adds thread-scoped variants (``load_for_llm_by_thread``) that
+query ForemanTurn.thread_id directly, skipping the (guild_id, user_id) pair
+lookup that the legacy methods still use for compatibility.
 """
 
 from __future__ import annotations
@@ -40,6 +44,14 @@ class History(Protocol):
     async def load_for_debug(self, guild_id: str, user_id: str) -> DebugHistory: ...
 
 
+class HistoryByThread(Protocol):
+    """Protocol for thread-scoped history loading (#1271)."""
+
+    async def load_for_llm_by_thread(self, thread_id: str) -> list[dict]: ...
+
+    async def load_for_debug_by_thread(self, thread_id: str) -> DebugHistory: ...
+
+
 @dataclass
 class _Window:
     """The fetched turns (oldest→newest, capped at ``_HISTORY_FETCH_LIMIT``)
@@ -47,6 +59,25 @@ class _Window:
 
     turns: list[ForemanTurn]
     cutoff: int
+
+
+def _compute_cutoff(turns: list[ForemanTurn]) -> int:
+    """Find the backward-scan cutoff: the index of the
+    ``_HUMAN_TURN_WINDOW``-th-from-last non-tool-response user turn.
+
+    Extracted so both (guild, user) and thread-scoped fetch paths share the
+    same windowing logic.
+    """
+    cutoff = 0
+    human_count = 0
+    for i in range(len(turns) - 1, -1, -1):
+        t = turns[i]
+        if t.role == "user" and not t.is_tool_response:
+            human_count += 1
+            if human_count >= _HUMAN_TURN_WINDOW:
+                cutoff = i
+                break
+    return cutoff
 
 
 class ConversationHistory:
@@ -75,15 +106,27 @@ class ConversationHistory:
         finally:
             await db.close()
 
-        cutoff = 0
-        human_count = 0
-        for i in range(len(turns) - 1, -1, -1):
-            t = turns[i]
-            if t.role == "user" and not t.is_tool_response:
-                human_count += 1
-                if human_count >= _HUMAN_TURN_WINDOW:
-                    cutoff = i
-                    break
+        cutoff = _compute_cutoff(turns)
+        return _Window(turns=turns, cutoff=cutoff)
+
+    async def _windowed_turns_by_thread(self, thread_id: str) -> _Window:
+        """Fetch turns scoped directly to a Thread (#1271).
+
+        Preferred when the caller already has a thread_id — skips the
+        (guild_id, user_id) -> Conversation -> Thread resolution and queries
+        ForemanTurn.thread_id directly.
+        """
+        db = await get_db()
+        try:
+            stmt = select(ForemanTurn).where(col(ForemanTurn.thread_id) == thread_id)
+            result = await db.exec(
+                stmt.order_by(col(ForemanTurn.id).desc()).limit(_HISTORY_FETCH_LIMIT)
+            )
+            turns = list(reversed(result.all()))
+        finally:
+            await db.close()
+
+        cutoff = _compute_cutoff(turns)
         return _Window(turns=turns, cutoff=cutoff)
 
     async def load_for_llm(self, guild_id: str, user_id: str) -> list[dict]:
@@ -104,6 +147,22 @@ class ConversationHistory:
             messages.pop(0)
         return messages
 
+    async def load_for_llm_by_thread(self, thread_id: str) -> list[dict]:
+        """Thread-scoped variant of load_for_llm (#1271).
+
+        Preferred when the caller already has a thread_id. Uses the direct
+        ForemanTurn.thread_id FK instead of (guild_id, user_id) pair lookup.
+        """
+        window = await self._windowed_turns_by_thread(thread_id)
+        messages = [
+            {"role": t.role, "content": json.loads(t.content_json)}
+            for t in window.turns[window.cutoff :]
+            if t.role != "system"
+        ]
+        while messages and messages[0]["role"] != "user":
+            messages.pop(0)
+        return messages
+
     async def load_for_debug(self, guild_id: str, user_id: str) -> DebugHistory:
         """Same windowed turns, full metadata, then the same
         prune_history + strip_orphaned_tool_results pipeline ForemanRun's
@@ -115,6 +174,42 @@ class ConversationHistory:
 
         # Most-recent system turn only (there's one per invocation; showing
         # every one would just duplicate near-identical audit text).
+        system_content: str | None = None
+        for t in reversed(turns):
+            if t.role == "system":
+                raw = json.loads(t.content_json)
+                system_content = raw if isinstance(raw, str) else json.dumps(raw)
+                break
+
+        total = sum(1 for t in turns if t.role != "system")
+        if not turns:
+            return {"system": system_content, "messages": [], "total": 0}
+
+        messages: list[dict] = [
+            {
+                "id": t.id,
+                "role": t.role,
+                "is_tool_response": bool(t.is_tool_response),
+                "parent_id": t.parent_id,
+                "content": json.loads(t.content_json),
+                "created_at": t.created_at,
+            }
+            for t in turns[window.cutoff :]
+            if t.role != "system"
+        ]
+        while messages and messages[0]["role"] != "user":
+            messages.pop(0)
+
+        messages = prune_history(messages)
+        messages = strip_orphaned_tool_results(messages)
+        return {"system": system_content, "messages": messages, "total": total}
+
+    async def load_for_debug_by_thread(self, thread_id: str) -> DebugHistory:
+        """Thread-scoped variant of load_for_debug (#1271)."""
+        window = await self._windowed_turns_by_thread(thread_id)
+        turns = window.turns
+
+        # Most-recent system turn only
         system_content: str | None = None
         for t in reversed(turns):
             if t.role == "system":

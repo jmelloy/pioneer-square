@@ -483,8 +483,14 @@ async def _save_turn(
     parent_id: int | None = None,
     api_log_id: int | None = None,
     task_id: str | None = None,
+    thread_id: str | None = None,
 ) -> int:
-    """Persist one turn to the DB. Returns the new row's id."""
+    """Persist one turn to the DB. Returns the new row's id.
+
+    ``thread_id`` links the turn directly to its owning Thread (#1271),
+    enabling conversation-scoped history retrieval without (guild_id,
+    user_id) pair lookups.
+    """
     db = await get_db()
     try:
         guild_pk_val = await get_guild_pk(db, guild_id)
@@ -498,6 +504,7 @@ async def _save_turn(
             created_at=datetime.now(UTC),
             request_id=api_log_id,
             task_id=task_id,
+            thread_id=thread_id,
         )
         db.add(turn)
         await db.commit()

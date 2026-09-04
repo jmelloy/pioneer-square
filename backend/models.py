@@ -657,6 +657,11 @@ class ForemanTurn(SQLModel, table=True):
     request_id: int | None = Field(default=None, foreign_key="api_request_log.id")
     # Task this turn was produced for (mirrors api_request_log.task_id for convenience).
     task_id: str | None = Field(default=None, foreign_key="tasks.id")
+    # Conversation thread this turn belongs to (#1271). When set, enables
+    # conversation-scoped history retrieval without (guild_id, user_id) pair
+    # lookups. NULL on legacy turns and any turn created before the thread
+    # was resolved.
+    thread_id: str | None = Field(default=None, foreign_key="threads.id", index=True)
 
     # History fetch filters on (guild_id, user_id) and orders by id DESC; the
     # trailing id lets Postgres satisfy the ORDER BY via a backward index scan.

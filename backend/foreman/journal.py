@@ -146,6 +146,7 @@ class TurnJournal:
             parent_id=parent_id,
             api_log_id=api_log_id,
             task_id=self._reply.task_id,
+            thread_id=self._reply.thread_id,
         )
 
     async def system(self, content: Any) -> int:
