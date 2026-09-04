@@ -898,31 +898,28 @@ async def notify_foreman_chat(
 async def _lookup_foreman_thread_for_user(guild_slug: str, user_id: str) -> str | None:
     """Return the Discord thread ID from the Foreman's active Thread for this user.
 
-    Queries the Foreman's Thread/Conversation model (#1167/#1168) to find
-    the active thread's ``discord_thread_id`` — set by
+    Queries the Foreman's Conversation model (#1167/#1168/#1274) to find
+    the current active thread's ``discord_thread_id`` — set by
     ``discord/thread_mirror.on_thread_created`` when the Foreman first
-    created the thread. Returns None if no active thread or no Discord
-    mirror exists. Never raises.
+    created the thread, and mirrored onto ``Conversation`` by
+    ``foreman.thread_service``. Returns None if no active thread or no
+    Discord mirror exists. Never raises.
     """
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415
-        from models import Conversation, Guild, Thread  # noqa: PLC0415
+        from models import Conversation, Guild  # noqa: PLC0415
         from sqlmodel import col, select  # noqa: PLC0415
 
         async with AsyncSessionLocal() as db:
             result = await db.exec(
-                select(Thread.discord_thread_id)
-                .join(Conversation, col(Conversation.id) == col(Thread.conversation_id))
+                select(Conversation.discord_thread_id)
                 .join(Guild, col(Guild.id) == col(Conversation.guild_id))
                 .where(
                     col(Guild.slug) == guild_slug,
                     col(Conversation.user_id) == user_id,
-                    col(Thread.status) == "active",
-                    col(Thread.deleted_at).is_(None),
-                    col(Thread.discord_thread_id).is_not(None),
+                    col(Conversation.status) == "active",
+                    col(Conversation.discord_thread_id).is_not(None),
                 )
-                .order_by(col(Thread.updated_at).desc())
-                .limit(1)
             )
             return result.first()
     except Exception:

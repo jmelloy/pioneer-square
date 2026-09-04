@@ -88,6 +88,8 @@ async def get_or_create_active_thread(
     if thread is not None:
         thread.updated_at = now
         db.add(thread)
+        _sync_conversation_from_thread(conversation, thread, now)
+        db.add(conversation)
         await db.commit()
         await db.refresh(thread)
         return thread, False
@@ -101,9 +103,56 @@ async def get_or_create_active_thread(
         updated_at=now,
     )
     db.add(thread)
+    _sync_conversation_from_thread(conversation, thread, now)
+    db.add(conversation)
     await db.commit()
     await db.refresh(thread)
     return thread, True
+
+
+def _sync_conversation_from_thread(
+    conversation: Conversation, thread: Thread, now: datetime
+) -> None:
+    """Mirror ``thread``'s UI/lifecycle fields onto its owning ``conversation``.
+
+    ``Conversation.name/status/discord_thread_id`` (#1274) always reflect
+    the conversation's *currently active* thread. Safe to call unconditionally
+    here — a thread is only ever created/reused as *the* active thread for its
+    conversation, so there's no risk of mirroring a stale/superseded thread.
+    """
+    conversation.name = thread.name
+    conversation.status = thread.status
+    conversation.discord_thread_id = thread.discord_thread_id
+    conversation.updated_at = now
+
+
+async def sync_conversation_after_thread_update(
+    db: AsyncSession, thread: Thread, *, previous_status: str | None = None
+) -> None:
+    """Mirror a mutated ``thread`` back onto its ``Conversation`` (#1274).
+
+    For callers outside this module that mutate an existing ``Thread`` row
+    directly — ``routes/threads.py``'s archive/close endpoints,
+    ``foreman/thread_maintenance.py``'s idle sweep, and
+    ``discord/thread_mirror.py`` stamping ``discord_thread_id`` after Discord
+    confirms thread creation.
+
+    A conversation can outlive many threads (see ``Thread``'s docstring): by
+    the time an old thread is swept from "archived" to "closed", a newer
+    thread may have already superseded it as the conversation's active one.
+    When *previous_status* is given, the mirror only applies if the
+    conversation's status still matches it — i.e. the conversation hasn't
+    already moved on. Pass ``previous_status=None`` (the default) when the
+    caller knows the thread is still current (e.g. right after creating it
+    or stamping its ``discord_thread_id``).
+    """
+    conversation = await db.get(Conversation, thread.conversation_id)
+    if conversation is None:
+        return
+    if previous_status is not None and conversation.status != previous_status:
+        return
+    _sync_conversation_from_thread(conversation, thread, thread.updated_at)
+    db.add(conversation)
 
 
 async def resolve_thread_id(

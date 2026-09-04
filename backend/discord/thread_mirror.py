@@ -102,6 +102,7 @@ async def _stamp_discord_thread_id(thread_id: str, discord_thread_id: str) -> No
     """
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415
+        from foreman.thread_service import sync_conversation_after_thread_update  # noqa: PLC0415
         from models import Thread  # noqa: PLC0415
         from sqlmodel import col, select  # noqa: PLC0415
 
@@ -118,6 +119,7 @@ async def _stamp_discord_thread_id(thread_id: str, discord_thread_id: str) -> No
             thread.discord_thread_id = discord_thread_id
             thread.updated_at = datetime.now(UTC)
             db.add(thread)
+            await sync_conversation_after_thread_update(db, thread, previous_status=thread.status)
             await db.commit()
     except Exception:
         logger.warning(
