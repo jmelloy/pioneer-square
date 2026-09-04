@@ -473,7 +473,9 @@ class TestExecToolsDispatching:
     async def test_create_task_stamps_thread_id(self, db_session):
         """A task created on behalf of a human user must be routed back to
         that user's conversation Thread (#1167) — the single place a human
-        sees everything that came from what they asked for."""
+        sees everything that came from what they asked for. Also stamps
+        Task.conversation_id (#1271/#1276) with that thread's owning
+        Conversation, dual-written alongside thread_id."""
         insert_guild(db_session, "g-thread-stamp")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
             results = await exec_tools(
@@ -489,10 +491,13 @@ class TestExecToolsDispatching:
             thread = session.get(Thread, task.thread_id)
             assert thread is not None
             assert thread.status == "active"
+            assert task.conversation_id is not None
+            assert task.conversation_id == thread.conversation_id
 
     async def test_create_task_no_thread_without_user_id(self, db_session):
         """System/webhook-triggered task creation carries no human user_id, so
-        there is no conversation to route the task back to."""
+        there is no conversation to route the task back to — thread_id and
+        conversation_id are both left NULL."""
         insert_guild(db_session, "g-thread-nouser")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
             results = await exec_tools(
@@ -504,6 +509,7 @@ class TestExecToolsDispatching:
         with _sync_session(db_session) as session:
             task = session.get(Task, task_id)
         assert task.thread_id is None
+        assert task.conversation_id is None
 
     async def test_assign_task_new_stamps_thread_id(self, db_session):
         insert_guild(db_session, "g-thread-stamp-assign")
@@ -527,6 +533,8 @@ class TestExecToolsDispatching:
             assert task.thread_id is not None
             thread = session.get(Thread, task.thread_id)
             assert thread is not None
+            assert task.conversation_id is not None
+            assert task.conversation_id == thread.conversation_id
 
     async def test_create_task_custom_phase(self, db_session):
         insert_guild(db_session, "g-planphase")
