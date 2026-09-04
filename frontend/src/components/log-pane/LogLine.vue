@@ -46,6 +46,11 @@
         <div class="log-detail-label">FULL THOUGHT</div>
         <pre class="log-detail-body log-detail-thinking">{{ log.detail.fullText }}</pre>
       </template>
+      <template v-else>
+        <!-- Fallback for unknown/unrecognized message types -->
+        <div class="log-detail-label">RAW JSON</div>
+        <pre class="log-detail-body log-detail-raw">{{ JSON.stringify(log.detail, null, 2) }}</pre>
+      </template>
     </div>
   </div>
 </template>
@@ -68,6 +73,8 @@ const isExpandable = computed(() => {
     // _summarize_lines shows all lines when count <= 4; only expand when output is truncated
     return (log.detail.output?.trim().split('\n').length ?? 0) > 4
   }
+  // Known tool types (tool_use, claude_json) are always expandable; unknown types
+  // also expand to show their raw JSON payload.
   return true
 })
 
@@ -213,6 +220,11 @@ const lineClass = computed(() => {
   border-color: rgba(80, 140, 220, 0.25);
   color: var(--color-blue);
   font-style: italic;
+}
+.log-detail-raw {
+  background: rgba(100, 60, 100, 0.1);
+  border-color: rgba(160, 100, 160, 0.3);
+  color: #c0a0c0;
 }
 
 .log-time {
