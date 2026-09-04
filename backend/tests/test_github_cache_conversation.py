@@ -102,9 +102,7 @@ class TestUpsertIssueConversationId:
         assert issue.title == "Updated title"
         assert issue.conversation_id == conv_id
 
-    async def test_conflict_update_does_not_downgrade_to_a_different_conversation(
-        self, db_session
-    ):
+    async def test_conflict_update_does_not_downgrade_to_a_different_conversation(self, db_session):
         """First writer wins: once set, a differing conversation_id from a later
         upsert must not overwrite the original."""
         insert_guild(db_session, "g-gc3")
@@ -156,9 +154,7 @@ class TestUpsertPrConversationId:
             conv_id = conv.id
 
         async with database_module.AsyncSessionLocal() as db:
-            await github_cache.upsert_pr(
-                db, "owner/repo", _pr_payload(11), conversation_id=conv_id
-            )
+            await github_cache.upsert_pr(db, "owner/repo", _pr_payload(11), conversation_id=conv_id)
 
         async with database_module.AsyncSessionLocal() as db:
             pr = await github_cache.upsert_pr(

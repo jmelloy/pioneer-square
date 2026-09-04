@@ -823,9 +823,7 @@ async def github_webhook(
     elif event_type == "pull_request" and repo:
         pr_payload = payload.get("pull_request")
         if isinstance(pr_payload, dict):
-            await github_cache.upsert_pr(
-                db, repo, pr_payload, conversation_id=task_conversation_id
-            )
+            await github_cache.upsert_pr(db, repo, pr_payload, conversation_id=task_conversation_id)
 
     # Back-fill pr_url on the task from the webhook payload when a
     # pull_request event arrives and the task doesn't already have it set.

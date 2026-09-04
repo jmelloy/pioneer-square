@@ -16,7 +16,17 @@ import psycopg2
 import psycopg2.extras
 from alembic import command
 from alembic.config import Config as AlembicConfig
-from models import Agent, Conversation, GithubToken, Guild, GuildMember, Task, User, UserSession, Worker
+from models import (
+    Agent,
+    Conversation,
+    GithubToken,
+    Guild,
+    GuildMember,
+    Task,
+    User,
+    UserSession,
+    Worker,
+)
 from sqlalchemy import create_engine, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine.url import make_url
@@ -187,9 +197,7 @@ def insert_guild(
         session.commit()
 
 
-def insert_conversation(
-    db_url: str, guild_id: str, user_id: str | None = None
-) -> int:
+def insert_conversation(db_url: str, guild_id: str, user_id: str | None = None) -> int:
     """Insert a Conversation row for a guild and return its id."""
     now = datetime.now(UTC)
     with _sync_session(db_url) as session:
