@@ -195,17 +195,19 @@ async def list_thread_messages(
     github_user_id: str = Depends(require_member()),
     db: AsyncSession = Depends(get_db_dep),
 ):
-    """Return this thread's own message history, oldest first (#1175).
+    """Return this thread's owning conversation's message history, oldest first (#1175, #1271).
 
     Mirrors the guild-wide history query in ``routes.guilds.get_guild`` — same
     ``_message_dict`` serialization, same 100-row cap — but scoped to
-    ``Message.thread_id`` instead of the whole guild, so the thread pane can
-    show its own conversation instead of the flat comms feed.
+    ``Message.conversation_id`` instead of the whole guild, so the thread pane
+    shows the full conversation (which may span more than one Discord thread
+    over time, see ``models.Thread``) instead of the flat comms feed or just
+    this one thread's own slice.
     """
-    await _get_thread_in_guild(db, guild_id, thread_id)
+    thread = await _get_thread_in_guild(db, guild_id, thread_id)
     result = await db.exec(
         select(Message)
-        .where(col(Message.thread_id) == thread_id)
+        .where(col(Message.conversation_id) == thread.conversation_id)
         .order_by(col(Message.created_at).desc(), col(Message.id).desc())
         .limit(100)
     )
