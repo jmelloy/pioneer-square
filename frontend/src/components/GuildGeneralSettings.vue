@@ -34,8 +34,8 @@
   <div class="settings-field">
     <label class="settings-label">GitHub App Installation ID</label>
     <p class="settings-hint">
-      From github.com/settings/installations/&lt;id&gt;. Attributes comments and commits to the
-      app bot. Blank uses the server default.
+      From github.com/settings/installations/&lt;id&gt;. Attributes comments and commits to the app
+      bot. Blank uses the server default.
     </p>
     <div class="settings-row">
       <input

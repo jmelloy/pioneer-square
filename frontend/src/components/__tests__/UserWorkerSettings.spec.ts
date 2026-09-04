@@ -84,9 +84,7 @@ describe('UserWorkerSettings', () => {
     await wrapper.find('.uws-save-btn').trigger('click')
     await flushPromises()
     expect(put).toHaveBeenCalledOnce()
-    expect(put).toHaveBeenCalledWith(
-      expect.objectContaining({ repos: [], tools: [], envVars: [] }),
-    )
+    expect(put).toHaveBeenCalledWith(expect.objectContaining({ repos: [], tools: [], envVars: [] }))
     expect(wrapper.find('.save-status-saved').exists()).toBe(true)
   })
 })
