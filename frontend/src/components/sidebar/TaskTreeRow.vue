@@ -62,7 +62,12 @@
     </div>
 
     <template v-if="(isIssueRoot || expanded) && task.children.length">
-      <TaskTreeRow v-for="child in task.children" :key="child.id" :task="child" :depth="depth + 1" />
+      <TaskTreeRow
+        v-for="child in task.children"
+        :key="child.id"
+        :task="child"
+        :depth="depth + 1"
+      />
     </template>
   </div>
 </template>

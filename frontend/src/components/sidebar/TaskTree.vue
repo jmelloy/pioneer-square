@@ -161,8 +161,7 @@ const activeNodes = computed(
 const isEmpty = computed(
   () =>
     !loading.value &&
-    (!treeData.value ||
-      (activeNodes.value.length === 0 && treeData.value.ungrouped.length === 0)),
+    (!treeData.value || (activeNodes.value.length === 0 && treeData.value.ungrouped.length === 0)),
 )
 </script>
 

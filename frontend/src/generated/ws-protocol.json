@@ -1,12 +1,6 @@
 {
   "inbound": {
-    "agent-state": [
-      "activity",
-      "agentId",
-      "state",
-      "taskId",
-      "workerId"
-    ],
+    "agent-state": ["activity", "agentId", "state", "taskId", "workerId"],
     "chat": [
       "content",
       "createdAt",
@@ -33,23 +27,9 @@
       "requestId",
       "response"
     ],
-    "foreman-disconnect": [
-      "guildId"
-    ],
-    "join": [
-      "agentId",
-      "agentName",
-      "agentType",
-      "external",
-      "workerId"
-    ],
-    "needs-input": [
-      "description",
-      "lastMessage",
-      "stopReason",
-      "taskId",
-      "workerId"
-    ],
+    "foreman-disconnect": ["guildId"],
+    "join": ["agentId", "agentName", "agentType", "external", "workerId"],
+    "needs-input": ["description", "lastMessage", "stopReason", "taskId", "workerId"],
     "ping": [],
     "task-complete": [
       "agentId",
@@ -73,11 +53,7 @@
       "taskId",
       "workerId"
     ],
-    "task-rejected": [
-      "reason",
-      "taskId",
-      "workerId"
-    ],
+    "task-rejected": ["reason", "taskId", "workerId"],
     "task-update": [
       "agentId",
       "branch",
@@ -92,23 +68,9 @@
       "workerId",
       "worktreePath"
     ],
-    "terminal-output": [
-      "agentId",
-      "detail",
-      "level",
-      "line",
-      "taskId",
-      "timestamp",
-      "workerId"
-    ],
-    "worker-disconnect": [
-      "reason",
-      "workerId"
-    ],
-    "worker-pong": [
-      "timestamp",
-      "workerId"
-    ],
+    "terminal-output": ["agentId", "detail", "level", "line", "taskId", "timestamp", "workerId"],
+    "worker-disconnect": ["reason", "workerId"],
+    "worker-pong": ["timestamp", "workerId"],
     "worker-register": [
       "hostname",
       "models",
@@ -130,13 +92,7 @@
       "workerId",
       "workerName"
     ],
-    "agent-state": [
-      "activity",
-      "agentId",
-      "state",
-      "taskId",
-      "workerId"
-    ],
+    "agent-state": ["activity", "agentId", "state", "taskId", "workerId"],
     "chat": [
       "content",
       "createdAt",
@@ -163,20 +119,10 @@
       "toolChoice",
       "tools"
     ],
-    "foreman-disconnect": [
-      "guildId"
-    ],
-    "foreman-evicted": [
-      "guildId",
-      "reason"
-    ],
-    "foreman-poll-status": [
-      "nextCheckIn"
-    ],
-    "foreman-registered": [
-      "agentId",
-      "guildId"
-    ],
+    "foreman-disconnect": ["guildId"],
+    "foreman-evicted": ["guildId", "reason"],
+    "foreman-poll-status": ["nextCheckIn"],
+    "foreman-registered": ["agentId", "guildId"],
     "github-event": [
       "action",
       "deliveryId",
@@ -187,24 +133,9 @@
       "sender",
       "taskId"
     ],
-    "guild-updated": [
-      "description",
-      "id",
-      "name",
-      "primary_repo",
-      "url",
-      "version"
-    ],
-    "needs-input": [
-      "description",
-      "lastMessage",
-      "stopReason",
-      "taskId",
-      "workerId"
-    ],
-    "pong": [
-      "timestamp"
-    ],
+    "guild-updated": ["description", "id", "name", "primary_repo", "url", "version"],
+    "needs-input": ["description", "lastMessage", "stopReason", "taskId", "workerId"],
+    "pong": ["timestamp"],
     "task-assigned": [
       "branch",
       "description",
@@ -228,10 +159,7 @@
       "tool",
       "workerId"
     ],
-    "task-cancel": [
-      "taskId",
-      "workerId"
-    ],
+    "task-cancel": ["taskId", "workerId"],
     "task-complete": [
       "agentId",
       "branch",
@@ -254,10 +182,7 @@
       "taskType",
       "threadId"
     ],
-    "task-finalize": [
-      "taskId",
-      "workerId"
-    ],
+    "task-finalize": ["taskId", "workerId"],
     "task-followup": [
       "branch",
       "createPr",
@@ -284,16 +209,8 @@
       "taskId",
       "workerId"
     ],
-    "task-redirect": [
-      "instructions",
-      "taskId",
-      "workerId"
-    ],
-    "task-rejected": [
-      "reason",
-      "taskId",
-      "workerId"
-    ],
+    "task-redirect": ["instructions", "taskId", "workerId"],
+    "task-rejected": ["reason", "taskId", "workerId"],
     "task-update": [
       "agentId",
       "branch",
@@ -308,51 +225,13 @@
       "workerId",
       "worktreePath"
     ],
-    "terminal-output": [
-      "agentId",
-      "detail",
-      "level",
-      "line",
-      "taskId",
-      "timestamp",
-      "workerId"
-    ],
-    "thread-created": [
-      "conversationId",
-      "createdAt",
-      "name",
-      "status",
-      "threadId",
-      "userId"
-    ],
-    "thread-updated": [
-      "deletedAt",
-      "discordThreadId",
-      "status",
-      "threadId"
-    ],
-    "worker-message": [
-      "message",
-      "taskId",
-      "workerId"
-    ],
-    "worker-outdated": [
-      "reason",
-      "workerId"
-    ],
-    "worker-ping": [
-      "from",
-      "timestamp",
-      "workerId"
-    ],
-    "worker-shutdown": [
-      "reason",
-      "workerId"
-    ],
-    "worker-state": [
-      "name",
-      "state",
-      "workerId"
-    ]
+    "terminal-output": ["agentId", "detail", "level", "line", "taskId", "timestamp", "workerId"],
+    "thread-created": ["conversationId", "createdAt", "name", "status", "threadId", "userId"],
+    "thread-updated": ["deletedAt", "discordThreadId", "status", "threadId"],
+    "worker-message": ["message", "taskId", "workerId"],
+    "worker-outdated": ["reason", "workerId"],
+    "worker-ping": ["from", "timestamp", "workerId"],
+    "worker-shutdown": ["reason", "workerId"],
+    "worker-state": ["name", "state", "workerId"]
   }
 }
