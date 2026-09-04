@@ -19,6 +19,7 @@ from foreman.constants import (
     _24H_SECS,
     MAX_FOREMAN_ROUNDS,
 )
+from foreman.conversation_service import resolve_conversation_id
 from foreman.history import ConversationHistory
 from foreman.journal import ForemanReply, TurnJournal
 from foreman.llm import (
@@ -483,6 +484,7 @@ async def _save_turn(
     parent_id: int | None = None,
     api_log_id: int | None = None,
     task_id: str | None = None,
+    conversation_id: int | None = None,
 ) -> int:
     """Persist one turn to the DB. Returns the new row's id."""
     db = await get_db()
@@ -498,6 +500,7 @@ async def _save_turn(
             created_at=datetime.now(UTC),
             request_id=api_log_id,
             task_id=task_id,
+            conversation_id=conversation_id,
         )
         db.add(turn)
         await db.commit()
@@ -1339,6 +1342,13 @@ async def _notify_queued_turn_failure(
         db = await get_db()
         try:
             guild_pk_val = await get_guild_pk(db, turn.guild_id)
+            conversation_id = (
+                await resolve_conversation_id(
+                    db, guild_pk_val, task_id=turn.task_id, user_id=turn.user_id
+                )
+                if guild_pk_val is not None
+                else None
+            )
         finally:
             await db.close()
         journal = TurnJournal(
@@ -1352,6 +1362,7 @@ async def _notify_queued_turn_failure(
                 thread_id=None,
                 discord_task_id=turn.task_id,
                 discord_channel_id=turn.reply_channel_id,
+                conversation_id=conversation_id,
             ),
             events=RealEvents(),
             scheduler=RealScheduler(),
@@ -1457,6 +1468,13 @@ async def _run_foreman_ai(
         thread_id: str | None = await resolve_thread_id(
             db, guild_pk_val, task_id=task_id, user_id=user_id
         )
+        # Owning Conversation (#1271) for every Message/ForemanTurn row this
+        # run writes — resolved the same way as thread_id above (task_id's
+        # conversation takes precedence, else the user's), but additive:
+        # Conversation is written alongside Thread, never replacing it here.
+        conversation_id: int | None = await resolve_conversation_id(
+            db, guild_pk_val, task_id=task_id, user_id=user_id
+        )
     finally:
         await db.close()
 
@@ -1545,6 +1563,7 @@ async def _run_foreman_ai(
                     thread_id=thread_id,
                     discord_task_id=task_id,
                     discord_channel_id=reply_channel_id,
+                    conversation_id=conversation_id,
                 ),
                 events=RealEvents(),
                 scheduler=RealScheduler(),

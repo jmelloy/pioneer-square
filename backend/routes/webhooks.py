@@ -383,13 +383,15 @@ def _should_notify_ci_result(head_branch: str | None, conclusion: str | None) ->
 async def _find_task(db, guild_pk: int, repo: str | None, pr_number: int | None):
     """Match a webhook to one of this guild's tasks by (repo, pr_number).
 
-    Returns the task row (id, user_id, issue_repo, issue_number, branch) or
-    ``None``. The user_id is needed so foreman dispatch routes back to the
-    user who originally created the task; issue_repo/issue_number is the
-    task's linked GitHub issue (set at ``assign_task`` time), used to route
-    PR Discord notifications into that issue's existing thread instead of a
-    new one; branch is the fallback source for that linkage when the PR
-    payload itself doesn't carry a head ref.
+    Returns the task row (id, user_id, issue_repo, issue_number, branch,
+    conversation_id) or ``None``. The user_id is needed so foreman dispatch
+    routes back to the user who originally created the task; issue_repo/
+    issue_number is the task's linked GitHub issue (set at ``assign_task``
+    time), used to route PR Discord notifications into that issue's existing
+    thread instead of a new one; branch is the fallback source for that
+    linkage when the PR payload itself doesn't carry a head ref;
+    conversation_id (#1271) is copied onto correlated GithubEvent/Message rows
+    so the owning conversation's timeline includes webhook activity.
     """
     if not repo or pr_number is None:
         return None
@@ -400,6 +402,7 @@ async def _find_task(db, guild_pk: int, repo: str | None, pr_number: int | None)
             col(Task.issue_repo),
             col(Task.issue_number),
             col(Task.branch),
+            col(Task.conversation_id),
         )
         .where(
             col(Task.guild_id) == guild_pk,
@@ -732,6 +735,7 @@ async def github_webhook(
     task_row = await _find_task(db, guild_pk, repo, pr_number)
     task_id = task_row.id if task_row else None
     task_user_id = task_row.user_id if task_row else None
+    task_conversation_id = task_row.conversation_id if task_row else None
 
     # Trim the persisted payload so a runaway diff hunk can't balloon the DB.
     body_text = body.decode("utf-8", errors="replace")
@@ -744,6 +748,7 @@ async def github_webhook(
         .values(
             guild_id=guild_pk,
             task_id=task_id,
+            conversation_id=task_conversation_id,
             delivery_id=delivery_id,
             event_type=event_type,
             action=action,
@@ -1095,6 +1100,7 @@ async def github_webhook(
             message_type="chat",
             created_at=chat_now,
             task_id=task_id,
+            conversation_id=task_conversation_id,
         )
     )
     await db.commit()

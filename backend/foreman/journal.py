@@ -54,10 +54,19 @@ class ForemanReply:
     thread_id: str | None
     discord_task_id: str | None
     discord_channel_id: str | None
+    # Owning Conversation (#1271). Stamped on every Message/ForemanTurn row
+    # this run's journal writes, alongside thread_id — see
+    # foreman.conversation_service for the resolution logic.
+    conversation_id: int | None = None
 
     @classmethod
     def for_task(
-        cls, guild_id: str, user_id: str | None, task_id: str | None, thread_id: str | None
+        cls,
+        guild_id: str,
+        user_id: str | None,
+        task_id: str | None,
+        thread_id: str | None,
+        conversation_id: int | None = None,
     ) -> ForemanReply:
         return cls(
             guild_id=guild_id,
@@ -66,11 +75,17 @@ class ForemanReply:
             thread_id=thread_id,
             discord_task_id=task_id,
             discord_channel_id=None,
+            conversation_id=conversation_id,
         )
 
     @classmethod
     def for_mention(
-        cls, guild_id: str, user_id: str | None, channel_id: str | None, thread_id: str | None
+        cls,
+        guild_id: str,
+        user_id: str | None,
+        channel_id: str | None,
+        thread_id: str | None,
+        conversation_id: int | None = None,
     ) -> ForemanReply:
         return cls(
             guild_id=guild_id,
@@ -79,6 +94,7 @@ class ForemanReply:
             thread_id=thread_id,
             discord_task_id=None,
             discord_channel_id=channel_id,
+            conversation_id=conversation_id,
         )
 
 
@@ -146,6 +162,7 @@ class TurnJournal:
             parent_id=parent_id,
             api_log_id=api_log_id,
             task_id=self._reply.task_id,
+            conversation_id=self._reply.conversation_id,
         )
 
     async def system(self, content: Any) -> int:
@@ -172,6 +189,7 @@ class TurnJournal:
                     to_agent="user",
                     task_id=self._reply.task_id,
                     thread_id=self._reply.thread_id,
+                    conversation_id=self._reply.conversation_id,
                     **kwargs,
                 )
             )

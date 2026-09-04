@@ -537,12 +537,14 @@ async def handle_chat(ctx: WSContext, msg: ChatMsg) -> None:
         return
 
     thread_id: str | None = None
+    conversation_id: int | None = None
     if is_foreman_chat:
         user_id = ctx.ws_user_id
         if user_id is None:
             return
         thread = await ensure_conversation_thread(ctx.guild_id, user_id, content)
         thread_id = thread.id if thread else None
+        conversation_id = thread.conversation_id if thread else None
 
     ctx.db.add(
         Message(
@@ -554,6 +556,7 @@ async def handle_chat(ctx: WSContext, msg: ChatMsg) -> None:
             created_at=created_at,
             user_id=ctx.ws_user_id if from_agent == "user" else None,
             thread_id=thread_id,
+            conversation_id=conversation_id,
         )
     )
     await ctx.db.commit()

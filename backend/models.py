@@ -158,6 +158,12 @@ class Message(SQLModel, table=True):
     # conversation (e.g. GitHub webhook notices). Resolved best-effort, read-only,
     # at persist time — see ``foreman.thread_service.resolve_thread_id``.
     thread_id: str | None = Field(default=None, foreign_key="threads.id", index=True)
+    # Owning Conversation (#1271: making Conversation, not Thread, the core
+    # Foreman thread model). Written alongside thread_id at every create site
+    # during the migration window — see ``foreman.conversation_service`` —
+    # and backfilled from thread_id -> threads.conversation_id for existing
+    # rows. NULL wherever thread_id is also NULL.
+    conversation_id: int | None = Field(default=None, foreign_key="conversations.id", index=True)
 
 
 class Conversation(SQLModel, table=True):
@@ -459,6 +465,9 @@ class Task(SoftDeleteMixin, SQLModel, table=True):
     # a separate task-stream thread. NULL for tasks not tied to a specific
     # conversation thread (e.g. issue pickups, webhook-triggered work).
     thread_id: str | None = Field(default=None, foreign_key="threads.id", index=True)
+    # Owning Conversation (#1271). Stamped alongside thread_id wherever a task
+    # is created from a conversation; see Message.conversation_id.
+    conversation_id: int | None = Field(default=None, foreign_key="conversations.id", index=True)
 
 
 class GithubToken(SQLModel, table=True):
@@ -657,6 +666,12 @@ class ForemanTurn(SQLModel, table=True):
     request_id: int | None = Field(default=None, foreign_key="api_request_log.id")
     # Task this turn was produced for (mirrors api_request_log.task_id for convenience).
     task_id: str | None = Field(default=None, foreign_key="tasks.id")
+    # Owning Conversation (#1271). Nullable during the migration window;
+    # backfilled best-effort from (guild_id, user_id) for existing rows —
+    # see Message.conversation_id. History still loads by (guild_id, user_id)
+    # (issue #1200's whole-guild-conversation window); this column is the
+    # planned scoping key for a future conversation-scoped history load.
+    conversation_id: int | None = Field(default=None, foreign_key="conversations.id", index=True)
 
     # History fetch filters on (guild_id, user_id) and orders by id DESC; the
     # trailing id lets Postgres satisfy the ORDER BY via a backward index scan.
@@ -672,6 +687,10 @@ class GithubEvent(SQLModel, table=True):
     # task_id is nullable because an event may arrive before we've linked the
     # PR to a task (e.g. webhook fires for a manually-opened PR).
     task_id: str | None = Field(default=None, foreign_key="tasks.id")
+    # Owning Conversation (#1271), copied from the linked task's
+    # conversation_id at webhook-ingest time. NULL whenever task_id is NULL
+    # or the task predates the conversation_id backfill.
+    conversation_id: int | None = Field(default=None, foreign_key="conversations.id", index=True)
     # X-GitHub-Delivery header value; UNIQUE so GitHub redelivery is a no-op.
     delivery_id: str = Field(unique=True)
     event_type: str

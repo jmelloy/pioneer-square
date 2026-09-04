@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 
 from database import get_db
 from events import broadcast
+from foreman.conversation_service import get_or_create_conversation
 from models import Conversation, Task, Thread
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -35,6 +36,17 @@ from ws_types import ThreadCreatedMsg, ThreadUpdatedMsg
 logger = logging.getLogger(__name__)
 
 _MAX_NAME_LEN = 80
+
+# Re-exported for existing importers (foreman.thread_service.get_or_create_conversation);
+# the canonical definition now lives in foreman.conversation_service (#1271) so
+# it can be shared without importing this module's Thread/Discord side effects.
+__all__ = [
+    "ensure_conversation_thread",
+    "get_or_create_active_thread",
+    "get_or_create_conversation",
+    "get_thread_for_task",
+    "resolve_thread_id",
+]
 
 
 def _new_thread_id() -> str:
@@ -46,27 +58,6 @@ def _name_from_message(content: str | None) -> str | None:
     if not text:
         return None
     return text if len(text) <= _MAX_NAME_LEN else text[: _MAX_NAME_LEN - 1] + "…"
-
-
-async def get_or_create_conversation(db: AsyncSession, guild_pk: int, user_id: str) -> Conversation:
-    """Get-or-create the one :class:`Conversation` for this (guild, user) pair.
-
-    Mirrors the "one conversation per (guild, user)" shape ``ForemanTurn``
-    history already assumes (see ``Conversation``'s docstring in models.py).
-    """
-    result = await db.exec(
-        select(Conversation).where(
-            col(Conversation.guild_id) == guild_pk, col(Conversation.user_id) == user_id
-        )
-    )
-    conversation = result.first()
-    if conversation is not None:
-        return conversation
-    now = datetime.now(UTC)
-    conversation = Conversation(guild_id=guild_pk, user_id=user_id, created_at=now, updated_at=now)
-    db.add(conversation)
-    await db.flush()
-    return conversation
 
 
 async def get_or_create_active_thread(
