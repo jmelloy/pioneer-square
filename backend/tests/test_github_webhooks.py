@@ -9,8 +9,15 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from helpers import _sync_session, insert_guild, insert_task, insert_worker, make_auth_token
-from models import GithubEvent, Guild, Message, Task
+from helpers import (
+    _sync_session,
+    insert_conversation,
+    insert_guild,
+    insert_task,
+    insert_worker,
+    make_auth_token,
+)
+from models import GithubEvent, GithubIssue, GithubPullRequest, Guild, Message, Task
 from sqlalchemy import func, select, update
 from sqlmodel import col  # noqa: E402
 
@@ -32,6 +39,9 @@ def _insert_task_with_worker(
     pr_url: str | None = None,
     pr_number: int | None = None,
     pr_repo: str | None = None,
+    issue_repo: str | None = None,
+    issue_number: int | None = None,
+    conversation_id: int | None = None,
 ) -> None:
     """Insert a task (with a placeholder worker) for webhook tests."""
     worker_id = f"w-{task_id}"
@@ -46,6 +56,9 @@ def _insert_task_with_worker(
         pr_url=pr_url,
         pr_number=pr_number,
         pr_repo=pr_repo,
+        issue_repo=issue_repo,
+        issue_number=issue_number,
+        conversation_id=conversation_id,
     )
 
 
@@ -199,6 +212,121 @@ def test_webhook_persists_event_and_links_task(client):
     assert row.pr_number == 42
     assert row.pr_url == "https://github.com/owner/repo/pull/42"
     assert row.sender_login == "octocat"
+
+
+def test_webhook_stamps_conversation_id_on_event_and_pr_cache(client):
+    """A pull_request webhook matched to a task should stamp conversation_id
+    on both the GithubEvent row (#1280) and the github_pull_requests cache
+    row (#1277)."""
+    test_client, db_url = client
+    insert_guild(db_url, "g5c")
+    conversation_id = insert_conversation(db_url, "g5c")
+    _set_webhook_secret(db_url, "g5c", "s5c")
+    _insert_task_with_worker(
+        db_url,
+        task_id="t-1c",
+        guild_id="g5c",
+        pr_url="https://github.com/owner/repo/pull/43",
+        pr_number=43,
+        pr_repo="owner/repo",
+        conversation_id=conversation_id,
+    )
+    payload = _pr_payload(action="opened", repo="owner/repo", number=43)
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("s5c", body, event="pull_request", delivery="d-evt-1c")
+    resp = test_client.post("/webhooks/github/g5c", content=body, headers=headers)
+    assert resp.status_code == 202
+
+    with _sync_session(db_url) as session:
+        event_row = session.execute(
+            select(GithubEvent).where(col(GithubEvent.delivery_id) == "d-evt-1c")
+        ).scalar_one_or_none()
+        pr_row = session.execute(
+            select(GithubPullRequest).where(
+                col(GithubPullRequest.repo) == "owner/repo",
+                col(GithubPullRequest.number) == 43,
+            )
+        ).scalar_one_or_none()
+    assert event_row is not None
+    assert event_row.conversation_id == conversation_id
+    assert pr_row is not None
+    assert pr_row.conversation_id == conversation_id
+
+
+def test_webhook_stamps_conversation_id_on_issue_cache(client):
+    """An issues webhook matched to a task (by issue_repo/issue_number) should
+    stamp conversation_id on the github_issues cache row (#1277)."""
+    test_client, db_url = client
+    insert_guild(db_url, "g5d")
+    conversation_id = insert_conversation(db_url, "g5d")
+    _set_webhook_secret(db_url, "g5d", "s5d")
+    _insert_task_with_worker(
+        db_url,
+        task_id="t-1d",
+        guild_id="g5d",
+        issue_repo="owner/repo",
+        issue_number=91,
+        conversation_id=conversation_id,
+    )
+    payload = _issues_payload(action="opened", repo="owner/repo", number=91)
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("s5d", body, event="issues", delivery="d-evt-1d")
+    resp = test_client.post("/webhooks/github/g5d", content=body, headers=headers)
+    assert resp.status_code == 202
+
+    with _sync_session(db_url) as session:
+        issue_row = session.execute(
+            select(GithubIssue).where(
+                col(GithubIssue.repo) == "owner/repo", col(GithubIssue.number) == 91
+            )
+        ).scalar_one_or_none()
+    assert issue_row is not None
+    assert issue_row.conversation_id == conversation_id
+
+
+def test_webhook_does_not_overwrite_existing_pr_cache_conversation_id(client):
+    """A later webhook delivery for the same PR with no resolvable task/
+    conversation must not clobber a conversation_id set by an earlier one."""
+    test_client, db_url = client
+    insert_guild(db_url, "g5e")
+    conversation_id = insert_conversation(db_url, "g5e")
+    _set_webhook_secret(db_url, "g5e", "s5e")
+    _insert_task_with_worker(
+        db_url,
+        task_id="t-1e",
+        guild_id="g5e",
+        pr_url="https://github.com/owner/repo/pull/44",
+        pr_number=44,
+        pr_repo="owner/repo",
+        conversation_id=conversation_id,
+    )
+    payload = _pr_payload(action="opened", repo="owner/repo", number=44)
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("s5e", body, event="pull_request", delivery="d-evt-1e")
+    resp = test_client.post("/webhooks/github/g5e", content=body, headers=headers)
+    assert resp.status_code == 202
+
+    # Delete the task so a redelivery-style second event for the same PR
+    # number can no longer resolve a task/conversation.
+    with _sync_session(db_url) as session:
+        session.execute(update(Task).where(col(Task.id) == "t-1e").values(pr_number=None))
+        session.commit()
+
+    payload2 = _pr_payload(action="synchronize", repo="owner/repo", number=44)
+    body2 = json.dumps(payload2).encode()
+    headers2 = _signed_headers("s5e", body2, event="pull_request", delivery="d-evt-1e-2")
+    resp2 = test_client.post("/webhooks/github/g5e", content=body2, headers=headers2)
+    assert resp2.status_code == 202
+
+    with _sync_session(db_url) as session:
+        pr_row = session.execute(
+            select(GithubPullRequest).where(
+                col(GithubPullRequest.repo) == "owner/repo",
+                col(GithubPullRequest.number) == 44,
+            )
+        ).scalar_one_or_none()
+    assert pr_row is not None
+    assert pr_row.conversation_id == conversation_id
 
 
 def test_webhook_event_without_matching_task(client):

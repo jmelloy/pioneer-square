@@ -16,7 +16,17 @@ import psycopg2
 import psycopg2.extras
 from alembic import command
 from alembic.config import Config as AlembicConfig
-from models import Agent, GithubToken, Guild, GuildMember, Task, User, UserSession, Worker
+from models import (
+    Agent,
+    Conversation,
+    GithubToken,
+    Guild,
+    GuildMember,
+    Task,
+    User,
+    UserSession,
+    Worker,
+)
 from sqlalchemy import create_engine, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine.url import make_url
@@ -187,6 +197,25 @@ def insert_guild(
         session.commit()
 
 
+def insert_conversation(db_url: str, guild_id: str, user_id: str | None = None) -> int:
+    """Insert a Conversation row for a guild and return its id."""
+    now = datetime.now(UTC)
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(
+            select(col(Guild.id)).where(
+                col(Guild.slug) == guild_id, col(Guild.deleted_at).is_(None)
+            )
+        )
+        assert guild_pk is not None, f"Guild {guild_id!r} not found"
+        conversation = Conversation(
+            guild_id=guild_pk, user_id=user_id, created_at=now, updated_at=now
+        )
+        session.add(conversation)
+        session.commit()
+        session.refresh(conversation)
+        return conversation.id
+
+
 def insert_member(db_url: str, guild_id: str, user_id: str, role: str = "member") -> None:
     """Add a user as a member of a guild (creating a users row if needed)."""
     now = datetime.now(UTC)
@@ -320,6 +349,7 @@ def insert_task(
     user_id: str | None = None,
     parent_task_id: str | None = None,
     claude_session_id: str | None = None,
+    conversation_id: int | None = None,
 ) -> None:
     """Insert a task row for a guild."""
     now = datetime.now(UTC)
@@ -354,6 +384,7 @@ def insert_task(
                 user_id=user_id,
                 parent_task_id=parent_task_id,
                 claude_session_id=claude_session_id,
+                conversation_id=conversation_id,
                 created_at=now,
             )
             .on_conflict_do_nothing(index_elements=["id"])

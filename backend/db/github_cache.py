@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from models import GithubIssue, GithubPullRequest
+from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -41,12 +42,21 @@ def _assignee_logins(payload: dict) -> list[str]:
     return [a["login"] for a in assignees if isinstance(a, dict) and a.get("login")]
 
 
-async def upsert_issue(db: AsyncSession, repo: str, payload: dict) -> GithubIssue:
-    """Insert or update the cached issue row for *repo* from a GitHub issue payload."""
+async def upsert_issue(
+    db: AsyncSession, repo: str, payload: dict, *, conversation_id: int | None = None
+) -> GithubIssue:
+    """Insert or update the cached issue row for *repo* from a GitHub issue payload.
+
+    *conversation_id*, when given, is stamped on first insert only — an
+    on-conflict update never overwrites an already-set conversation_id, so
+    the issue keeps pointing at the conversation that first linked it (#1277)
+    even if a later webhook arrives with no task/conversation context.
+    """
     milestone = payload.get("milestone")
     values = {
         "repo": repo,
         "number": payload["number"],
+        "conversation_id": conversation_id,
         "title": payload.get("title") or "",
         "body": payload.get("body"),
         "state": payload.get("state") or "open",
@@ -61,10 +71,11 @@ async def upsert_issue(db: AsyncSession, repo: str, payload: dict) -> GithubIssu
         "last_refreshed_at": datetime.now(UTC),
     }
     stmt = pg_insert(GithubIssue).values(**values)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["repo", "number"],
-        set_={k: stmt.excluded[k] for k in values if k not in ("repo", "number")},
+    update_set = {k: stmt.excluded[k] for k in values if k not in ("repo", "number")}
+    update_set["conversation_id"] = func.coalesce(
+        GithubIssue.conversation_id, stmt.excluded.conversation_id
     )
+    stmt = stmt.on_conflict_do_update(index_elements=["repo", "number"], set_=update_set)
     await db.exec(stmt)
     await db.commit()
     result = await db.exec(
@@ -75,8 +86,14 @@ async def upsert_issue(db: AsyncSession, repo: str, payload: dict) -> GithubIssu
     return result.one()
 
 
-async def upsert_pr(db: AsyncSession, repo: str, payload: dict) -> GithubPullRequest:
-    """Insert or update the cached PR row for *repo* from a GitHub pull_request payload."""
+async def upsert_pr(
+    db: AsyncSession, repo: str, payload: dict, *, conversation_id: int | None = None
+) -> GithubPullRequest:
+    """Insert or update the cached PR row for *repo* from a GitHub pull_request payload.
+
+    *conversation_id*, when given, is stamped on first insert only — see
+    ``upsert_issue`` for why the on-conflict update never overwrites it.
+    """
     head = payload.get("head") or {}
     base = payload.get("base") or {}
     # The REST "list pull requests" endpoint omits the "merged" boolean present
@@ -86,6 +103,7 @@ async def upsert_pr(db: AsyncSession, repo: str, payload: dict) -> GithubPullReq
     values = {
         "repo": repo,
         "number": payload["number"],
+        "conversation_id": conversation_id,
         "title": payload.get("title") or "",
         "body": payload.get("body"),
         "state": state,
@@ -105,10 +123,11 @@ async def upsert_pr(db: AsyncSession, repo: str, payload: dict) -> GithubPullReq
         "last_refreshed_at": datetime.now(UTC),
     }
     stmt = pg_insert(GithubPullRequest).values(**values)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["repo", "number"],
-        set_={k: stmt.excluded[k] for k in values if k not in ("repo", "number")},
+    update_set = {k: stmt.excluded[k] for k in values if k not in ("repo", "number")}
+    update_set["conversation_id"] = func.coalesce(
+        GithubPullRequest.conversation_id, stmt.excluded.conversation_id
     )
+    stmt = stmt.on_conflict_do_update(index_elements=["repo", "number"], set_=update_set)
     await db.exec(stmt)
     await db.commit()
     result = await db.exec(

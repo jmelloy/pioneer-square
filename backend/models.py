@@ -715,6 +715,11 @@ class GithubIssue(SQLModel, table=True):
     __table_args__ = (Index("uq_github_issues_repo_number", "repo", "number", unique=True),)
 
     id: int | None = Field(default=None, primary_key=True)
+    # Owning Conversation (#1271/#1277), stamped from the linked task's
+    # conversation_id (matched via Task.issue_repo/issue_number) the first
+    # time a webhook or backfill upserts this row. NULL until some task
+    # links to this issue with a resolvable conversation.
+    conversation_id: int | None = Field(default=None, foreign_key="conversations.id", index=True)
     repo: str  # "owner/repo"
     number: int
     title: str
@@ -750,6 +755,11 @@ class GithubPullRequest(SQLModel, table=True):
     __table_args__ = (Index("uq_github_pull_requests_repo_number", "repo", "number", unique=True),)
 
     id: int | None = Field(default=None, primary_key=True)
+    # Owning Conversation (#1271/#1277), stamped from the linked task's
+    # conversation_id (matched via Task.pr_repo/pr_number) the first time a
+    # webhook or backfill upserts this row. NULL until some task links to
+    # this PR with a resolvable conversation.
+    conversation_id: int | None = Field(default=None, foreign_key="conversations.id", index=True)
     repo: str  # "owner/repo"
     number: int
     title: str

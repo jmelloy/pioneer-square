@@ -415,6 +415,33 @@ async def _find_task(db, guild_pk: int, repo: str | None, pr_number: int | None)
     return res.first()
 
 
+async def _find_task_conversation_by_issue(
+    db, guild_pk: int, repo: str | None, issue_number: int | None
+) -> int | None:
+    """Return the conversation_id of a task linked to this guild's (repo, issue_number).
+
+    Companion to ``_find_task``, which matches on (repo, pr_number) — plain
+    ``issues`` webhook events carry an issue number, not a PR number, so
+    ``_find_task`` never matches them and ``task_conversation_id`` stays None.
+    Used to stamp ``github_issues.conversation_id`` (#1277) on the same
+    (guild, issue_repo, issue_number) linkage ``assign_task`` sets.
+    """
+    if not repo or issue_number is None:
+        return None
+    res = await db.exec(
+        select(col(Task.conversation_id))
+        .where(
+            col(Task.guild_id) == guild_pk,
+            col(Task.issue_repo) == repo,
+            col(Task.issue_number) == issue_number,
+            col(Task.conversation_id).is_not(None),
+        )
+        .order_by(col(Task.created_at).desc())
+        .limit(1)
+    )
+    return res.first()
+
+
 async def _get_guild_owner_github_login(db: AsyncSession, guild_pk: int) -> str | None:
     """Return the GitHub login of the guild owner, or None if not found."""
     result = await db.exec(
@@ -781,15 +808,22 @@ async def github_webhook(
         )
         return Response(status_code=202)
 
-    # Keep the local github_issues/github_pull_requests cache current (#864).
+    # Keep the local github_issues/github_pull_requests cache current (#864),
+    # stamping conversation_id (#1277) from the same task lookup used for the
+    # GithubEvent row above.
     if event_type == "issues" and repo:
         issue_payload = payload.get("issue")
         if isinstance(issue_payload, dict):
-            await github_cache.upsert_issue(db, repo, issue_payload)
+            issue_conversation_id = await _find_task_conversation_by_issue(
+                db, guild_pk, repo, issue_payload.get("number")
+            )
+            await github_cache.upsert_issue(
+                db, repo, issue_payload, conversation_id=issue_conversation_id
+            )
     elif event_type == "pull_request" and repo:
         pr_payload = payload.get("pull_request")
         if isinstance(pr_payload, dict):
-            await github_cache.upsert_pr(db, repo, pr_payload)
+            await github_cache.upsert_pr(db, repo, pr_payload, conversation_id=task_conversation_id)
 
     # Back-fill pr_url on the task from the webhook payload when a
     # pull_request event arrives and the task doesn't already have it set.
