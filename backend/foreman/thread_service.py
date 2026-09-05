@@ -45,6 +45,7 @@ __all__ = [
     "get_or_create_active_thread",
     "get_or_create_conversation",
     "get_thread_for_task",
+    "reactivate_conversation_thread",
     "resolve_thread_id",
 ]
 
@@ -88,6 +89,8 @@ async def get_or_create_active_thread(
     if thread is not None:
         thread.updated_at = now
         db.add(thread)
+        _sync_conversation_from_thread(conversation, thread, now)
+        db.add(conversation)
         await db.commit()
         await db.refresh(thread)
         return thread, False
@@ -101,9 +104,56 @@ async def get_or_create_active_thread(
         updated_at=now,
     )
     db.add(thread)
+    _sync_conversation_from_thread(conversation, thread, now)
+    db.add(conversation)
     await db.commit()
     await db.refresh(thread)
     return thread, True
+
+
+def _sync_conversation_from_thread(
+    conversation: Conversation, thread: Thread, now: datetime
+) -> None:
+    """Mirror ``thread``'s UI/lifecycle fields onto its owning ``conversation``.
+
+    ``Conversation.name/status/discord_thread_id`` (#1274) always reflect
+    the conversation's *currently active* thread. Safe to call unconditionally
+    here — a thread is only ever created/reused as *the* active thread for its
+    conversation, so there's no risk of mirroring a stale/superseded thread.
+    """
+    conversation.name = thread.name
+    conversation.status = thread.status
+    conversation.discord_thread_id = thread.discord_thread_id
+    conversation.updated_at = now
+
+
+async def sync_conversation_after_thread_update(
+    db: AsyncSession, thread: Thread, *, previous_status: str | None = None
+) -> None:
+    """Mirror a mutated ``thread`` back onto its ``Conversation`` (#1274).
+
+    For callers outside this module that mutate an existing ``Thread`` row
+    directly — ``routes/threads.py``'s archive/close endpoints,
+    ``foreman/thread_maintenance.py``'s idle sweep, and
+    ``discord/thread_mirror.py`` stamping ``discord_thread_id`` after Discord
+    confirms thread creation.
+
+    A conversation can outlive many threads (see ``Thread``'s docstring): by
+    the time an old thread is swept from "archived" to "closed", a newer
+    thread may have already superseded it as the conversation's active one.
+    When *previous_status* is given, the mirror only applies if the
+    conversation's status still matches it — i.e. the conversation hasn't
+    already moved on. Pass ``previous_status=None`` (the default) when the
+    caller knows the thread is still current (e.g. right after creating it
+    or stamping its ``discord_thread_id``).
+    """
+    conversation = await db.get(Conversation, thread.conversation_id)
+    if conversation is None:
+        return
+    if previous_status is not None and conversation.status != previous_status:
+        return
+    _sync_conversation_from_thread(conversation, thread, thread.updated_at)
+    db.add(conversation)
 
 
 async def resolve_thread_id(
@@ -151,6 +201,86 @@ async def get_thread_for_task(db: AsyncSession, task: Task) -> Thread | None:
         select(Thread).where(col(Thread.id) == task.thread_id, col(Thread.deleted_at).is_(None))
     )
     return result.first()
+
+
+async def _active_thread_for_conversation(db: AsyncSession, conversation_id: int) -> Thread | None:
+    """Return *conversation*'s current active (non-deleted) thread, if any."""
+    result = await db.exec(
+        select(Thread)
+        .where(
+            col(Thread.conversation_id) == conversation_id,
+            col(Thread.status) == "active",
+            col(Thread.deleted_at).is_(None),
+        )
+        .order_by(col(Thread.updated_at).desc())
+        .limit(1)
+    )
+    return result.first()
+
+
+async def reactivate_conversation_thread(
+    db: AsyncSession, conversation: Conversation, discord_thread_id: str
+) -> Thread | None:
+    """Reactivate the specific thread a Discord reply landed in (issue #1278).
+
+    A reply posted into an existing Discord thread should continue *that*
+    conversation even if the Foreman's idle sweep (``thread_maintenance``)
+    had already archived it — Discord itself un-archives a thread the moment
+    someone posts in it, so leaving ``Thread.status``/``Conversation.status``
+    at "archived" would desync them from what the user is looking at and
+    would make the next top-level message fork off a brand new Discord
+    thread instead of continuing this one (``get_or_create_active_thread``
+    only ever looks at the *active* thread).
+
+    Looked up by ``(conversation_id, discord_thread_id)`` rather than just
+    ``discord_thread_id`` alone since the caller (``discord.router``) has
+    already resolved *conversation* via
+    ``conversation_service.get_conversation_by_discord_thread_id`` — the
+    authoritative Discord binding lives on ``Conversation``, this only needs
+    the matching ``Thread`` row to update the per-instance record and drive
+    the Discord un-archive call. Returns None if no such Thread row exists
+    (soft-deleted or never created), in which case the caller falls back to
+    ``get_or_create_active_thread``.
+    """
+    result = await db.exec(
+        select(Thread)
+        .where(
+            col(Thread.conversation_id) == conversation.id,
+            col(Thread.discord_thread_id) == discord_thread_id,
+            col(Thread.deleted_at).is_(None),
+        )
+        .order_by(col(Thread.updated_at).desc())
+        .limit(1)
+    )
+    thread = result.first()
+    if thread is None:
+        return None
+
+    now = datetime.now(UTC)
+    was_archived = thread.status != "active"
+    thread.status = "active"
+    thread.updated_at = now
+    db.add(thread)
+    _sync_conversation_from_thread(conversation, thread, now)
+    db.add(conversation)
+    await db.commit()
+    await db.refresh(thread)
+
+    if was_archived:
+        try:
+            from discord.thread_mirror import on_thread_updated  # noqa: PLC0415
+
+            await on_thread_updated(thread_id=thread.id, status="active")
+        except Exception:
+            logger.warning(
+                "thread_service: failed to un-archive Discord thread for reactivated "
+                "conversation=%s thread=%s",
+                conversation.id,
+                thread.id,
+                exc_info=True,
+            )
+
+    return thread
 
 
 async def broadcast_thread_updated(db: AsyncSession, thread: Thread) -> None:

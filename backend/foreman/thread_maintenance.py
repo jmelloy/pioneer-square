@@ -26,6 +26,7 @@ import os
 from datetime import UTC, datetime, timedelta
 
 from database import get_db
+from foreman.thread_service import sync_conversation_after_thread_update
 from models import Conversation, Task, Thread
 from sqlmodel import col, select
 
@@ -90,6 +91,7 @@ async def _sweep_threads_once(guild_id: str) -> dict[str, int]:
             thread.status = "archived"
             thread.updated_at = now
             db.add(thread)
+            await sync_conversation_after_thread_update(db, thread, previous_status="active")
 
         stale_archived = (
             await db.exec(
@@ -107,6 +109,7 @@ async def _sweep_threads_once(guild_id: str) -> dict[str, int]:
             thread.status = "closed"
             thread.updated_at = now
             db.add(thread)
+            await sync_conversation_after_thread_update(db, thread, previous_status="archived")
 
         # Orphaned mappings: non-terminal tasks pointing at a thread that is
         # now closed or soft-deleted (includes threads just closed above,

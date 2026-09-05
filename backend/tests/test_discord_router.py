@@ -127,6 +127,60 @@ async def test_resolve_session_unresolvable_channel_returns_none(client):
 
 
 @pytest.mark.asyncio
+async def test_persist_inbound_message_finds_conversation_by_discord_thread_id(client):
+    """Issue #1278: a reply posted into an existing (even archived) Discord
+    thread is attributed to the Conversation bound to it via
+    ``Conversation.discord_thread_id``, reactivating the thread rather than
+    forking a new one via the (guild, user) active-thread heuristic."""
+    import database as database_module
+    from discord.thread_mirror import _stamp_discord_thread_id
+    from foreman.thread_service import get_or_create_active_thread
+    from models import Conversation, Message, Thread
+    from sqlmodel import col, select
+
+    _test_client, db_url = client
+    insert_guild(db_url, "g-persist1")
+    from auth_deps import get_guild_pk
+
+    async with database_module.AsyncSessionLocal() as db:
+        guild_pk = await get_guild_pk(db, "g-persist1")
+        thread, _ = await get_or_create_active_thread(db, guild_pk, "user-persist-1")
+
+    await _stamp_discord_thread_id(thread.id, "discord-thread-persist-1")
+
+    # Foreman's idle sweep already archived this thread/conversation.
+    async with database_module.AsyncSessionLocal() as db:
+        thread = await db.get(Thread, thread.id)
+        thread.status = "archived"
+        db.add(thread)
+        conversation = await db.get(Conversation, thread.conversation_id)
+        conversation.status = "archived"
+        db.add(conversation)
+        await db.commit()
+
+    with patch("discord.thread_mirror.on_thread_updated", new=AsyncMock()):
+        await router._persist_inbound_message(
+            "g-persist1",
+            "still there?",
+            user_id="user-persist-1",
+            task_id=None,
+            discord_thread_id="discord-thread-persist-1",
+        )
+
+    async with database_module.AsyncSessionLocal() as db:
+        result = await db.exec(select(Message).where(col(Message.content) == "still there?"))
+        message = result.first()
+        reactivated_conversation = await db.get(Conversation, conversation.id)
+        reactivated_thread = await db.get(Thread, thread.id)
+
+    assert message is not None
+    assert message.conversation_id == conversation.id
+    assert message.thread_id == thread.id
+    assert reactivated_conversation.status == "active"
+    assert reactivated_thread.status == "active"
+
+
+@pytest.mark.asyncio
 async def test_route_inbound_message_tags_task_thread_reply(client):
     """A reply in a thread bound to a task is tagged [discord-thread-reply] task_id=... (#906).
 

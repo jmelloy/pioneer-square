@@ -27,9 +27,12 @@ import database as database_module
 import foreman.thread_maintenance as thread_maintenance
 from _test_config import TEST_DATABASE_URL
 from auth_deps import get_guild_pk
-from foreman.thread_service import get_or_create_active_thread
+from foreman.thread_service import (
+    get_or_create_active_thread,
+    sync_conversation_after_thread_update,
+)
 from helpers import create_db, insert_guild, insert_task, truncate_all
-from models import Task, Thread
+from models import Conversation, Task, Thread
 
 
 @pytest.fixture()
@@ -93,7 +96,9 @@ class TestSweepThreads:
         assert summary == {"archived": 1, "closed": 0, "orphaned_cleaned": 0}
         async with database_module.AsyncSessionLocal() as db:
             refreshed = await db.get(Thread, thread.id)
+            conversation = await db.get(Conversation, thread.conversation_id)
         assert refreshed.status == "archived"
+        assert conversation.status == "archived"
 
     async def test_closes_stale_archived_thread(self, db_session):
         insert_guild(db_session, "g-sweep-close")
@@ -102,6 +107,11 @@ class TestSweepThreads:
             thread, _ = await get_or_create_active_thread(db, guild_pk, "user-1")
             thread.status = "archived"
             db.add(thread)
+            # Mirror onto the conversation too, matching what a real
+            # archive path (the sweep's own active->archived step, or the
+            # archive route) would do — a raw status flip with no mirror is
+            # not a state the app ever actually produces.
+            await sync_conversation_after_thread_update(db, thread, previous_status="active")
             await db.commit()
         await _backdate_thread(thread.id, datetime.now(UTC) - timedelta(days=15))
 
@@ -111,7 +121,40 @@ class TestSweepThreads:
         assert summary == {"archived": 0, "closed": 1, "orphaned_cleaned": 0}
         async with database_module.AsyncSessionLocal() as db:
             refreshed = await db.get(Thread, thread.id)
+            conversation = await db.get(Conversation, thread.conversation_id)
         assert refreshed.status == "closed"
+        assert conversation.status == "closed"
+
+    async def test_closing_a_superseded_thread_does_not_stomp_newer_conversation(self, db_session):
+        """A conversation that already rolled to a new active thread must
+        keep showing that thread's state even after its old, now-orphaned
+        thread ages out of "archived" into "closed" (issue #1274's mirroring
+        guard)."""
+        insert_guild(db_session, "g-sweep-superseded")
+        guild_pk = await _guild_pk("g-sweep-superseded")
+        async with database_module.AsyncSessionLocal() as db:
+            old_thread, _ = await get_or_create_active_thread(db, guild_pk, "user-1")
+            old_thread.status = "archived"
+            db.add(old_thread)
+            await db.commit()
+        await _backdate_thread(old_thread.id, datetime.now(UTC) - timedelta(days=15))
+
+        async with database_module.AsyncSessionLocal() as db:
+            new_thread, _ = await get_or_create_active_thread(
+                db, guild_pk, "user-1", name_hint="fresh session"
+            )
+
+        with patch("discord_notifier.is_configured", return_value=False):
+            summary = await thread_maintenance.sweep_threads("g-sweep-superseded")
+
+        assert summary == {"archived": 0, "closed": 1, "orphaned_cleaned": 0}
+        async with database_module.AsyncSessionLocal() as db:
+            old_refreshed = await db.get(Thread, old_thread.id)
+            conversation = await db.get(Conversation, old_thread.conversation_id)
+        assert old_refreshed.status == "closed"
+        assert conversation.status == "active"
+        assert conversation.name == "fresh session"
+        assert conversation.id == new_thread.conversation_id
 
     async def test_unlinks_non_terminal_task_from_closed_thread(self, db_session):
         insert_guild(db_session, "g-sweep-orphan")

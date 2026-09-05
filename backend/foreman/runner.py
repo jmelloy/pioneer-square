@@ -55,7 +55,6 @@ from models import (
     Guild,
     GuildMember,
     Task,
-    Thread,
     Worker,
     live_tasks_filter,
 )
@@ -925,12 +924,10 @@ async def _poll_loop(guild_id: str) -> None:
 
                 conversation_result = await db.exec(
                     select(col(Conversation.user_id))
-                    .join(Thread, col(Thread.conversation_id) == col(Conversation.id))
                     .where(
                         col(Conversation.guild_id) == guild_pk_val,
                         col(Conversation.user_id).is_not(None),
-                        col(Thread.status) == "active",
-                        col(Thread.deleted_at).is_(None),
+                        col(Conversation.status) == "active",
                     )
                     .distinct()
                 )

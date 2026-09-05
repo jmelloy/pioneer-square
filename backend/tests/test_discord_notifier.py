@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from datetime import UTC, datetime
 
+import database as database_module
 import discord_notifier
 from helpers import _sync_session, insert_guild, insert_task, make_auth_token
 from models import GithubPullRequest
@@ -716,6 +717,41 @@ async def test_canonical_coords_issue_subject_passes_through(client):
     """An issue subject is already canonical — returned as-is."""
     coords = await discord_notifier._canonical_coords("org/repo", 5, kind="issue")
     assert coords == ("org/repo", 5)
+
+
+@pytest.mark.asyncio
+async def test_lookup_foreman_thread_for_user_reads_conversation_directly(client):
+    """#1274: the lookup now reads Conversation.discord_thread_id/status
+    directly (no Thread join) — kept in sync by foreman.thread_service."""
+    from foreman.thread_service import (
+        get_or_create_active_thread,
+        sync_conversation_after_thread_update,
+    )
+
+    _test_client, db_url = client
+    insert_guild(db_url, "g-foreman-thread1")
+
+    async with database_module.AsyncSessionLocal() as db:
+        from auth_deps import get_guild_pk
+
+        guild_pk = await get_guild_pk(db, "g-foreman-thread1")
+        thread, _ = await get_or_create_active_thread(db, guild_pk, "user-1")
+        thread.discord_thread_id = "discord-lookup-1"
+        db.add(thread)
+        await sync_conversation_after_thread_update(db, thread, previous_status=thread.status)
+        await db.commit()
+
+    result = await discord_notifier._lookup_foreman_thread_for_user("g-foreman-thread1", "user-1")
+    assert result == "discord-lookup-1"
+
+
+@pytest.mark.asyncio
+async def test_lookup_foreman_thread_for_user_returns_none_when_no_active_thread(client):
+    _test_client, db_url = client
+    insert_guild(db_url, "g-foreman-thread2")
+
+    result = await discord_notifier._lookup_foreman_thread_for_user("g-foreman-thread2", "user-1")
+    assert result is None
 
 
 @pytest.mark.asyncio

@@ -716,7 +716,13 @@ async def _forward_to_foreman(
     away and never reaches the Foreman at all.
     """
     try:
-        await _persist_inbound_message(guild_slug, content, user_id=ps_user_id, task_id=task_id)
+        await _persist_inbound_message(
+            guild_slug,
+            content,
+            user_id=ps_user_id,
+            task_id=task_id,
+            discord_thread_id=reply_channel_id,
+        )
     except Exception:
         logger.warning(
             "discord router: failed to persist inbound message guild=%s — forwarding to "
@@ -793,20 +799,40 @@ async def _route_inbound_message(message: dict) -> None:
 
 
 async def _persist_inbound_message(
-    guild_slug: str, content: str, *, user_id: str | None, task_id: str | None
+    guild_slug: str,
+    content: str,
+    *,
+    user_id: str | None,
+    task_id: str | None,
+    discord_thread_id: str | None = None,
 ) -> None:
     """Write the inbound Discord message to the ``messages`` table and
     broadcast it over WS so the frontend chat panel shows it live, tagged
     ``source="discord"``. Best-effort — a failure here must not stop the
     message from reaching the Foreman, so the caller wraps this call in its
     own try/except and forwards to ``foreman.triggers.trigger_foreman`` regardless.
+
+    *discord_thread_id* is the Discord channel the message actually landed in
+    (``reply_channel_id`` at the call site) — when it's already bound to a
+    ``Conversation`` (issue #1278: ``Conversation.discord_thread_id`` is the
+    source of truth for that binding), the message is attributed straight to
+    that conversation instead of *user_id*'s (guild, user) active thread,
+    reactivating it first if it had gone idle/archived. This matters whenever
+    the two would otherwise disagree — e.g. a reply posted into a thread that
+    Foreman's idle sweep already archived, which ``ensure_conversation_thread``
+    (an *active*-thread-only lookup) would otherwise silently fork a brand
+    new Discord thread for instead of continuing this one.
     """
     from auth_deps import get_guild_pk  # noqa: PLC0415
     from database import AsyncSessionLocal  # noqa: PLC0415
     from events import broadcast_msg  # noqa: PLC0415
-    from foreman.conversation_service import resolve_conversation_id  # noqa: PLC0415
+    from foreman.conversation_service import (  # noqa: PLC0415
+        get_conversation_by_discord_thread_id,
+        resolve_conversation_id,
+    )
     from foreman.thread_service import (  # noqa: PLC0415
         ensure_conversation_thread,
+        reactivate_conversation_thread,
         resolve_thread_id,
     )
     from models import Message  # noqa: PLC0415
@@ -827,9 +853,21 @@ async def _persist_inbound_message(
                     db, guild_pk, task_id=task_id, user_id=user_id
                 )
             elif user_id:
-                thread = await ensure_conversation_thread(guild_slug, user_id, content)
-                thread_id = thread.id if thread else None
-                conversation_id = thread.conversation_id if thread else None
+                conversation = (
+                    await get_conversation_by_discord_thread_id(db, guild_pk, discord_thread_id)
+                    if discord_thread_id
+                    else None
+                )
+                if conversation is not None:
+                    thread = await reactivate_conversation_thread(
+                        db, conversation, discord_thread_id
+                    )
+                    conversation_id = conversation.id
+                    thread_id = thread.id if thread else None
+                else:
+                    thread = await ensure_conversation_thread(guild_slug, user_id, content)
+                    thread_id = thread.id if thread else None
+                    conversation_id = thread.conversation_id if thread else None
         except Exception:
             logger.warning(
                 "discord router: failed to resolve conversation thread guild=%s task=%s",

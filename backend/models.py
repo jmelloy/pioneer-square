@@ -166,6 +166,13 @@ class Message(SQLModel, table=True):
     conversation_id: int | None = Field(default=None, foreign_key="conversations.id", index=True)
 
 
+# Valid Conversation.status / Thread.status values. "active" threads accept
+# new messages, "archived" threads are read-only in Discord but still
+# resolvable by the backend, "closed" threads are done and eligible for
+# eventual soft-delete cleanup.
+THREAD_STATUSES = ("active", "archived", "closed")
+
+
 class Conversation(SQLModel, table=True):
     """A logical conversation between a user and the Foreman within a guild.
 
@@ -175,10 +182,30 @@ class Conversation(SQLModel, table=True):
     directly by guild+user with no anchor row of its own; ``Conversation``
     gives the Discord-thread integration a stable id to bind to instead of
     keying threads on the raw (guild, user) pair.
+
+    ``name``/``status``/``discord_thread_id`` (#1274, part of epic #1271's
+    "make Conversation the core Foreman thread model") mirror the
+    conversation's *currently active* :class:`Thread` — kept in sync by
+    ``foreman.thread_service`` and friends — so callers that only care about
+    "this conversation's current thread state" (e.g.
+    ``discord_notifier._lookup_foreman_thread_for_user``) can query
+    ``Conversation`` directly instead of joining to ``Thread``. The
+    per-instance, historical record of each thread a conversation has ever
+    had (including archived/closed ones) still lives on ``Thread`` itself —
+    see its docstring below.
     """
 
     __tablename__ = "conversations"  # type: ignore[assignment]
-    __table_args__ = (Index("ix_conversations_guild_id_user_id", "guild_id", "user_id"),)
+    __table_args__ = (
+        Index("ix_conversations_guild_id_user_id", "guild_id", "user_id"),
+        Index("ix_conversations_status", "status"),
+        Index(
+            "uq_conversations_discord_thread_id_active",
+            "discord_thread_id",
+            unique=True,
+            postgresql_where=text("discord_thread_id IS NOT NULL"),
+        ),
+    )
 
     id: int | None = Field(default=None, primary_key=True)
     guild_id: int = Field(foreign_key="guilds.id")
@@ -187,12 +214,12 @@ class Conversation(SQLModel, table=True):
     user_id: str | None = None
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
-
-
-# Valid Thread.status values. "active" threads accept new messages, "archived"
-# threads are read-only in Discord but still resolvable by the backend,
-# "closed" threads are done and eligible for eventual soft-delete cleanup.
-THREAD_STATUSES = ("active", "archived", "closed")
+    # Mirror of the currently active Thread's name/status/discord_thread_id.
+    # See the class docstring — these track the conversation's current
+    # thread, not its full history.
+    name: str | None = None
+    status: str = Field(default="active", sa_column_kwargs={"server_default": "'active'"})
+    discord_thread_id: str | None = None
 
 
 class Thread(SoftDeleteMixin, SQLModel, table=True):
@@ -206,6 +233,17 @@ class Thread(SoftDeleteMixin, SQLModel, table=True):
     own) — a ``Thread`` here carries an explicit ``status`` that the
     periodic foreman sweep advances over time (see
     ``foreman/thread_maintenance.py``).
+
+    A conversation can have many ``Thread`` rows over its lifetime (one per
+    Discord-thread "session" — archived/closed threads are superseded by a
+    fresh one, see ``thread_service.get_or_create_active_thread``), so
+    ``name``/``status``/``discord_thread_id`` remain each thread's own,
+    independently mutable record — e.g. ``routes/threads.py``'s
+    archive/close endpoints and thread-history listing operate per-instance.
+    They are also mirrored onto the owning :class:`Conversation` (#1274)
+    whenever they change so callers that only need "the conversation's
+    current thread" don't have to join through here — see ``Conversation``'s
+    docstring.
     """
 
     __tablename__ = "threads"  # type: ignore[assignment]
