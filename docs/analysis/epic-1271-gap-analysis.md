@@ -14,6 +14,47 @@ Status: in progress (research phase)
 Sub-issues #1274–#1279 all closed, one per PR above (#1272 was an earlier closed/unmerged
 attempt superseded by #1280).
 
+## Finding: Concrete dual-write gaps — several creation sites never stamp `conversation_id`
+
+`Conversation` has no `deleted_at`/soft-delete (models.py:176 — inherits only `SQLModel`, unlike
+`Thread`/`Task`/`Guild` which mix in `SoftDeleteMixin`), so conversations can't be soft-deleted the
+way threads can — likely fine but worth a deliberate decision, not an oversight.
+
+`Thread`'s class docstring (models.py:248-256) calls it deprecated, but its `name`/`status`/
+`discord_thread_id` fields are still live and populated (models.py:275-277) — mirrored, not removed,
+which is correct for the current migration stage but means Thread is not actually a
+"compatibility-only" table yet as Phase 7 intends.
+
+**Task creation sites that never stamp `thread_id` or `conversation_id` (4 found)** — tasks created
+here can never be attributed to a Conversation, and by extension neither can any GitHub event/issue/PR
+correlated through them:
+- `backend/routes/agents.py:58-71` — interactive Pi task creation (`start_agent_run`)
+- `backend/routes/discord.py:429-441` — `/pickup` slash command
+- `backend/routes/discord.py:498-511` — `/review` slash command
+- `backend/routes/workers.py:359-401` — worker-dispatch `assign_task` REST route
+
+**Message creation gap:** `backend/routes/webhooks.py:1270-1336` (`ci_notify` endpoint) resolves a
+`task_row` and could stamp `task_row.conversation_id` (the sibling `github_webhook` handler does
+exactly this at webhooks.py:762-786), but its `Message(...)` insert at lines 1328-1336 sets only
+`task_id` — no `conversation_id`, no `thread_id`. CI-notify chat messages never join a conversation.
+
+**GitHub cache backfill gap:** `scripts/backfill_github_cache.py:74,77` call
+`github_cache.upsert_issue`/`upsert_pr` with no `conversation_id` argument, defaulting to `None` —
+even when a matching `Task` with a resolvable `conversation_id` already exists for that
+issue/PR's `(repo, number)`. This is one of only two documented upsert entry points for
+`GithubIssue`/`GithubPullRequest` (models.py:762-767, 806-810) and it silently skips conversation
+attribution.
+
+**Migrations are correct.** All 4 alembic migrations for this epic (`20260904_000000` through
+`20260904_020000`) backfill in correct dependency order and the previously-known backfill-ordering
+bug (PR #1274 / commit `3edde4a`) is already fixed in the working tree, with a regression test added.
+
+**Reads are mostly migrated correctly** — `routes/threads.py:214` (message history),
+`db/github_events.py:25-27`, and `foreman/history.py:88-91` all already read by `conversation_id`.
+The two remaining `Task.thread_id` reads (`thread_service.py:175`, `thread_maintenance.py:135`) are
+either paired with an equivalent conversation_id lookup or legitimately Thread-instance-scoped
+cleanup, not gaps.
+
 ## Research in progress
 Four parallel research passes launched against current `main`-equivalent working tree:
 1. Schema/dual-write audit (Conversation/Thread fields, conversation_id vs thread_id writes/reads, migration backfill correctness)
