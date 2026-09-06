@@ -8,10 +8,13 @@ Issue #1274 (epic #1271, "make Conversation the core Foreman thread model"):
 adds ``name``/``status``/``discord_thread_id`` to ``conversations``, mirroring
 the conversation's currently active :class:`Thread` (kept in sync going
 forward by ``foreman.thread_service``). Backfills existing conversations from
-each one's most-recently-updated, non-deleted thread. ``threads`` keeps its
-own copies of these columns — a conversation can have many threads over its
-lifetime (see ``models.Thread``'s docstring) — so this is additive, not a
-column move at the schema level.
+each one's active, non-deleted thread if it has one — falling back to the
+most-recently-updated non-deleted thread otherwise — matching
+``thread_service.get_or_create_active_thread``'s own definition of "the"
+thread for a conversation. ``threads`` keeps its own copies of these columns
+— a conversation can have many threads over its lifetime (see
+``models.Thread``'s docstring) — so this is additive, not a column move at
+the schema level.
 
 Also merges the two sibling heads left by #1275/#1276/#1277's independent
 ``conversation_id``-column migrations (``...foreman_turns_conversation_id_index``
@@ -52,9 +55,11 @@ def upgrade() -> None:
         postgresql_where=sa.text("discord_thread_id IS NOT NULL"),
     )
 
-    # Backfill from each conversation's most-recently-updated, non-deleted
-    # thread — the one ``thread_service.get_or_create_active_thread`` would
-    # currently treat as "the" thread for that conversation.
+    # Backfill from each conversation's active thread where it has one,
+    # falling back to its most-recently-updated non-deleted thread otherwise
+    # — the same preference order ``get_or_create_active_thread`` uses, so a
+    # closed/archived thread that was touched more recently than the real
+    # active thread doesn't win and get mirrored as if it were current.
     op.execute(
         """
         UPDATE conversations AS c
@@ -66,7 +71,7 @@ def upgrade() -> None:
                 conversation_id, name, status, discord_thread_id
             FROM threads
             WHERE deleted_at IS NULL
-            ORDER BY conversation_id, updated_at DESC
+            ORDER BY conversation_id, (status = 'active') DESC, updated_at DESC
         ) AS t
         WHERE c.id = t.conversation_id
         """
