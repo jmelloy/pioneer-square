@@ -1,6 +1,6 @@
 # Epic #1271 — Deep Analysis: Implementation Gaps
 
-Status: in progress (research phase)
+Status: complete. Posted as a comment on issue #1271.
 
 ## Epic PRs reviewed
 - #1280 (merged 2026-09-04) — Make Conversation the core Foreman thread model (retry of closed #1272)
@@ -55,14 +55,55 @@ The two remaining `Task.thread_id` reads (`thread_service.py:175`, `thread_maint
 either paired with an equivalent conversation_id lookup or legitimately Thread-instance-scoped
 cleanup, not gaps.
 
-## Research in progress
-Four parallel research passes launched against current `main`-equivalent working tree:
-1. Schema/dual-write audit (Conversation/Thread fields, conversation_id vs thread_id writes/reads, migration backfill correctness)
-2. Foreman history/runner audit (full-history-by-conversation, followup decision logic, conversation_service.py completeness)
-3. Discord mirroring + frontend rename audit
-4. Test coverage audit
+## Finding: THE HEADLINE ACCEPTANCE CRITERION IS UNMET — `Conversation` is still a 1:1 singleton per `(guild_id, user_id)`
 
-Findings to be appended below as they complete.
+The epic's entire premise (from the issue body): *"Each new top-level human Foreman message starts
+a new `Conversation` unless the message is explicitly posted inside an existing conversation."* This
+is what makes Conversation a real "unit of work" instead of a per-user bucket.
+
+**This was never implemented.** `foreman/conversation_service.get_or_create_conversation`
+(conversation_service.py:34-54) is an explicit singleton getter — its own docstring and
+`models.py:181-184` and `foreman/history.py:76-78` all restate "`Conversation` is 1:1 with
+`(guild_id, user_id)`." A returning user's new top-level message reuses the same `Conversation` row
+forever; only the very first message from a `(guild, user)` pair ever creates one. This is *exactly*
+the pre-epic behavior described in the epic's own "Problem" section (`Conversation`: per
+`(guild_id, user_id)` anchor/memory bucket) — unchanged.
+
+Because of this, several other "done" phases are hollow by construction:
+- Phase 3's "full conversation history" is identical to the old windowed per-user history, since
+  there's only ever one conversation per user to load history from.
+- The acceptance criterion "A top-level human message creates a new Conversation row and **no core
+  Thread row is required**" is also false today: a `Thread` row is still created alongside every
+  `Conversation` (confirmed via `tests/test_conversation_service.py::TestConversationIdDualWrite`,
+  and `models.py:248-256`'s own docstring: "Removing `Thread` entirely ... hasn't happened yet").
+
+No test asserts "a new top-level message creates a new Conversation" — and none could pass against
+current code, since the code deliberately prevents it.
+
+## Test coverage audit summary
+
+- Suite is structurally sound: `pytest --collect-only` reports **1419 tests collected, 0 collection
+  errors**. Could not execute against a real run (no Postgres available in this sandbox — pure
+  environment blocker, not a code defect) so no pass/fail counts are available from this analysis.
+- 22 test files touch conversation/thread code, covering: history windowing, the UI-lifecycle
+  migration, `conversation_service.py`, conversation routes, Discord thread mirroring, thread
+  maintenance/sweeping, `reactivate_conversation_thread` (both unit and integration level — solid),
+  and dual-stamping of `Task.conversation_id`/`thread_id`.
+- **Gap (a)**: No test exercises an unwindowed/full history load by `conversation_id` — consistent
+  with the fact that no such code path exists (see Phase 3 finding above).
+- **Gap (b)**: Followup routing (`working`→redirect, `awaiting-review`/`done`/`parked`→followup) is
+  well tested, but *only* for Discord-thread-bound replies (`discord/router.py`'s
+  `_route_task_bound_reply` + `tests/test_discord_router.py`). No equivalent routing or test exists
+  for a plain in-app/web `Message` reply inside a `Conversation` — consistent with the Phase 5 finding.
+- **Gap (c)**: The most consequential migration, `20260904_000000_add_conversation_id_columns.py`
+  (backfills `messages`/`tasks`/`foreman_turns`/`github_events`), has **no dedicated migration-replay
+  test**. Only the later, narrower UI-lifecycle migration (`...020000`, PR #1286) has one
+  (`test_conversation_ui_lifecycle_migration.py`). The `...010000` github_cache migration is also
+  untested at the migration level (only its runtime helpers are tested).
+- **Gap (d)**: Confirmed above — untestable because unimplemented.
+- No skipped/xfail tests found in any conversation/thread-related test file.
+
+## Epic PRs reviewed
 
 ## Finding: Phase 3 (full conversation history) and Phase 5 (conversation followups) are NOT implemented
 
@@ -133,3 +174,49 @@ Findings to be appended below as they complete.
   components. `ThreadList.vue`, `ThreadDetailPanel.vue`, `NewThreadModal.vue`, `ChatPane.vue`, and
   `useThreadsStore` remain entirely thread-centric, backed by `/threads` REST + `thread-created`/
   `thread-updated` WS events only. Phase 8 is not started.
+
+## Recommendations / suggested remaining work
+
+Roughly in priority order:
+
+1. **Decide, explicitly, whether the epic's core premise still stands.** All 6 sub-issues are
+   closed and the epic reads as done, but the foundational behavior change — new top-level message
+   ⇒ new Conversation, replacing the 1:1 `(guild_id, user_id)` singleton — was never built. Everything
+   else (dual-write columns, field migration, Discord binding) is scaffolding for that change, not
+   the change itself. This needs a new sub-issue and probably a design pass: switching `Conversation`
+   from singleton to multi-per-user has real implications for history loading, Discord thread
+   creation cadence, and existing UI assumptions (`ThreadList.vue` currently lists one thing per
+   user-ish). Recommend re-opening the epic or filing a clearly-scoped follow-up issue rather than
+   treating it as done.
+2. **Phase 3 — full conversation history.** Once/if (1) lands, `ConversationHistory._windowed_turns`
+   (history.py:59-111) needs an actual conversation-scoped code path that drops `_HUMAN_TURN_WINDOW`
+   trimming instead of only widening the OR-fallback match.
+3. **Phase 5 — conversation-scoped followups.** Add the `POST .../conversations/{id}/messages`
+   endpoint and generalize the followup decision logic in `discord/router._route_task_bound_reply`
+   (currently Discord-thread-reply-only) to plain in-app conversation replies.
+4. **Fix the 4 task-creation dual-write gaps** so all tasks are attributable to a conversation:
+   `routes/agents.py:58-71`, `routes/discord.py:429-441`, `routes/discord.py:498-511`,
+   `routes/workers.py:359-401`.
+5. **Fix `webhooks.py`'s `ci_notify` message gap** (lines 1270-1336) to stamp `conversation_id` the
+   same way `github_webhook` does.
+6. **Fix `scripts/backfill_github_cache.py`** to resolve and pass `conversation_id` into
+   `upsert_issue`/`upsert_pr`, matching the webhook path.
+7. **Add a migration-replay test** for `20260904_000000_add_conversation_id_columns.py` (the
+   messages/tasks/foreman_turns/github_events backfill) and for `20260904_010000` (github_cache) —
+   these are the two most consequential migrations in the epic and are currently the only two
+   without dedicated tests, while a narrower later migration does have one.
+8. **Phase 7 cleanup**: rename `thread_mirror.on_thread_created/updated` toward conversation
+   semantics, or explicitly document why they stay thread-named; make primary Discord session
+   resolution (`router._resolve_foreman_thread_session`) conversation-first instead of
+   `Thread.id`-first; decide whether `discord_notifier.py`'s legacy `_ensure_conversation_thread`
+   fallback should be removed now that the new lookup exists; remove the dead
+   `gateway._sync_thread_status` (already marked deprecated since #1168, never called).
+9. **Phase 8 — not started.** Add `GET /api/guilds/{guild_id}/conversations` list route, add
+   `conversation-created`/`conversation-updated` WS event types, and begin the frontend rename
+   (`stores/threads.ts`, `types.ts`'s `ConversationThread`, `ThreadList.vue`,
+   `ThreadDetailPanel.vue`, `NewThreadModal.vue`, `ChatPane.vue`) — zero frontend work has happened
+   during this epic.
+10. **Minor cleanup**: `conversation_service.touch_conversation()` is dead code outside tests;
+    either wire it in (e.g. on every inbound message) or remove it. Consider moving/renaming
+    `thread_service.reactivate_conversation_thread` into `conversation_service.py` for naming
+    consistency with the epic's promised function list.
