@@ -244,6 +244,16 @@ class Thread(SoftDeleteMixin, SQLModel, table=True):
     whenever they change so callers that only need "the conversation's
     current thread" don't have to join through here — see ``Conversation``'s
     docstring.
+
+    Deprecated (#1274, epic #1271): ``name``/``status``/``discord_thread_id``
+    now live on ``Conversation`` as the canonical fields for UI display and
+    Discord binding. This model is kept only for the per-instance history
+    that ``routes/threads.py``'s archive/close/list-by-status endpoints and
+    the maintenance sweep still read and write directly — new code should
+    read/write those three fields through ``Conversation`` instead of
+    ``Thread``. Removing ``Thread`` entirely requires first moving those
+    per-instance call sites onto a ``Conversation``-scoped history mechanism;
+    that migration is tracked under epic #1271 and hasn't happened yet.
     """
 
     __tablename__ = "threads"  # type: ignore[assignment]
