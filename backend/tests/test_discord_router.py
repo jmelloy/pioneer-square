@@ -175,7 +175,6 @@ async def test_persist_inbound_message_finds_conversation_by_discord_thread_id(c
 
     assert message is not None
     assert message.conversation_id == conversation.id
-    assert message.thread_id == thread.id
     assert reactivated_conversation.status == "active"
     assert reactivated_thread.status == "active"
 

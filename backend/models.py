@@ -153,16 +153,11 @@ class Message(SQLModel, table=True):
     # via discord/router.py), or "api" (posted directly through the REST
     # messages endpoint). Lets the frontend show where a message came from.
     source: str | None = Field(default="web")
-    # Foreman-owned conversation thread (#1167) this message belongs to. NULL for
-    # messages that predate message-to-thread linking or that aren't scoped to any
-    # conversation (e.g. GitHub webhook notices). Resolved best-effort, read-only,
-    # at persist time — see ``foreman.thread_service.resolve_thread_id``.
-    thread_id: str | None = Field(default=None, foreign_key="threads.id", index=True)
-    # Owning Conversation (#1271: making Conversation, not Thread, the core
-    # Foreman thread model). Written alongside thread_id at every create site
-    # during the migration window — see ``foreman.conversation_service`` —
-    # and backfilled from thread_id -> threads.conversation_id for existing
-    # rows. NULL wherever thread_id is also NULL.
+    # Owning Conversation (#1271/#1290: Conversation, not Thread, is the core
+    # Foreman thread model). NULL for messages that predate message-to-conversation
+    # linking or that aren't scoped to any conversation (e.g. GitHub webhook
+    # notices). Resolved best-effort, read-only, at persist time — see
+    # ``foreman.conversation_service.resolve_conversation_id``.
     conversation_id: int | None = Field(default=None, foreign_key="conversations.id", index=True)
 
 
