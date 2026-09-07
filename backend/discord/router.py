@@ -886,7 +886,6 @@ async def _persist_inbound_message(
                 created_at=created_at,
                 user_id=user_id,
                 task_id=task_id,
-                thread_id=thread_id,
                 conversation_id=conversation_id,
                 source="discord",
             )

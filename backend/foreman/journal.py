@@ -188,7 +188,6 @@ class TurnJournal:
                     from_agent="foreman",
                     to_agent="user",
                     task_id=self._reply.task_id,
-                    thread_id=self._reply.thread_id,
                     conversation_id=self._reply.conversation_id,
                     **kwargs,
                 )

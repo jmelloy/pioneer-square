@@ -52,7 +52,6 @@ def _insert_message(
     guild_id: str,
     content: str,
     *,
-    thread_id: str | None,
     conversation_id: int | None,
 ) -> None:
     now = datetime.now(UTC)
@@ -66,7 +65,6 @@ def _insert_message(
                 content=content,
                 message_type="chat",
                 created_at=now,
-                thread_id=thread_id,
                 conversation_id=conversation_id,
             )
         )
@@ -84,18 +82,12 @@ def test_list_thread_messages_spans_conversation_threads(client):
     _insert_thread(db_url, "th-old", conv_id, "archived")
     _insert_thread(db_url, "th-new", conv_id, "active")
 
-    _insert_message(
-        db_url, "g1", "from the old thread", thread_id="th-old", conversation_id=conv_id
-    )
-    _insert_message(
-        db_url, "g1", "from the new thread", thread_id="th-new", conversation_id=conv_id
-    )
+    _insert_message(db_url, "g1", "from the old thread", conversation_id=conv_id)
+    _insert_message(db_url, "g1", "from the new thread", conversation_id=conv_id)
 
     other_conv_id = _insert_conversation(db_url, "g1", "gh-user-other")
     _insert_thread(db_url, "th-other", other_conv_id, "active")
-    _insert_message(
-        db_url, "g1", "unrelated conversation", thread_id="th-other", conversation_id=other_conv_id
-    )
+    _insert_message(db_url, "g1", "unrelated conversation", conversation_id=other_conv_id)
 
     resp = test_client.get(
         "/api/guilds/g1/threads/th-new/messages",

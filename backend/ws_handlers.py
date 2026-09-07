@@ -555,7 +555,6 @@ async def handle_chat(ctx: WSContext, msg: ChatMsg) -> None:
             message_type="chat",
             created_at=created_at,
             user_id=ctx.ws_user_id if from_agent == "user" else None,
-            thread_id=thread_id,
             conversation_id=conversation_id,
         )
     )
