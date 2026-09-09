@@ -215,8 +215,13 @@ add only their own side effects (Discord pings, GitHub comments). `TERMINAL_STAT
 Lives in `backend/foreman/` — key modules are `runner.py` (the Claude SDK loop), `tools.py` (tool
 definitions), and `prompt.py` (system prompt); the package has grown to include auth, proxy, and
 LLM-provider helpers too. Currently uses `claude-sonnet-4-6` (`FOREMAN_MODEL` env var). Conversation
-history is DB-backed (loaded per guild/user from the `messages`/`foreman_turns` tables), windowed
-to the last few human turns and capped at `MAX_HISTORY_MESSAGES` (currently 20) before each call.
+history is DB-backed (`foreman_turns`) and **conversation-scoped**: a run resolves its
+`Conversation` and loads that conversation's *entire* history, matched on `conversation_id` alone.
+Nothing is dropped until the estimate exceeds `FOREMAN_CONTEXT_TOKEN_BUDGET`, at which point
+`message_utils.fit_token_budget` drops the oldest whole messages and logs it (#1294). The old
+`_HUMAN_TURN_WINDOW` / `MAX_HISTORY_MESSAGES` windows remain only for callers that have no
+conversation resolved. The conversation's own tasks and GitHub events ride along in the state
+preamble's "This conversation" block.
 The foreman is triggered by:
 1. Human chat messages addressed to `foreman`
 2. `task-complete` WS messages from workers
