@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from datetime import date, datetime
 from typing import Any
 
 from task_lifecycle import TERMINAL_STATES
 
 from .constants import (
+    CHARS_PER_TOKEN,
+    FOREMAN_CONTEXT_TOKEN_BUDGET,
     MAX_HISTORY_MESSAGES,
     MAX_TOOL_RESULT_CHARS,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _json_default(obj: Any) -> Any:
@@ -37,6 +42,60 @@ def prune_history(messages: list, max_messages: int = MAX_HISTORY_MESSAGES) -> l
     while messages and messages[0]["role"] != "user":
         messages = messages[1:]
     return messages
+
+
+def estimate_tokens(messages: list[dict]) -> int:
+    """Rough token count for a messages array (serialized chars / CHARS_PER_TOKEN).
+
+    Deliberately not the provider's tokenizer: this only has to be a stable,
+    conservative ordering function for "does the context still fit", and a
+    real tokenizer call per round would cost more than the trimming saves.
+    """
+    return sum(_message_tokens(m) for m in messages)
+
+
+def _message_tokens(message: dict) -> int:
+    return len(json.dumps(message, default=_json_default)) // CHARS_PER_TOKEN
+
+
+def fit_token_budget(
+    messages: list[dict], budget: int = FOREMAN_CONTEXT_TOKEN_BUDGET
+) -> list[dict]:
+    """Drop whole messages from the *front* until the array fits *budget* tokens.
+
+    The explicit, testable truncation #1294 asks for: a conversation-scoped
+    run sends its complete history and only loses the oldest turns once the
+    estimate actually exceeds the budget — instead of ``prune_history``'s
+    unconditional 20-message window, which silently discarded most of a long
+    conversation whether or not it would have fit.
+
+    Always keeps at least the newest message (even if that one message is
+    itself over budget — the provider's own error is a better signal than
+    sending nothing), and re-enforces the API's starts-with-a-user-turn rule.
+    Callers still run ``strip_orphaned_tool_results`` afterwards to repair any
+    tool_use/tool_result pair this split down the middle.
+    """
+    sizes = [_message_tokens(m) for m in messages]
+    total = 0
+    start = len(messages)
+    for i in range(len(messages) - 1, -1, -1):
+        if start < len(messages) and total + sizes[i] > budget:
+            break
+        total += sizes[i]
+        start = i
+
+    kept = messages[start:]
+    if start:
+        logger.info(
+            "fit_token_budget: dropped %d of %d oldest messages (~%d tokens kept, budget %d)",
+            start,
+            len(messages),
+            total,
+            budget,
+        )
+    while kept and kept[0]["role"] != "user":
+        kept = kept[1:]
+    return kept
 
 
 def strip_orphaned_tool_results(messages: list[dict]) -> list[dict]:

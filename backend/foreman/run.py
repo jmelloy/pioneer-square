@@ -27,6 +27,8 @@ from foreman.message_utils import (
     _inject_state_preamble,
     _serialize_content,
     _stamp_message_cache_breakpoint,
+    estimate_tokens,
+    fit_token_budget,
     prune_history,
     strip_orphaned_tool_results,
     truncate_tool_result,
@@ -65,9 +67,10 @@ class RunConfig:
     task_id: str | None
     trigger: str | None
     max_rounds: int
-    # Owning Conversation (#1271/#1279) this run's history should be scoped
-    # to. Optional since not every caller has one resolved yet — History
-    # falls back to plain (guild_id, user_id) matching when it's None.
+    # Owning Conversation (#1271/#1279) this run's history is scoped to.
+    # Also selects the context-trimming policy (see ForemanRun._fit_context):
+    # set -> the whole conversation, trimmed only by the explicit token budget
+    # (#1294); None -> the legacy (guild, user) window on both ends.
     conversation_id: int | None = None
 
 
@@ -128,6 +131,19 @@ class ForemanRun:
         cap_note = f"_(Foreman hit {self._cfg.max_rounds}-round safety cap and stopped.)_"
         await self._journal.text(cap_note)
 
+    def _fit_context(self, messages: list[dict]) -> list[dict]:
+        """Trim the messages array to what the provider will accept.
+
+        Conversation-scoped runs (#1294) send the complete conversation and
+        only lose the oldest whole messages once the token estimate exceeds
+        ``FOREMAN_CONTEXT_TOKEN_BUDGET`` — an explicit, logged truncation.
+        Runs with no conversation resolved keep the old unconditional
+        ``MAX_HISTORY_MESSAGES`` sliding window.
+        """
+        if self._cfg.conversation_id is None:
+            return prune_history(messages)
+        return fit_token_budget(messages)
+
     async def _one_round(
         self,
         messages: list[dict],
@@ -136,14 +152,15 @@ class ForemanRun:
         *,
         tool_choice: dict[str, Any] | None = None,
     ) -> tuple[list[dict], list[Any]]:
-        messages = prune_history(messages)
+        messages = self._fit_context(messages)
         messages = strip_orphaned_tool_results(messages)
         _stamp_message_cache_breakpoint(messages)
         logger.info(
-            "guild=%s ForemanRun round %d: sending %d messages to LLM",
+            "guild=%s ForemanRun round %d: sending %d messages (~%d tokens) to LLM",
             self._cfg.guild_id,
             round_num,
             len(messages),
+            estimate_tokens(messages),
         )
 
         result = await self._llm.call(
