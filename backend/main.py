@@ -123,22 +123,22 @@ async def _sweep_stale_workers_once() -> int:
         stale_agent_only_rows = (
             await db.exec(
                 select(
-                    col(Agent.id),
-                    col(Agent.guild_id),
+                    Agent.id,
+                    Agent.guild_id,
                     col(Guild.slug).label("guild_slug"),
                 )
-                .join(Guild, col(Guild.id) == col(Agent.guild_id))
-                .where(col(Agent.state) != "offline")
-                .where(col(Agent.worker_id).is_(None))
-                .where(col(Agent.last_seen).isnot(None))
-                .where(col(Agent.last_seen) < cutoff)
+                .join(Guild, Guild.id == Agent.guild_id)
+                .where(Agent.state != "offline")
+                .where(Agent.worker_id.is_(None))
+                .where(Agent.last_seen.isnot(None))
+                .where(Agent.last_seen < cutoff)
             )
         ).all()
 
         for row in stale_agent_only_rows:
             await db.exec(
                 update(Agent)
-                .where(col(Agent.id) == row.id, col(Agent.guild_id) == row.guild_id)
+                .where(Agent.id == row.id, Agent.guild_id == row.guild_id)
                 .values(state="offline", activity=None, current_task_id=None)
             )
             agent_owners.pop(row.id, None)
