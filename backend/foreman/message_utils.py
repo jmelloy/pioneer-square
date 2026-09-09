@@ -58,9 +58,7 @@ def _message_tokens(message: dict) -> int:
     return len(json.dumps(message, default=_json_default)) // CHARS_PER_TOKEN
 
 
-def fit_token_budget(
-    messages: list[dict], budget: int = FOREMAN_CONTEXT_TOKEN_BUDGET
-) -> list[dict]:
+def fit_token_budget(messages: list[dict], budget: int | None = None) -> list[dict]:
     """Drop whole messages from the *front* until the array fits *budget* tokens.
 
     The explicit, testable truncation #1294 asks for: a conversation-scoped
@@ -75,6 +73,9 @@ def fit_token_budget(
     Callers still run ``strip_orphaned_tool_results`` afterwards to repair any
     tool_use/tool_result pair this split down the middle.
     """
+    # Resolved at call time, not bound as a default, so the budget can be
+    # patched (tests) or made per-guild config later without a signature change.
+    budget = FOREMAN_CONTEXT_TOKEN_BUDGET if budget is None else budget
     sizes = [_message_tokens(m) for m in messages]
     total = 0
     start = len(messages)
