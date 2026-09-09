@@ -392,8 +392,15 @@ def build_state_preamble(
     workers_block: str,
     tasks_block: str,
     extra_context: str = "",
+    conversation_block: str = "",
 ) -> str:
-    """Render the live operational state to inject into the current user turn."""
+    """Render the live operational state to inject into the current user turn.
+
+    *conversation_block* (#1294) is the JSON context linked to this run's
+    Conversation — its tasks and GitHub events, including ones the guild-wide
+    ``tasks_block`` drops as terminal/old. Empty for a run with no
+    conversation resolved.
+    """
     if workers_block.strip() in _EMPTY_WORKERS_BLOCKS:
         workers_section = (
             "## Current workers\n"
@@ -404,6 +411,8 @@ def build_state_preamble(
         workers_section = f"## Current workers\n```json\n{workers_block}\n```\n\n"
 
     body = f"{workers_section}## Recent tasks\n```json\n{tasks_block}\n```"
+    if conversation_block:
+        body += f"\n\n## This conversation\n```json\n{conversation_block}\n```"
     if extra_context:
         body += f"\n\n## Context\n{extra_context}"
     return f"<state>\n{_current_time_line()}{body}\n</state>"
@@ -415,6 +424,7 @@ def build_system_prompt(
     extra_context: str = "",
     primary_repo: str | None = None,
     system_prompt_suffix: str | None = None,
+    conversation_block: str = "",
 ) -> str:
     """Render the legacy single-string system prompt.
 
@@ -423,5 +433,5 @@ def build_system_prompt(
     """
     return (
         f"{_stable_system_text(primary_repo, system_prompt_suffix)}\n\n"
-        f"{build_state_preamble(workers_block, tasks_block, extra_context)}"
+        f"{build_state_preamble(workers_block, tasks_block, extra_context, conversation_block)}"
     )

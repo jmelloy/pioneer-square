@@ -1,30 +1,53 @@
-"""ConversationHistory: the one windowing implementation for Foreman turns.
+"""ConversationHistory: the one history-loading implementation for Foreman turns.
 
 Before #1241, ``foreman.runner._load_history`` (feeds the LLM) and
 ``foreman.runner.get_foreman_history`` (feeds the debug pane) each hand-rolled
 the same human-turn-window backward scan and "trim until starts with user"
 loop, with comments pointing at each other ("mirrors _load_history") instead
 of a shared implementation. ``ConversationHistory`` is that shared
-implementation: ``_windowed_turns`` is the one place the fetch-limit +
-backward-scan cutoff logic lives, and ``load_for_llm``/``load_for_debug`` are
-its two callers, shaping the same windowed slice for their own contract.
+implementation: ``_load_turns`` is the one place the scoping/cutoff logic
+lives, and ``load_for_llm``/``load_for_debug`` are its two callers, shaping
+the same slice for their own contract.
+
+Since #1294 there are two scopes, not one:
+
+  - **Conversation-scoped** (``conversation_id`` given) — the *complete*
+    conversation, oldest to newest. No human-turn window, no
+    ``(guild_id, user_id)`` fallback; the only thing that ever removes a turn
+    is the explicit token budget in ``message_utils.fit_token_budget``. Every
+    production Foreman run takes this path (``foreman.runner`` resolves a
+    conversation before it builds ``ForemanRun``).
+  - **Legacy (guild, user)-scoped** (no ``conversation_id``) — the original
+    ``_HUMAN_TURN_WINDOW`` backward scan, unchanged, for callers that still
+    have no conversation resolved.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Protocol, TypedDict
 
 from auth_deps import get_guild_pk
 from database import get_db
-from foreman.constants import _HUMAN_TURN_WINDOW
-from foreman.message_utils import prune_history, strip_orphaned_tool_results
+from foreman.constants import (
+    _HUMAN_TURN_WINDOW,
+    CHARS_PER_TOKEN,
+    FOREMAN_CONTEXT_TOKEN_BUDGET,
+    MAX_CONVERSATION_TURNS,
+)
+from foreman.message_utils import fit_token_budget, prune_history, strip_orphaned_tool_results
 from models import ForemanTurn
-from sqlmodel import and_, col, or_, select
+from sqlalchemy import func
+from sqlmodel import and_, col, select
 
-# Upper bound on rows fetched before Python-side windowing, so query cost
-# stays flat regardless of the table's total lifetime turn count.
+logger = logging.getLogger(__name__)
+
+# Upper bound on rows fetched by the legacy (guild, user) path before
+# Python-side windowing, so query cost stays flat regardless of the table's
+# total lifetime turn count. Conversation-scoped loads use the much larger
+# ``MAX_CONVERSATION_TURNS`` — they're meant to return everything.
 _HISTORY_FETCH_LIMIT = 100
 
 
@@ -46,8 +69,8 @@ class History(Protocol):
 
 @dataclass
 class _Window:
-    """The fetched turns (oldest→newest, capped at ``_HISTORY_FETCH_LIMIT``)
-    plus the index the human-turn-window cutoff lands on."""
+    """The fetched turns (oldest→newest) plus the index older turns are cut at
+    (always 0 for a conversation-scoped load — nothing is cut)."""
 
     turns: list[ForemanTurn]
     cutoff: int
@@ -56,44 +79,116 @@ class _Window:
 class ConversationHistory:
     """Production ``History``, backed by the ``foreman_turns`` table."""
 
-    async def _windowed_turns(
+    async def _fetch_conversation_turns(self, db, conversation_id: int) -> list[ForemanTurn]:
+        """Read a conversation's turns, newest ones first, stopping at the
+        oldest turn that can still fit in the context window.
+
+        Two cheap queries instead of one fat one: the first reads only
+        (id, content length) — a backward index scan over
+        ix_foreman_turns_conversation_id_id — and walks it newest-first to find
+        the oldest turn that still fits the token budget; the second loads just
+        those rows. A 10 000-turn conversation therefore materializes the ~last
+        few hundred turns that can actually be sent, not all 10 000 rows'
+        content_json (which can be 32 KB each — see MAX_TOOL_RESULT_CHARS).
+
+        This is a *prefetch* bound, not the truncation decision: whatever comes
+        back still goes through ``message_utils.fit_token_budget``, which is
+        where the "what actually gets sent" trimming lives. Sized off the same
+        budget so the two agree.
+        """
+        budget_chars = FOREMAN_CONTEXT_TOKEN_BUDGET * CHARS_PER_TOKEN
+        size_result = await db.exec(
+            select(
+                col(ForemanTurn.id),
+                col(ForemanTurn.role),
+                func.length(col(ForemanTurn.content_json)),
+            )
+            .where(col(ForemanTurn.conversation_id) == conversation_id)
+            .order_by(col(ForemanTurn.id).desc())
+            .limit(MAX_CONVERSATION_TURNS)
+        )
+        sized = size_result.all()
+        if not sized:
+            return []
+
+        chars = 0
+        oldest_id = sized[0][0]
+        # True once older turns are being left behind — either the budget ran
+        # out mid-scan or the conversation is longer than the fetch ceiling.
+        truncated = len(sized) >= MAX_CONVERSATION_TURNS
+        for turn_id, role, size in sized:
+            # System turns are audit rows; the Anthropic messages array never
+            # includes them, so don't let repeated audit prompts evict real
+            # conversation history during the cheap prefetch sizing pass.
+            size = 0 if role == "system" else (size or 0)
+            if chars and chars + size > budget_chars:
+                truncated = True
+                break
+            chars += size
+            oldest_id = turn_id
+        if truncated:
+            logger.warning(
+                "conversation=%s history truncated: loading turns >= %s "
+                "(~%d of %d budget chars, %d turns scanned)",
+                conversation_id,
+                oldest_id,
+                chars,
+                budget_chars,
+                len(sized),
+            )
+
+        result = await db.exec(
+            select(ForemanTurn)
+            .where(
+                col(ForemanTurn.conversation_id) == conversation_id,
+                col(ForemanTurn.id) >= oldest_id,
+            )
+            .order_by(col(ForemanTurn.id))
+        )
+        return list(result.all())
+
+    async def _load_turns(
         self, guild_id: str, user_id: str, conversation_id: int | None = None
     ) -> _Window:
-        """Fetch the most recent ``_HISTORY_FETCH_LIMIT`` turns for this
-        conversation and find the backward-scan cutoff: the index of the
-        ``_HUMAN_TURN_WINDOW``-th-from-last non-tool-response user turn.
+        """Fetch this run's turns (oldest→newest) plus the cutoff index.
 
-        Because the cutoff always lands on a human-initiated user turn, every
-        assistant-turn / tool_result-user-turn pair that follows it is
-        guaranteed to be included intact — no orphaned tool_use blocks, no
-        synthetic repairs needed.
+        With a *conversation_id* (#1294): that conversation's turns, matched
+        on ``conversation_id`` alone, cutoff 0 — the caller sees the complete
+        history, bounded only by what fits the context window (see
+        ``_fetch_conversation_turns``). The pre-#1294 ``OR (guild_id, user_id)`` fallback is
+        deliberately gone. It existed to pick up rows written before the
+        conversation_id backfill, and was safe only while ``Conversation`` was
+        1:1 with ``(guild_id, user_id)``; #1296 made a new top-level human
+        message start a *new* conversation, so that OR now drags every other
+        conversation of the same user into this one's context.
 
-        Scoped by ``conversation_id`` (#1271/#1279) when the caller has one
-        resolved — the ``(guild_id, user_id)`` match is kept as an OR
-        fallback rather than dropped, since turns written before the
-        conversation_id backfill migration (or for a guild/user pair that had
-        no ``Conversation`` row yet at backfill time) can still be NULL. Every
-        row a NULL match picks up here does belong to this conversation:
-        ``Conversation`` is 1:1 with ``(guild_id, user_id)`` (see
-        ``models.Conversation``), so the fallback can't leak another
-        conversation's turns in. When no ``conversation_id`` is given (a
-        caller that hasn't been threaded one yet), behavior is unchanged from
-        before #1279: plain ``(guild_id, user_id)`` matching.
+        Without one: the pre-#1294 behavior — the most recent
+        ``_HISTORY_FETCH_LIMIT`` turns for ``(guild_id, user_id)``, cut off at
+        the ``_HUMAN_TURN_WINDOW``-th-from-last non-tool-response user turn.
+        Because that cutoff always lands on a human-initiated user turn, every
+        assistant-turn / tool_result-user-turn pair after it is included
+        intact — no orphaned tool_use blocks, no synthetic repairs.
         """
         db = await get_db()
         try:
+            if conversation_id is not None:
+                turns = await self._fetch_conversation_turns(db, conversation_id)
+                return _Window(turns=turns, cutoff=0)
+
             guild_pk_val = await get_guild_pk(db, guild_id)
-            same_guild_user = and_(
-                col(ForemanTurn.guild_id) == guild_pk_val, col(ForemanTurn.user_id) == user_id
+            where_clause = and_(
+                col(ForemanTurn.guild_id) == guild_pk_val,
+                col(ForemanTurn.user_id) == user_id,
             )
-            where_clause = (
-                or_(col(ForemanTurn.conversation_id) == conversation_id, same_guild_user)
-                if conversation_id is not None
-                else same_guild_user
-            )
-            stmt = select(ForemanTurn).where(where_clause)
+            # Newest-first + LIMIT, then reversed: the read is served by a
+            # backward scan of ix_foreman_turns_guild_id_user_id_id and stays
+            # bounded however long the guild has been running, while the rows
+            # kept are still the most recent ones.
             result = await db.exec(
-                stmt.order_by(col(ForemanTurn.id).desc()).limit(_HISTORY_FETCH_LIMIT)
+                select(ForemanTurn)
+                .where(where_clause)
+                .order_by(col(ForemanTurn.id).desc())
+                .limit(_HISTORY_FETCH_LIMIT)
             )
             turns = list(reversed(result.all()))
         finally:
@@ -113,14 +208,18 @@ class ConversationHistory:
     async def load_for_llm(
         self, guild_id: str, user_id: str, conversation_id: int | None = None
     ) -> list[dict]:
-        """Windowed turns -> plain {role, content} dicts for the Anthropic API.
+        """Loaded turns -> plain {role, content} dicts for the Anthropic API.
 
         System turns are excluded — they're persisted for auditing but must
         not appear in the messages array (the system prompt is a top-level
         API param, not a message). Leading non-user turns are trimmed since
         the API requires the first message to have role "user".
+
+        Conversation-scoped loads then get ``fit_token_budget`` applied: the
+        whole history goes out unless it genuinely doesn't fit, at which point
+        the oldest whole messages are dropped and the drop is logged (#1294).
         """
-        window = await self._windowed_turns(guild_id, user_id, conversation_id)
+        window = await self._load_turns(guild_id, user_id, conversation_id)
         messages = [
             {"role": t.role, "content": json.loads(t.content_json)}
             for t in window.turns[window.cutoff :]
@@ -128,17 +227,18 @@ class ConversationHistory:
         ]
         while messages and messages[0]["role"] != "user":
             messages.pop(0)
+        if conversation_id is not None:
+            messages = fit_token_budget(messages)
         return messages
 
     async def load_for_debug(
         self, guild_id: str, user_id: str, conversation_id: int | None = None
     ) -> DebugHistory:
-        """Same windowed turns, full metadata, then the same
-        prune_history + strip_orphaned_tool_results pipeline ForemanRun's
-        loop applies before every real API call — so the debug pane shows
-        exactly what round 0 would send.
+        """Same turns, full metadata, then the same trimming pipeline
+        ForemanRun's loop applies before every real API call — so the debug
+        pane shows exactly what round 0 would send.
         """
-        window = await self._windowed_turns(guild_id, user_id, conversation_id)
+        window = await self._load_turns(guild_id, user_id, conversation_id)
         turns = window.turns
 
         # Most-recent system turn only (there's one per invocation; showing
@@ -169,6 +269,10 @@ class ConversationHistory:
         while messages and messages[0]["role"] != "user":
             messages.pop(0)
 
-        messages = prune_history(messages)
+        # Mirror ForemanRun._fit_context: token budget when the run is
+        # conversation-scoped, the legacy message-count window otherwise.
+        messages = (
+            fit_token_budget(messages) if conversation_id is not None else prune_history(messages)
+        )
         messages = strip_orphaned_tool_results(messages)
         return {"system": system_content, "messages": messages, "total": total}

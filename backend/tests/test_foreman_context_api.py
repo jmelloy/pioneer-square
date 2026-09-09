@@ -10,13 +10,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
 from helpers import _sync_session, insert_guild, insert_member, make_auth_token
-from models import ForemanTurn, Guild
+from models import Conversation, ForemanTurn, Guild
 from sqlalchemy import select
 from sqlmodel import col  # noqa: E402
 
 
 def _insert_foreman_turn(db_url: str, guild_id: str, user_id: str, role: str, content: str) -> None:
+    """Insert a turn, stamped with this (guild, user)'s Conversation.
 
+    The stamp is not optional since #1294: history is loaded by
+    ``conversation_id`` alone, so an unstamped turn is invisible to the
+    endpoint under test — exactly as a real unstamped legacy row now is.
+    """
     now = datetime.now(UTC)
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
@@ -24,6 +29,18 @@ def _insert_foreman_turn(db_url: str, guild_id: str, user_id: str, role: str, co
                 col(Guild.slug) == guild_id, col(Guild.deleted_at).is_(None)
             )
         )
+        conversation = session.scalar(
+            select(Conversation)
+            .where(col(Conversation.guild_id) == guild_pk, col(Conversation.user_id) == user_id)
+            .order_by(col(Conversation.updated_at).desc())
+            .limit(1)
+        )
+        if conversation is None:
+            conversation = Conversation(
+                guild_id=guild_pk or 0, user_id=user_id, created_at=now, updated_at=now
+            )
+            session.add(conversation)
+            session.flush()
         session.add(
             ForemanTurn(
                 guild_id=guild_pk or 0,
@@ -32,6 +49,7 @@ def _insert_foreman_turn(db_url: str, guild_id: str, user_id: str, role: str, co
                 content_json=f'"{content}"',
                 is_tool_response=0,
                 created_at=now,
+                conversation_id=conversation.id,
             )
         )
         session.commit()
