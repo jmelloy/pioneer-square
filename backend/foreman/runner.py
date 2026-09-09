@@ -17,6 +17,8 @@ from database import AsyncSessionLocal, get_db
 from events import broadcast_msg
 from foreman.constants import (
     _24H_SECS,
+    MAX_CONVERSATION_EVENTS,
+    MAX_CONVERSATION_TASKS,
     MAX_FOREMAN_ROUNDS,
 )
 from foreman.conversation_service import resolve_conversation_id
@@ -50,6 +52,7 @@ from models import (
     ApiRequestLog,
     Conversation,
     ForemanTurn,
+    GithubEvent,
     GithubIssue,
     GithubPullRequest,
     Guild,
@@ -456,11 +459,16 @@ async def _get_guild_user_id(guild_id: str) -> str | None:
 async def _load_history(
     guild_id: str, user_id: str, conversation_id: int | None = None
 ) -> list[dict]:
-    """Load the last _HUMAN_TURN_WINDOW non-tool-response turns (plus all tool exchange
-    turns between them) as a list of Anthropic-API-compatible message dicts.
+    """Load this run's history as a list of Anthropic-API-compatible message dicts.
+
+    With a *conversation_id* (every production run — see ``_run_foreman_ai``)
+    that is the **complete** conversation, trimmed only when it exceeds the
+    explicit token budget (#1294). Without one, the legacy fallback: the last
+    ``_HUMAN_TURN_WINDOW`` non-tool-response turns for ``(guild_id, user_id)``
+    plus all tool-exchange turns between them.
 
     Thin compatibility wrapper over ``ConversationHistory.load_for_llm`` — the
-    one windowing implementation (see ``foreman.history``), also used by
+    one history-loading implementation (see ``foreman.history``), also used by
     ``get_foreman_history`` below. Kept as a standalone function (rather than
     inlined at its one production call site in ``foreman.run.ForemanRun``)
     since it's exercised directly as a DB-layer primitive throughout
@@ -471,10 +479,65 @@ async def _load_history(
     user's other Foreman turns rather than an isolated per-task slice (issue
     #1200). ``ForemanTurn.task_id`` is still stamped on each row (see
     ``_save_turn``) purely as metadata, e.g. for the debug view. Scoped by
-    ``conversation_id`` when given (#1271/#1279), else by ``(guild_id,
-    user_id)`` — see ``ConversationHistory._windowed_turns``.
+    ``conversation_id`` when given (#1271/#1279/#1294), else by ``(guild_id,
+    user_id)`` — see ``ConversationHistory._load_turns``.
     """
     return await ConversationHistory().load_for_llm(guild_id, user_id, conversation_id)
+
+
+async def _load_conversation_context(db, conversation_id: int | None) -> str:
+    """Render the non-turn context this Conversation owns, as a JSON block (#1294).
+
+    The turn history covers what was *said*; this covers what the conversation
+    *produced* — its tasks (including terminal ones the guild-wide "Recent
+    tasks" block drops after 24 h) and the GitHub events stamped with this
+    conversation, so a Foreman run picking a conversation back up can see the
+    PRs and CI outcomes its own work generated.
+
+    Chat ``Message`` rows are deliberately not included: they're the UI-facing
+    narration of the very turns already in the history, so re-sending them
+    would just duplicate the conversation at twice the token cost.
+
+    Returns "" when there's no conversation or it has produced nothing yet, so
+    the caller can omit the section entirely.
+    """
+    if conversation_id is None:
+        return ""
+    task_result = await db.exec(
+        select(
+            col(Task.id),
+            col(Task.name),
+            col(Task.state),
+            col(Task.phase),
+            col(Task.issue_repo),
+            col(Task.issue_number),
+            col(Task.branch),
+            col(Task.pr_url),
+        )
+        .where(col(Task.conversation_id) == conversation_id)
+        .order_by(col(Task.created_at).desc())
+        .limit(MAX_CONVERSATION_TASKS)
+    )
+    tasks = [dict(r._mapping) for r in task_result.all()]
+
+    event_result = await db.exec(
+        select(
+            col(GithubEvent.event_type),
+            col(GithubEvent.action),
+            col(GithubEvent.repo),
+            col(GithubEvent.pr_number),
+            col(GithubEvent.pr_url),
+            col(GithubEvent.created_at),
+        )
+        .where(col(GithubEvent.conversation_id) == conversation_id)
+        .order_by(col(GithubEvent.id).desc())
+        .limit(MAX_CONVERSATION_EVENTS)
+    )
+    events = [dict(r._mapping) for r in event_result.all()]
+
+    if not tasks and not events:
+        return ""
+    return json.dumps({"tasks": tasks, "github_events": events}, indent=2, default=_json_default)
 
 
 async def _save_turn(
@@ -1476,6 +1539,9 @@ async def _run_foreman_ai(
         conversation_id: int | None = await resolve_conversation_id(
             db, guild_pk_val, task_id=task_id, user_id=user_id
         )
+        # Everything else this conversation owns — its tasks and GitHub
+        # events — so the run sees the whole work item, not just its turns.
+        conversation_block = await _load_conversation_context(db, conversation_id)
     finally:
         await db.close()
 
@@ -1503,7 +1569,9 @@ async def _run_foreman_ai(
         system_blocks = build_system_blocks(
             primary_repo=primary_repo, system_prompt_suffix=cfg_system_prompt_suffix
         )
-        state_preamble = build_state_preamble(workers_block, tasks_block, extra_context)
+        state_preamble = build_state_preamble(
+            workers_block, tasks_block, extra_context, conversation_block
+        )
         # Legacy single-string render — persisted for audit only, not sent to the API.
         audit_system = build_system_prompt(
             workers_block,
@@ -1511,17 +1579,21 @@ async def _run_foreman_ai(
             extra_context,
             primary_repo=primary_repo,
             system_prompt_suffix=cfg_system_prompt_suffix,
+            conversation_block=conversation_block,
         )
 
         logger.info(
             "guild=%s run_foreman_ai: workers=%d tasks_in_context=%d "
-            "system_chars=%d state_chars=%d extra_context_chars=%d",
+            "system_chars=%d state_chars=%d extra_context_chars=%d "
+            "conversation=%s conversation_chars=%d",
             guild_id,
             len(worker_rows),
             len(summarized_tasks),
             len(system_blocks[0]["text"]),
             len(state_preamble),
             len(extra_context),
+            conversation_id,
+            len(conversation_block),
         )
         logger.debug("guild=%s workers_block: %s", guild_id, workers_block)
         # logger.debug("guild=%s tasks_block: %s", guild_id, tasks_block)
@@ -1610,10 +1682,10 @@ async def get_foreman_history(
     """Return stored turns structured for the debug view.
 
     Thin compatibility wrapper over ``ConversationHistory.load_for_debug`` —
-    the same windowed-turns implementation ``_load_history`` uses above, so
+    the same turn-loading implementation ``_load_history`` uses above, so
     the debug pane and the real LLM call can never drift apart (issue #1241).
     Scoped by ``conversation_id`` when given (#1271/#1279), else by
-    ``(guild_id, user_id)`` — see ``ConversationHistory._windowed_turns``.
+    ``(guild_id, user_id)`` — see ``ConversationHistory._load_turns``.
 
     Returns::
 
