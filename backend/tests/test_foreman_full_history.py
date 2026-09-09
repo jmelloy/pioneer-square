@@ -162,6 +162,20 @@ async def test_prefetch_reads_only_what_fits_the_budget(db_session, monkeypatch)
     assert [t.id for t in turns] == sorted(t.id for t in turns)
 
 
+async def test_prefetch_ignores_system_audit_turns_for_budget(db_session, monkeypatch):
+    """System turns are never sent as messages, so they must not evict real history."""
+    monkeypatch.setattr("foreman.history.FOREMAN_CONTEXT_TOKEN_BUDGET", 40)  # ~160 chars
+    insert_guild(db_session, "g-full-8")
+    conv = insert_conversation(db_session, "g-full-8", "u-1")
+    for i in range(3):
+        await _save_turn("g-full-8", "u-1", "user", f"human {i}", conversation_id=conv)
+    await _save_turn("g-full-8", "u-1", "system", "audit " + "s" * 1_000, conversation_id=conv)
+
+    messages = await _load_history("g-full-8", "u-1", conv)
+
+    assert [m["content"] for m in messages] == ["human 0", "human 1", "human 2"]
+
+
 # --- explicit token-budget truncation -------------------------------------
 
 

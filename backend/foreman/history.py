@@ -98,7 +98,11 @@ class ConversationHistory:
         """
         budget_chars = FOREMAN_CONTEXT_TOKEN_BUDGET * CHARS_PER_TOKEN
         size_result = await db.exec(
-            select(col(ForemanTurn.id), func.length(col(ForemanTurn.content_json)))
+            select(
+                col(ForemanTurn.id),
+                col(ForemanTurn.role),
+                func.length(col(ForemanTurn.content_json)),
+            )
             .where(col(ForemanTurn.conversation_id) == conversation_id)
             .order_by(col(ForemanTurn.id).desc())
             .limit(MAX_CONVERSATION_TURNS)
@@ -112,11 +116,15 @@ class ConversationHistory:
         # True once older turns are being left behind — either the budget ran
         # out mid-scan or the conversation is longer than the fetch ceiling.
         truncated = len(sized) >= MAX_CONVERSATION_TURNS
-        for turn_id, size in sized:
-            if chars and chars + (size or 0) > budget_chars:
+        for turn_id, role, size in sized:
+            # System turns are audit rows; the Anthropic messages array never
+            # includes them, so don't let repeated audit prompts evict real
+            # conversation history during the cheap prefetch sizing pass.
+            size = 0 if role == "system" else (size or 0)
+            if chars and chars + size > budget_chars:
                 truncated = True
                 break
-            chars += size or 0
+            chars += size
             oldest_id = turn_id
         if truncated:
             logger.warning(
