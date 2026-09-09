@@ -11,6 +11,7 @@ import pytest
 from pioneer_worker.pi_runner import (
     parse_pi_event,
     parse_pi_model_rows,
+    pi_models_glob,
     pi_provider_arg,
     run_pi_auto,
 )
@@ -32,6 +33,30 @@ def test_pi_provider_arg_passes_through_unmapped():
 
 def test_pi_provider_arg_none():
     assert pi_provider_arg(None) is None
+
+
+# ---------------------------------------------------------------------------
+# pi_models_glob — provider-only runs must not land on Amazon Nova
+# ---------------------------------------------------------------------------
+
+
+def test_pi_models_glob_bedrock_without_model_avoids_nova():
+    """A bare `amazon-bedrock/*` glob makes pi pick amazon.nova-2-lite-v1:0."""
+    glob = pi_models_glob("bedrock")
+    assert glob == "amazon-bedrock/us.anthropic.claude-sonnet*"
+    assert "nova" not in glob
+
+
+def test_pi_models_glob_bedrock_with_model_stays_wide():
+    # An explicit --model decides the model; the glob only switches provider.
+    assert pi_models_glob("bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0") == (
+        "amazon-bedrock/*"
+    )
+
+
+def test_pi_models_glob_unmapped_provider_passes_through():
+    assert pi_models_glob("anthropic") == "anthropic/*"
+    assert pi_models_glob("openai", "gpt-5.5") == "openai/*"
 
 
 # ---------------------------------------------------------------------------
