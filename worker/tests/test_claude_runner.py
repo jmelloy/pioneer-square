@@ -7,12 +7,22 @@ from unittest.mock import patch
 
 import pytest
 from pioneer_worker.claude_runner import (
+    _signal_exit_message,
     _summarize_lines,
     _truncate_at_word,
     _usage_tokens,
     parse_claude_event,
     run_claude_auto,
 )
+
+# ---------------------------------------------------------------------------
+# _signal_exit_message
+# ---------------------------------------------------------------------------
+
+
+def test_signal_exit_message_marks_sigkill_as_possible_oom():
+    assert _signal_exit_message(-9) == "[claude] exited after SIGKILL (possible OOM kill)"
+
 
 # ---------------------------------------------------------------------------
 # _summarize_lines

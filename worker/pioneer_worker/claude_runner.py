@@ -7,6 +7,7 @@ import contextlib
 import json
 import logging
 import os
+import signal
 from collections.abc import Awaitable, Callable
 
 from .log_format import strip_worktree_prefix
@@ -75,6 +76,18 @@ def _summarize_lines(lines: list[str], prefix: str = "  → ") -> str:
 
 
 _THINKING_PREVIEW_LEN = 300
+
+
+def _signal_exit_message(exit_code: int) -> str | None:
+    if exit_code >= 0:
+        return None
+    sig = -exit_code
+    try:
+        name = signal.Signals(sig).name
+    except ValueError:
+        name = f"signal {sig}"
+    suffix = " (possible OOM kill)" if sig == signal.SIGKILL else ""
+    return f"[claude] exited after {name}{suffix}"
 
 
 def _truncate_at_word(text: str, limit: int) -> str:
@@ -526,6 +539,10 @@ async def run_claude_auto(
             stop_reason,
             event_count,
         )
+        if signal_msg := _signal_exit_message(exit_code):
+            logger.warning("claude[%d] %s", proc.pid, signal_msg)
+            await emit(signal_msg)
+            stop_reason = "error_during_execution"
         if event_count == 0:
             logger.warning(
                 "claude[%d] produced no stdout events — check stderr above and PATH/auth",
