@@ -142,6 +142,7 @@ class _QueuedHumanTurn:
     queued_at: str
     reply_channel_id: str | None = None
     trigger: str | None = None
+    conversation_id: int | None = None
 
 
 # Monotonic timestamp (time.monotonic()) of the last foreman run that made at
@@ -1220,8 +1221,17 @@ async def run_foreman_ai(
     is_human: bool = False,
     reply_channel_id: str | None = None,
     trigger: str | None = None,
+    conversation_id: int | None = None,
 ) -> None:
     """Serialise per-context and delegate to ``_run_foreman_ai``.
+
+    ``conversation_id``, when given, pins the run to that exact
+    :class:`Conversation` instead of letting ``_run_foreman_ai`` resolve one
+    from *task_id*/*user_id* (see ``foreman.conversation_service.resolve_conversation_id``).
+    Used by the conversation-scoped message endpoint (#1297), where the caller
+    already knows precisely which conversation the message belongs to — a
+    (guild, user) pair can have more than one ``Conversation`` (#1296), so
+    falling back to "the user's most recent conversation" would be wrong here.
 
     Uses the ``busy`` flag on the ``_GuildRunLock`` stored in ``_guild_locks``.
     If a run is already in progress, automated invocations (``is_human=False``
@@ -1261,6 +1271,7 @@ async def run_foreman_ai(
                 task_id,
                 reply_channel_id,
                 trigger=trigger,
+                conversation_id=conversation_id,
             )
         else:
             logger.info(
@@ -1279,6 +1290,7 @@ async def run_foreman_ai(
             task_id=task_id,
             reply_channel_id=reply_channel_id,
             trigger=trigger,
+            conversation_id=conversation_id,
         )
         # Drain any human messages that queued up while this turn ran, before
         # going idle — each drained turn can itself queue further messages, so
@@ -1298,6 +1310,7 @@ def _enqueue_human_turn(
     task_id: str | None,
     reply_channel_id: str | None = None,
     trigger: str | None = None,
+    conversation_id: int | None = None,
 ) -> None:
     """Append a human message to the busy queue for *lock_key*, bounded and FIFO.
 
@@ -1326,6 +1339,7 @@ def _enqueue_human_turn(
             queued_at=datetime.now(UTC).isoformat(),
             reply_channel_id=reply_channel_id,
             trigger=trigger,
+            conversation_id=conversation_id,
         )
     )
     logger.info(
@@ -1377,6 +1391,7 @@ async def _drain_human_queue(lock_key: tuple[str, str | None]) -> None:
                     task_id=turn.task_id,
                     reply_channel_id=turn.reply_channel_id,
                     trigger=turn.trigger,
+                    conversation_id=turn.conversation_id,
                 )
             except Exception as exc:
                 logger.exception(
@@ -1406,13 +1421,11 @@ async def _notify_queued_turn_failure(
         db = await get_db()
         try:
             guild_pk_val = await get_guild_pk(db, turn.guild_id)
-            conversation_id = (
-                await resolve_conversation_id(
+            conversation_id = turn.conversation_id
+            if conversation_id is None and guild_pk_val is not None:
+                conversation_id = await resolve_conversation_id(
                     db, guild_pk_val, task_id=turn.task_id, user_id=turn.user_id
                 )
-                if guild_pk_val is not None
-                else None
-            )
         finally:
             await db.close()
         journal = TurnJournal(
@@ -1450,6 +1463,7 @@ async def _run_foreman_ai(
     *,
     reply_channel_id: str | None = None,
     trigger: str | None = None,
+    conversation_id: int | None = None,
 ):
     """Process a human message (or system escalation) through the Claude foreman AI.
 
@@ -1457,6 +1471,10 @@ async def _run_foreman_ai(
     (issue #1200) — ``task_id``, when present, is metadata identifying the
     work item this turn concerns (stamped on ``ForemanTurn``/``Message`` rows
     for UI badges and Discord thread routing), not a separate history scope.
+
+    ``conversation_id``, when given, pins the run to that exact conversation
+    instead of resolving one from *task_id*/*user_id* below — see
+    ``run_foreman_ai``'s docstring for why an explicit id is sometimes needed.
 
     Builds this run's ports/collaborators here (context assembly — workers/
     tasks/thread lookups, prompt rendering — stays plain DB reads) and
@@ -1536,9 +1554,10 @@ async def _run_foreman_ai(
         # run writes — resolved the same way as thread_id above (task_id's
         # conversation takes precedence, else the user's), but additive:
         # Conversation is written alongside Thread, never replacing it here.
-        conversation_id: int | None = await resolve_conversation_id(
-            db, guild_pk_val, task_id=task_id, user_id=user_id
-        )
+        if conversation_id is None:
+            conversation_id = await resolve_conversation_id(
+                db, guild_pk_val, task_id=task_id, user_id=user_id
+            )
         # Everything else this conversation owns — its tasks and GitHub
         # events — so the run sees the whole work item, not just its turns.
         conversation_block = await _load_conversation_context(db, conversation_id)

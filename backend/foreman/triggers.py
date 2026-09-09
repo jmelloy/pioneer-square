@@ -46,6 +46,7 @@ async def trigger_foreman(
     *,
     user_id: str | None = None,
     task_id: str | None = None,
+    conversation_id: int | None = None,
     task_name: str = "foreman.unknown",
     reply_channel_id: str | None = None,
     skip_thread_ensure: bool = False,
@@ -65,6 +66,15 @@ async def trigger_foreman(
     ``ensure_conversation_thread`` round-trip below — ``ws_handlers.handle_chat``
     does this, since it already ensures the thread (and stamps
     ``Message.thread_id``) before this dispatcher ever runs.
+
+    ``conversation_id`` pins the run to a specific, already-known
+    :class:`Conversation` (#1297's conversation-scoped message endpoint,
+    where the caller resolved the conversation from the URL, not from
+    ``(guild_id, user_id)``). It implies ``skip_thread_ensure`` — the
+    caller's conversation already exists, so ``ensure_conversation_thread``'s
+    get-or-create-by-user lookup would be redundant at best and could
+    resolve a *different* conversation for a user with more than one
+    (#1296) at worst.
     """
     # See foreman.classify for the human/automated event classification shared
     # with routes.tasks.create_task_followup's REST follow-up path.
@@ -77,7 +87,13 @@ async def trigger_foreman(
     # frontend originates. Worker-driven events (task-complete, etc.) already
     # carry an existing task_id whose Thread was stamped at task-creation
     # time (see foreman.tools' create_task/assign_task), so nothing to do here.
-    if is_human and task_id is None and user_id and not skip_thread_ensure:
+    if (
+        is_human
+        and task_id is None
+        and conversation_id is None
+        and user_id
+        and not skip_thread_ensure
+    ):
         await ensure_conversation_thread(guild_id, user_id, human_message)
 
     spawn(
@@ -89,6 +105,7 @@ async def trigger_foreman(
             is_human=is_human,
             reply_channel_id=reply_channel_id,
             trigger=event,
+            conversation_id=conversation_id,
         ),
         name=task_name,
     )
@@ -295,6 +312,23 @@ def format_needs_input_message(
         f"Worker {worker_id} could not complete task {task_id} and needs your help.\n"
         f"Task: {description}\n"
         f"Stop reason: {stop_reason}" + (f"\nLast message: {last_message}" if last_message else "")
+    )
+
+
+def format_conversation_message(conversation_id: int, content: str) -> str:
+    """Render a message posted through the conversation-scoped REST endpoint (#1297).
+
+    Explicitly points the foreman at the ``## This conversation`` state-preamble
+    block (see ``foreman.runner._load_conversation_context``), which lists this
+    conversation's own tasks and GitHub events — the signal it needs to decide
+    between ``send_followup`` on a running/awaiting-review task in this
+    conversation versus replying directly with no tool call.
+    """
+    return (
+        f"[conversation-message] conversation_id={conversation_id}: {content}\n"
+        "Check the `## This conversation` section of your state for this conversation's "
+        "tasks. If one is running or awaiting-review and this message concerns it, call "
+        "send_followup on that task. Otherwise reply directly — no tool call needed."
     )
 
 
