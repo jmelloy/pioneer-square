@@ -31,9 +31,15 @@ from typing import Protocol, TypedDict
 
 from auth_deps import get_guild_pk
 from database import get_db
-from foreman.constants import _HUMAN_TURN_WINDOW, MAX_CONVERSATION_TURNS
+from foreman.constants import (
+    _HUMAN_TURN_WINDOW,
+    CHARS_PER_TOKEN,
+    FOREMAN_CONTEXT_TOKEN_BUDGET,
+    MAX_CONVERSATION_TURNS,
+)
 from foreman.message_utils import fit_token_budget, prune_history, strip_orphaned_tool_results
 from models import ForemanTurn
+from sqlalchemy import func
 from sqlmodel import and_, col, select
 
 logger = logging.getLogger(__name__)
@@ -73,14 +79,75 @@ class _Window:
 class ConversationHistory:
     """Production ``History``, backed by the ``foreman_turns`` table."""
 
+    async def _fetch_conversation_turns(self, db, conversation_id: int) -> list[ForemanTurn]:
+        """Read a conversation's turns, newest ones first, stopping at the
+        oldest turn that can still fit in the context window.
+
+        Two cheap queries instead of one fat one: the first reads only
+        (id, content length) — a backward index scan over
+        ix_foreman_turns_conversation_id_id — and walks it newest-first to find
+        the oldest turn that still fits the token budget; the second loads just
+        those rows. A 10 000-turn conversation therefore materializes the ~last
+        few hundred turns that can actually be sent, not all 10 000 rows'
+        content_json (which can be 32 KB each — see MAX_TOOL_RESULT_CHARS).
+
+        This is a *prefetch* bound, not the truncation decision: whatever comes
+        back still goes through ``message_utils.fit_token_budget``, which is
+        where the "what actually gets sent" trimming lives. Sized off the same
+        budget so the two agree.
+        """
+        budget_chars = FOREMAN_CONTEXT_TOKEN_BUDGET * CHARS_PER_TOKEN
+        size_result = await db.exec(
+            select(col(ForemanTurn.id), func.length(col(ForemanTurn.content_json)))
+            .where(col(ForemanTurn.conversation_id) == conversation_id)
+            .order_by(col(ForemanTurn.id).desc())
+            .limit(MAX_CONVERSATION_TURNS)
+        )
+        sized = size_result.all()
+        if not sized:
+            return []
+
+        chars = 0
+        oldest_id = sized[0][0]
+        # True once older turns are being left behind — either the budget ran
+        # out mid-scan or the conversation is longer than the fetch ceiling.
+        truncated = len(sized) >= MAX_CONVERSATION_TURNS
+        for turn_id, size in sized:
+            if chars and chars + (size or 0) > budget_chars:
+                truncated = True
+                break
+            chars += size or 0
+            oldest_id = turn_id
+        if truncated:
+            logger.warning(
+                "conversation=%s history truncated: loading turns >= %s "
+                "(~%d of %d budget chars, %d turns scanned)",
+                conversation_id,
+                oldest_id,
+                chars,
+                budget_chars,
+                len(sized),
+            )
+
+        result = await db.exec(
+            select(ForemanTurn)
+            .where(
+                col(ForemanTurn.conversation_id) == conversation_id,
+                col(ForemanTurn.id) >= oldest_id,
+            )
+            .order_by(col(ForemanTurn.id))
+        )
+        return list(result.all())
+
     async def _load_turns(
         self, guild_id: str, user_id: str, conversation_id: int | None = None
     ) -> _Window:
         """Fetch this run's turns (oldest→newest) plus the cutoff index.
 
-        With a *conversation_id* (#1294): every turn of that conversation,
-        matched on ``conversation_id`` alone, cutoff 0 — the caller sees the
-        complete history. The pre-#1294 ``OR (guild_id, user_id)`` fallback is
+        With a *conversation_id* (#1294): that conversation's turns, matched
+        on ``conversation_id`` alone, cutoff 0 — the caller sees the complete
+        history, bounded only by what fits the context window (see
+        ``_fetch_conversation_turns``). The pre-#1294 ``OR (guild_id, user_id)`` fallback is
         deliberately gone. It existed to pick up rows written before the
         conversation_id backfill, and was safe only while ``Conversation`` was
         1:1 with ``(guild_id, user_id)``; #1296 made a new top-level human
@@ -97,33 +164,27 @@ class ConversationHistory:
         db = await get_db()
         try:
             if conversation_id is not None:
-                where_clause = col(ForemanTurn.conversation_id) == conversation_id
-                fetch_limit = MAX_CONVERSATION_TURNS
-            else:
-                guild_pk_val = await get_guild_pk(db, guild_id)
-                where_clause = and_(
-                    col(ForemanTurn.guild_id) == guild_pk_val,
-                    col(ForemanTurn.user_id) == user_id,
-                )
-                fetch_limit = _HISTORY_FETCH_LIMIT
+                turns = await self._fetch_conversation_turns(db, conversation_id)
+                return _Window(turns=turns, cutoff=0)
+
+            guild_pk_val = await get_guild_pk(db, guild_id)
+            where_clause = and_(
+                col(ForemanTurn.guild_id) == guild_pk_val,
+                col(ForemanTurn.user_id) == user_id,
+            )
             # Newest-first + LIMIT, then reversed: the read is served by a
-            # backward scan of ix_foreman_turns_conversation_id_id and stays
-            # bounded however long the conversation has been running, while
-            # the rows kept are still the most recent ones.
-            stmt = select(ForemanTurn).where(where_clause)
-            result = await db.exec(stmt.order_by(col(ForemanTurn.id).desc()).limit(fetch_limit))
+            # backward scan of ix_foreman_turns_guild_id_user_id_id and stays
+            # bounded however long the guild has been running, while the rows
+            # kept are still the most recent ones.
+            result = await db.exec(
+                select(ForemanTurn)
+                .where(where_clause)
+                .order_by(col(ForemanTurn.id).desc())
+                .limit(_HISTORY_FETCH_LIMIT)
+            )
             turns = list(reversed(result.all()))
         finally:
             await db.close()
-
-        if conversation_id is not None:
-            if len(turns) >= MAX_CONVERSATION_TURNS:
-                logger.warning(
-                    "conversation=%s hit the %d-turn fetch ceiling; older turns were not loaded",
-                    conversation_id,
-                    MAX_CONVERSATION_TURNS,
-                )
-            return _Window(turns=turns, cutoff=0)
 
         cutoff = 0
         human_count = 0

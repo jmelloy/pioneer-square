@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module
 from _test_config import TEST_DATABASE_URL
+from database import get_db
 from foreman.constants import _HUMAN_TURN_WINDOW, MAX_HISTORY_MESSAGES
 from foreman.history import ConversationHistory
 from foreman.message_utils import estimate_tokens, fit_token_budget
@@ -138,6 +139,27 @@ async def test_debug_view_shows_the_same_full_history(db_session):
     assert len(llm_messages) == MAX_HISTORY_MESSAGES * 2
     assert [m["content"] for m in llm_messages] == [m["content"] for m in debug["messages"]]
     assert debug["total"] == MAX_HISTORY_MESSAGES * 2
+
+
+async def test_prefetch_reads_only_what_fits_the_budget(db_session, monkeypatch):
+    """Long conversations must not pull every row into memory: the DB read is
+    bounded by the same token budget the send is."""
+    monkeypatch.setattr("foreman.history.FOREMAN_CONTEXT_TOKEN_BUDGET", 40)  # ~160 chars
+    insert_guild(db_session, "g-full-7")
+    conv = insert_conversation(db_session, "g-full-7", "u-1")
+    for i in range(30):
+        await _save_turn("g-full-7", "u-1", "user", f"human {i} " + "p" * 50, conversation_id=conv)
+
+    db = await get_db()
+    try:
+        turns = await ConversationHistory()._fetch_conversation_turns(db, conv)
+    finally:
+        await db.close()
+
+    assert 0 < len(turns) < 30
+    assert turns[-1].content_json.endswith("29 " + "p" * 50 + '"')  # newest kept
+    # Contiguous newest-first slice, so nothing in the middle went missing.
+    assert [t.id for t in turns] == sorted(t.id for t in turns)
 
 
 # --- explicit token-budget truncation -------------------------------------
