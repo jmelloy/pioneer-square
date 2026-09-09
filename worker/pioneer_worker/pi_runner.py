@@ -27,6 +27,29 @@ def pi_provider_arg(provider: str | None) -> str | None:
     return _PI_PROVIDER_ALIASES.get(provider, provider) if provider else provider
 
 
+# A bare `{provider}/*` glob makes pi pick the first match alphabetically. On
+# Bedrock that is `amazon.nova-2-lite-v1:0` — unreliable enough that pi tasks
+# failed to start at all — so pin the provider-only fallback to the US Claude
+# inference profiles. Bare `anthropic.*` bedrock ids can't be used here: Bedrock
+# rejects them for on-demand throughput and demands an inference profile.
+# ponytail: us-region prefix hardcoded; add a config knob when a non-US worker
+# actually shows up. `[pi] model` / the guild's pi default already override it.
+_PI_PROVIDER_FALLBACK_GLOBS = {"amazon-bedrock": "us.anthropic.claude-sonnet*"}
+
+
+def pi_models_glob(provider: str, model: str | None = None) -> str:
+    """Return the ``--models`` pattern for *provider*.
+
+    With an explicit *model* the glob only needs to switch pi onto the right
+    provider, so it stays wide. Without one the glob also decides which model
+    runs, so it narrows to a known-good default where we have one.
+    """
+    name = pi_provider_arg(provider)
+    if model:
+        return f"{name}/*"
+    return f"{name}/{_PI_PROVIDER_FALLBACK_GLOBS.get(name, '*')}"
+
+
 EmitFn = Callable[..., Awaitable[None]]  # emit(line: str, detail: dict | None = None)
 UsageFn = Callable[[dict], Awaitable[None]]  # on_usage(record: dict)
 OnProcFn = Callable[["PiProcess"], None]  # on_proc(proc) — worker's live-handle callback
@@ -390,7 +413,7 @@ async def _run_pi_once(
         # stays on its default provider. `--models {provider}/*` actually
         # switches the active provider (and picks its first matching model),
         # which is what we want when a provider is set without a specific model.
-        cmd += ["--models", f"{pi_provider_arg(provider)}/*"]
+        cmd += ["--models", pi_models_glob(provider, model)]
     if model:
         cmd += ["--model", model]
     logger.info("Spawning pi in %s; description=%r", cwd, description)
