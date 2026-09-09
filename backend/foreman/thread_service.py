@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 
 from database import get_db
 from events import broadcast
-from foreman.conversation_service import get_or_create_conversation
+from foreman.conversation_service import create_conversation, get_or_create_conversation
 from models import Conversation, Task, Thread
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -62,7 +62,12 @@ def _name_from_message(content: str | None) -> str | None:
 
 
 async def get_or_create_active_thread(
-    db: AsyncSession, guild_pk: int, user_id: str, *, name_hint: str | None = None
+    db: AsyncSession,
+    guild_pk: int,
+    user_id: str,
+    *,
+    name_hint: str | None = None,
+    force_new: bool = False,
 ) -> tuple[Thread, bool]:
     """Return ``(thread, created)`` for this user's current conversation.
 
@@ -72,19 +77,32 @@ async def get_or_create_active_thread(
     conversation out from under it); otherwise creates a fresh
     Conversation + Thread. This is the sole Thread-creation path (#1167): a
     thread is always a side effect of the Foreman handling a message.
+
+    ``force_new=True`` (#1296) skips reuse entirely: it always inserts a
+    brand-new :class:`Conversation` (via ``create_conversation``, never
+    ``get_or_create_conversation``) with its own fresh active ``Thread``,
+    regardless of whether this (guild, user) pair already has an active
+    conversation. Used for a top-level human Foreman message — one that
+    isn't a reply within an existing Discord thread/conversation — so it
+    starts its own conversation instead of silently continuing whatever
+    conversation happened to be active.
     """
-    conversation = await get_or_create_conversation(db, guild_pk, user_id)
-    result = await db.exec(
-        select(Thread)
-        .where(
-            col(Thread.conversation_id) == conversation.id,
-            col(Thread.status) == "active",
-            col(Thread.deleted_at).is_(None),
+    if force_new:
+        conversation = await create_conversation(db, guild_pk, user_id)
+        thread = None
+    else:
+        conversation = await get_or_create_conversation(db, guild_pk, user_id)
+        result = await db.exec(
+            select(Thread)
+            .where(
+                col(Thread.conversation_id) == conversation.id,
+                col(Thread.status) == "active",
+                col(Thread.deleted_at).is_(None),
+            )
+            .order_by(col(Thread.updated_at).desc())
+            .limit(1)
         )
-        .order_by(col(Thread.updated_at).desc())
-        .limit(1)
-    )
-    thread = result.first()
+        thread = result.first()
     now = datetime.now(UTC)
     if thread is not None:
         thread.updated_at = now
@@ -337,7 +355,7 @@ async def broadcast_thread_updated(db: AsyncSession, thread: Thread) -> None:
 
 
 async def ensure_conversation_thread(
-    guild_slug: str, user_id: str, content: str | None = None
+    guild_slug: str, user_id: str, content: str | None = None, *, force_new: bool = False
 ) -> Thread | None:
     """Get-or-create the active thread for (guild_slug, user_id).
 
@@ -348,6 +366,12 @@ async def ensure_conversation_thread(
     created so downstream mirrors can subscribe rather than poll. Returns
     None if the guild can't be resolved. Never raises — callers treat
     thread bookkeeping as best-effort, never a reason to drop a message.
+
+    ``force_new`` (#1296) is threaded straight through to
+    ``get_or_create_active_thread`` — see its docstring. Used by
+    ``discord.router._persist_inbound_message`` for a top-level message
+    (not a reply within an existing Discord thread/conversation), so it
+    always starts its own new conversation.
     """
     from auth_deps import get_guild_pk  # noqa: PLC0415 — avoid import cycle at module load
 
@@ -358,7 +382,7 @@ async def ensure_conversation_thread(
             if guild_pk is None:
                 return None
             thread, created = await get_or_create_active_thread(
-                db, guild_pk, user_id, name_hint=content
+                db, guild_pk, user_id, name_hint=content, force_new=force_new
             )
         finally:
             await db.close()

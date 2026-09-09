@@ -32,21 +32,42 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 
 async def get_or_create_conversation(db: AsyncSession, guild_pk: int, user_id: str) -> Conversation:
-    """Get-or-create the one :class:`Conversation` for this (guild, user) pair.
+    """Get-or-create *a* :class:`Conversation` for this (guild, user) pair.
 
-    ``Conversation`` is 1:1 with (guild_id, user_id) — see its docstring in
-    models.py — unlike ``Thread``, of which many may exist for the same
-    conversation over time. This is the canonical definition;
-    ``foreman.thread_service`` imports it from here rather than duplicating it.
+    Historically ``Conversation`` was 1:1 with (guild_id, user_id) (see the
+    class docstring in models.py); issue #1296 broke that assumption — a new
+    top-level human Foreman message now always starts a fresh conversation
+    (see :func:`create_conversation`), so a (guild, user) pair can have many
+    ``Conversation`` rows over time. This helper keeps its original
+    get-or-create semantics for existing callers that still want "the"
+    conversation for a pair (picking the most recently updated one when more
+    than one exists) — ``foreman.thread_service`` imports it from here rather
+    than duplicating it.
     """
     result = await db.exec(
-        select(Conversation).where(
-            col(Conversation.guild_id) == guild_pk, col(Conversation.user_id) == user_id
-        )
+        select(Conversation)
+        .where(col(Conversation.guild_id) == guild_pk, col(Conversation.user_id) == user_id)
+        .order_by(col(Conversation.updated_at).desc())
+        .limit(1)
     )
     conversation = result.first()
     if conversation is not None:
         return conversation
+    return await create_conversation(db, guild_pk, user_id)
+
+
+async def create_conversation(db: AsyncSession, guild_pk: int, user_id: str | None) -> Conversation:
+    """Unconditionally insert a brand-new :class:`Conversation` row (#1296).
+
+    Unlike :func:`get_or_create_conversation`, never reuses an existing row —
+    used to start a fresh conversation for a new top-level human Foreman
+    message (one that isn't a reply within an existing Discord thread/
+    conversation; see ``discord.router._persist_inbound_message`` and
+    ``foreman.thread_service.get_or_create_active_thread``'s ``force_new``
+    parameter), so that conversation stays independent of whatever other
+    conversation(s) this (guild, user) pair already has open. Flushes but does
+    not commit — same contract as ``get_or_create_conversation``.
+    """
     now = datetime.now(UTC)
     conversation = Conversation(guild_id=guild_pk, user_id=user_id, created_at=now, updated_at=now)
     db.add(conversation)

@@ -27,6 +27,7 @@ from _test_config import TEST_DATABASE_URL
 from auth_deps import get_guild_pk
 from foreman.conversation_service import (
     close_conversation,
+    create_conversation,
     get_conversation_by_discord_thread_id,
     get_or_create_conversation,
     rename_conversation,
@@ -126,6 +127,52 @@ class TestResolveConversationId:
             expected = await get_or_create_conversation(db, guild_pk, "user-1")
 
         assert resolved == expected.id
+
+
+class TestCreateConversation:
+    """Issue #1296: create_conversation always inserts, never reuses — the
+    building block for "a top-level message always starts a new
+    conversation," as opposed to get_or_create_conversation's reuse
+    semantics."""
+
+    async def test_always_inserts_a_new_row(self, db_session):
+        insert_guild(db_session, "g-cn1")
+        guild_pk = await _guild_pk("g-cn1")
+
+        async with database_module.AsyncSessionLocal() as db:
+            first = await create_conversation(db, guild_pk, "user-1")
+            await db.commit()
+
+        async with database_module.AsyncSessionLocal() as db:
+            second = await create_conversation(db, guild_pk, "user-1")
+            await db.commit()
+
+        assert first.id is not None
+        assert second.id is not None
+        assert first.id != second.id
+        assert first.user_id == "user-1"
+        assert second.user_id == "user-1"
+
+    async def test_get_or_create_conversation_prefers_most_recently_updated(self, db_session):
+        """With multiple conversations now possible per (guild, user) pair,
+        get_or_create_conversation's "the" conversation for existing callers
+        (e.g. WS chat) resolves to the most recently updated one."""
+        insert_guild(db_session, "g-cn2")
+        guild_pk = await _guild_pk("g-cn2")
+
+        async with database_module.AsyncSessionLocal() as db:
+            await create_conversation(db, guild_pk, "user-1")
+            await db.commit()
+
+        async with database_module.AsyncSessionLocal() as db:
+            newest = await create_conversation(db, guild_pk, "user-1")
+            await db.commit()
+            newest_id = newest.id
+
+        async with database_module.AsyncSessionLocal() as db:
+            resolved = await get_or_create_conversation(db, guild_pk, "user-1")
+
+        assert resolved.id == newest_id
 
 
 class TestTouchConversation:
