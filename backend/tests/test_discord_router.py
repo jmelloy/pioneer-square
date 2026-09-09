@@ -180,6 +180,187 @@ async def test_persist_inbound_message_finds_conversation_by_discord_thread_id(c
 
 
 @pytest.mark.asyncio
+async def test_persist_inbound_message_top_level_starts_new_conversation(client):
+    """Issue #1296: a top-level message — one that doesn't land in a Discord
+    thread already bound to a Conversation — always starts a brand-new
+    Conversation, even though this user already has an active one. Without
+    this, ``ensure_conversation_thread``'s (guild, user) get-or-create would
+    silently fold the new message into whatever conversation happened to
+    already be open."""
+    import database as database_module
+    from auth_deps import get_guild_pk
+    from foreman.thread_service import get_or_create_active_thread
+    from models import Message
+    from sqlmodel import col, select
+
+    _test_client, db_url = client
+    insert_guild(db_url, "g-toplevel1")
+
+    async with database_module.AsyncSessionLocal() as db:
+        guild_pk = await get_guild_pk(db, "g-toplevel1")
+        existing_thread, _ = await get_or_create_active_thread(db, guild_pk, "user-tl-1")
+        existing_conversation_id = existing_thread.conversation_id
+
+    with patch("discord.thread_mirror.on_thread_created", new=AsyncMock()):
+        await router._persist_inbound_message(
+            "g-toplevel1",
+            "hey, unrelated new topic",
+            user_id="user-tl-1",
+            task_id=None,
+            # A plain wired channel, not any existing Conversation's bound thread.
+            discord_thread_id="channel-main-1",
+        )
+
+    async with database_module.AsyncSessionLocal() as db:
+        result = await db.exec(
+            select(Message).where(col(Message.content) == "hey, unrelated new topic")
+        )
+        message = result.first()
+
+    assert message is not None
+    assert message.conversation_id is not None
+    assert message.conversation_id != existing_conversation_id
+
+
+@pytest.mark.asyncio
+async def test_persist_inbound_message_two_top_level_messages_get_separate_conversations(client):
+    """Two distinct top-level messages from the same user each spawn their own
+    Conversation (#1296) — "conversations are the durable unit of work,"
+    not merged just because they share a (guild, user) pair."""
+    import database as database_module
+    from models import Message
+    from sqlmodel import col, select
+
+    _test_client, db_url = client
+    insert_guild(db_url, "g-toplevel2")
+
+    with patch("discord.thread_mirror.on_thread_created", new=AsyncMock()):
+        await router._persist_inbound_message(
+            "g-toplevel2",
+            "first ask",
+            user_id="user-tl-2",
+            task_id=None,
+            discord_thread_id="channel-main-2",
+        )
+        await router._persist_inbound_message(
+            "g-toplevel2",
+            "second, unrelated ask",
+            user_id="user-tl-2",
+            task_id=None,
+            discord_thread_id="channel-main-2",
+        )
+
+    async with database_module.AsyncSessionLocal() as db:
+        first = (await db.exec(select(Message).where(col(Message.content) == "first ask"))).first()
+        second = (
+            await db.exec(select(Message).where(col(Message.content) == "second, unrelated ask"))
+        ).first()
+
+    assert first is not None
+    assert second is not None
+    assert first.conversation_id is not None
+    assert second.conversation_id is not None
+    assert first.conversation_id != second.conversation_id
+
+
+@pytest.mark.asyncio
+async def test_route_inbound_message_guild_channel_top_level_starts_new_conversation(client):
+    """End-to-end (#1296): a message typed directly into a wired guild channel
+    (never a reply inside any Discord thread) always starts a new
+    Conversation, exercising the full ``_dispatch_channel_scoped`` path
+    rather than calling ``_persist_inbound_message`` directly."""
+    import database as database_module
+    from auth_deps import get_guild_pk
+    from foreman.thread_service import get_or_create_active_thread
+    from models import Message
+    from sqlmodel import col, select
+
+    _test_client, db_url = client
+    insert_guild(db_url, "g-e2e1")
+    _insert_channel_guild(db_url, "channel-e2e-1", "g-e2e1")
+
+    async with database_module.AsyncSessionLocal() as db:
+        guild_pk = await get_guild_pk(db, "g-e2e1")
+        old_thread, _ = await get_or_create_active_thread(db, guild_pk, "ps-user-e2e1")
+        old_conversation_id = old_thread.conversation_id
+
+    with (
+        patch.object(
+            router, "_resolve_identity", new=AsyncMock(return_value=("ps-user-e2e1", "@erin"))
+        ),
+        patch("foreman.triggers.trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.runner.reset_foreman_poll"),
+        patch("discord.thread_mirror.on_thread_created", new=AsyncMock()),
+    ):
+        await router._route_inbound_message(
+            {
+                "content": "starting something completely new",
+                "channel_id": "channel-e2e-1",
+                "author": {"id": "d-user-e2e1", "username": "erin"},
+            }
+        )
+
+    assert mock_trigger.await_count == 1
+
+    async with database_module.AsyncSessionLocal() as db:
+        result = await db.exec(
+            select(Message).where(col(Message.content) == "starting something completely new")
+        )
+        message = result.first()
+
+    assert message is not None
+    assert message.conversation_id != old_conversation_id
+
+
+@pytest.mark.asyncio
+async def test_route_inbound_message_dm_mention_top_level_starts_new_conversation(client):
+    """End-to-end (#1296): a DM @-mention (author-scoped dispatch, no channel
+    binding at all) is just as much a top-level message as one in a wired
+    guild channel — it must also start its own new Conversation."""
+    import database as database_module
+    from auth_deps import get_guild_pk
+    from foreman.thread_service import get_or_create_active_thread
+    from models import Message
+    from sqlmodel import col, select
+
+    _test_client, db_url = client
+    insert_guild(db_url, "g-dm1")
+
+    async with database_module.AsyncSessionLocal() as db:
+        guild_pk = await get_guild_pk(db, "g-dm1")
+        old_thread, _ = await get_or_create_active_thread(db, guild_pk, "ps-user-dm1")
+        old_conversation_id = old_thread.conversation_id
+
+    with (
+        patch.dict(os.environ, {"DISCORD_APPLICATION_ID": "bot-id-dm"}),
+        patch.object(
+            router, "_resolve_identity", new=AsyncMock(return_value=("ps-user-dm1", "@dana"))
+        ),
+        patch.object(router, "_resolve_user_guild_slugs", new=AsyncMock(return_value=["g-dm1"])),
+        patch("foreman.triggers.trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.runner.reset_foreman_poll"),
+        patch("discord.thread_mirror.on_thread_created", new=AsyncMock()),
+    ):
+        await router._route_inbound_message(
+            {
+                "content": "<@bot-id-dm> got a sec?",
+                "channel_id": "dm-channel-new-topic",
+                "author": {"id": "d-user-dm1", "username": "dana"},
+                "mentions": [{"id": "bot-id-dm"}],
+            }
+        )
+
+    assert mock_trigger.await_count == 1
+
+    async with database_module.AsyncSessionLocal() as db:
+        result = await db.exec(select(Message).where(col(Message.content) == "got a sec?"))
+        message = result.first()
+
+    assert message is not None
+    assert message.conversation_id != old_conversation_id
+
+
+@pytest.mark.asyncio
 async def test_route_inbound_message_tags_task_thread_reply(client):
     """A reply in a thread bound to a task is tagged [discord-thread-reply] task_id=... (#906).
 

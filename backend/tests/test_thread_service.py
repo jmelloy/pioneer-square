@@ -177,6 +177,68 @@ class TestGetOrCreateActiveThread:
         assert thread_a.id != thread_b.id
 
 
+# ── get_or_create_active_thread(force_new=True) — issue #1296 ───────────────
+
+
+class TestGetOrCreateActiveThreadForceNew:
+    async def test_force_new_ignores_existing_active_thread(self, db_session):
+        """A top-level message (force_new=True) always gets its own fresh
+        Conversation + Thread, even though an active one already exists for
+        this (guild, user) pair — the whole point of #1296."""
+        insert_guild(db_session, "g-forcenew1")
+        guild_pk = await _guild_pk("g-forcenew1")
+
+        async with database_module.AsyncSessionLocal() as db:
+            old_thread, old_created = await get_or_create_active_thread(db, guild_pk, "user-1")
+
+        async with database_module.AsyncSessionLocal() as db:
+            new_thread, new_created = await get_or_create_active_thread(
+                db, guild_pk, "user-1", force_new=True
+            )
+
+        assert old_created is True
+        assert new_created is True
+        assert new_thread.id != old_thread.id
+        assert new_thread.conversation_id != old_thread.conversation_id
+
+    async def test_force_new_leaves_old_thread_and_conversation_active(self, db_session):
+        """Starting a new conversation must not implicitly archive/close the
+        old one out from under it — conversations are independent durable
+        units of work, not slots that get replaced."""
+        insert_guild(db_session, "g-forcenew2")
+        guild_pk = await _guild_pk("g-forcenew2")
+
+        async with database_module.AsyncSessionLocal() as db:
+            old_thread, _ = await get_or_create_active_thread(db, guild_pk, "user-1")
+
+        async with database_module.AsyncSessionLocal() as db:
+            await get_or_create_active_thread(db, guild_pk, "user-1", force_new=True)
+
+        async with database_module.AsyncSessionLocal() as db:
+            refreshed_old = await db.get(Thread, old_thread.id)
+            old_conversation = await db.get(Conversation, refreshed_old.conversation_id)
+
+        assert refreshed_old.status == "active"
+        assert old_conversation.status == "active"
+
+    async def test_two_force_new_calls_each_get_their_own_conversation(self, db_session):
+        insert_guild(db_session, "g-forcenew3")
+        guild_pk = await _guild_pk("g-forcenew3")
+
+        async with database_module.AsyncSessionLocal() as db:
+            thread_a, created_a = await get_or_create_active_thread(
+                db, guild_pk, "user-1", force_new=True
+            )
+        async with database_module.AsyncSessionLocal() as db:
+            thread_b, created_b = await get_or_create_active_thread(
+                db, guild_pk, "user-1", force_new=True
+            )
+
+        assert created_a is True
+        assert created_b is True
+        assert thread_a.conversation_id != thread_b.conversation_id
+
+
 # ── get_thread_for_task ──────────────────────────────────────────────────────
 
 
@@ -269,6 +331,24 @@ class TestEnsureConversationThread:
 
         assert thread is None
         mock_broadcast.assert_not_awaited()
+
+    async def test_force_new_always_broadcasts_a_fresh_thread(self, db_session):
+        """#1296: unlike the default get-or-create call, force_new=True must
+        broadcast thread-created every time — each call is a genuinely new
+        conversation, not a reuse."""
+        insert_guild(db_session, "g-ensure3")
+
+        with patch("foreman.thread_service.broadcast", new_callable=AsyncMock) as mock_broadcast:
+            thread1 = await ensure_conversation_thread(
+                "g-ensure3", "user-1", "first topic", force_new=True
+            )
+            thread2 = await ensure_conversation_thread(
+                "g-ensure3", "user-1", "second topic", force_new=True
+            )
+
+        assert thread1.id != thread2.id
+        assert thread1.conversation_id != thread2.conversation_id
+        assert mock_broadcast.await_count == 2
 
 
 # ── broadcast_thread_updated ─────────────────────────────────────────────────

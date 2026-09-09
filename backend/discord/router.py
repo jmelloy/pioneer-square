@@ -21,6 +21,11 @@ table, keyed on ``(subject_type, subject_key)``):
       ``task_id=None``, same as a plain wired channel — but the reply lands
       back in that conversation's own thread (``notify_foreman_chat`` reuses
       it via the same subject key) instead of the guild's main channel.
+    - a *top-level* message — anything that isn't a reply inside an existing
+      Discord thread already bound to a ``Conversation`` (issue #1296) —
+      always starts a brand-new ``Conversation`` instead of continuing
+      whatever conversation happens to already be active for that user. See
+      ``_persist_inbound_message``'s ``force_new=True`` branch.
     - a message in a ``"foreman_daily"`` thread (a legacy, no-longer-created
       dated Foreman thread — kept only so previously existing threads keep
       routing), or in any other wired channel with no thread binding, is
@@ -815,13 +820,20 @@ async def _persist_inbound_message(
     *discord_thread_id* is the Discord channel the message actually landed in
     (``reply_channel_id`` at the call site) — when it's already bound to a
     ``Conversation`` (issue #1278: ``Conversation.discord_thread_id`` is the
-    source of truth for that binding), the message is attributed straight to
-    that conversation instead of *user_id*'s (guild, user) active thread,
-    reactivating it first if it had gone idle/archived. This matters whenever
-    the two would otherwise disagree — e.g. a reply posted into a thread that
-    Foreman's idle sweep already archived, which ``ensure_conversation_thread``
-    (an *active*-thread-only lookup) would otherwise silently fork a brand
-    new Discord thread for instead of continuing this one.
+    source of truth for that binding), the message is a reply within that
+    conversation's own Discord thread, so it's attributed straight to that
+    conversation, reactivating it first if it had gone idle/archived. This
+    matters whenever the two would otherwise disagree — e.g. a reply posted
+    into a thread that Foreman's idle sweep already archived, which
+    ``ensure_conversation_thread`` (an *active*-thread-only lookup) would
+    otherwise silently fork a brand new Discord thread for instead of
+    continuing this one.
+
+    Otherwise (issue #1296) this is a *top-level* message — not a reply
+    within any existing Discord thread/conversation — so it always starts a
+    brand-new ``Conversation`` (``ensure_conversation_thread(..., force_new=True)``)
+    rather than defaulting into whatever conversation happens to already be
+    active for *user_id*.
     """
     from auth_deps import get_guild_pk  # noqa: PLC0415
     from database import AsyncSessionLocal  # noqa: PLC0415
@@ -865,7 +877,16 @@ async def _persist_inbound_message(
                     conversation_id = conversation.id
                     thread_id = thread.id if thread else None
                 else:
-                    thread = await ensure_conversation_thread(guild_slug, user_id, content)
+                    # Issue #1296: this message isn't a reply within an
+                    # existing Discord thread bound to a Conversation — it's
+                    # a top-level message (posted directly in a wired
+                    # channel/DM, or an @-mention in an unbound channel) — so
+                    # it always starts a brand-new Conversation rather than
+                    # silently continuing whatever conversation happens to be
+                    # active for this user.
+                    thread = await ensure_conversation_thread(
+                        guild_slug, user_id, content, force_new=True
+                    )
                     thread_id = thread.id if thread else None
                     conversation_id = thread.conversation_id if thread else None
         except Exception:
