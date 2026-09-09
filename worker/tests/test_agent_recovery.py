@@ -9,6 +9,7 @@ worker's slots one at a time until it looks online but is unroutable.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -71,3 +72,33 @@ async def test_unavailable_tool_returns_the_slot_to_idle(tmp_path):
 
     assert _states_sent(worker)[-1] == "idle"
     assert worker.agents[0].state == "idle"
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_recovers_after_task_crash():
+    worker = Worker(_make_cfg())
+    slot = worker.agents[0]
+    worker._send = AsyncMock()
+    worker._emit = AsyncMock()
+    worker._task_update = AsyncMock()
+    second_ran = asyncio.Event()
+
+    async def execute(task, agent):
+        if task["id"] == "t-boom":
+            agent.current_claude = object()
+            raise RuntimeError("boom")
+        second_ran.set()
+
+    worker._execute_task = AsyncMock(side_effect=execute)
+
+    loop_task = asyncio.create_task(worker._agent_loop(slot))
+    await worker.task_queue.put({"id": "t-boom", "description": "bad"})
+    await worker.task_queue.put({"id": "t-next", "description": "next"})
+    await asyncio.wait_for(second_ran.wait(), timeout=1)
+    loop_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await loop_task
+
+    assert worker._execute_task.await_count == 2
+    assert slot.current_claude is None
+    assert "idle" in _states_sent(worker)

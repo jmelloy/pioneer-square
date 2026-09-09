@@ -1764,6 +1764,9 @@ class Worker:
                 await self._task_update(
                     task["id"], agent=slot, state="failed", finishedAt=_now_iso()
                 )
+                slot.current_claude = None
+                await self._set_state("error", slot)
+                await self._set_state("idle", slot)
             finally:
                 slot.current_task_id = None
         try:
