@@ -24,11 +24,76 @@ Discord side effects.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 
-from models import Conversation, Task
+from events import broadcast
+from models import Conversation, Guild, Task
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from ws_types import ConversationCreatedMsg, ConversationUpdatedMsg
+
+logger = logging.getLogger(__name__)
+
+
+async def _guild_slug(db: AsyncSession, guild_pk: int) -> str | None:
+    result = await db.exec(select(col(Guild.slug)).where(col(Guild.id) == guild_pk))
+    return result.first()
+
+
+async def _broadcast_conversation_created(db: AsyncSession, conversation: Conversation) -> None:
+    """Broadcast a ``conversation-created`` WS event (#1298). Best-effort.
+
+    Mirrors ``foreman.thread_service.ensure_conversation_thread``'s
+    ``thread-created`` broadcast: swallows and logs failures so a WS hiccup
+    never blocks conversation creation.
+    """
+    try:
+        guild_slug = await _guild_slug(db, conversation.guild_id)
+        if not guild_slug:
+            return
+        await broadcast(
+            guild_slug,
+            ConversationCreatedMsg(
+                conversationId=conversation.id,
+                userId=conversation.user_id,
+                name=conversation.name,
+                status=conversation.status,
+                createdAt=conversation.created_at.isoformat(),
+            ).model_dump(by_alias=True, exclude_none=True),
+        )
+    except Exception:
+        logger.warning(
+            "conversation_service: failed to broadcast conversation-created conversation=%s",
+            conversation.id,
+            exc_info=True,
+        )
+
+
+async def _broadcast_conversation_updated(db: AsyncSession, conversation: Conversation) -> None:
+    """Broadcast a ``conversation-updated`` WS event (#1298). Best-effort.
+
+    Mirrors ``foreman.thread_service.broadcast_thread_updated``.
+    """
+    try:
+        guild_slug = await _guild_slug(db, conversation.guild_id)
+        if not guild_slug:
+            return
+        await broadcast(
+            guild_slug,
+            ConversationUpdatedMsg(
+                conversationId=conversation.id,
+                name=conversation.name,
+                status=conversation.status,
+                discordThreadId=conversation.discord_thread_id,
+            ).model_dump(by_alias=True, exclude_none=True),
+        )
+    except Exception:
+        logger.warning(
+            "conversation_service: failed to broadcast conversation-updated conversation=%s",
+            conversation.id,
+            exc_info=True,
+        )
 
 
 async def get_or_create_conversation(db: AsyncSession, guild_pk: int, user_id: str) -> Conversation:
@@ -72,6 +137,7 @@ async def create_conversation(db: AsyncSession, guild_pk: int, user_id: str | No
     conversation = Conversation(guild_id=guild_pk, user_id=user_id, created_at=now, updated_at=now)
     db.add(conversation)
     await db.flush()
+    await _broadcast_conversation_created(db, conversation)
     return conversation
 
 
@@ -161,6 +227,7 @@ async def rename_conversation(db: AsyncSession, conversation: Conversation, name
         db.add(thread)
 
     await db.commit()
+    await _broadcast_conversation_updated(db, conversation)
 
     if conversation.discord_thread_id:
         from discord.thread_mirror import rename_conversation_thread  # noqa: PLC0415
@@ -191,6 +258,7 @@ async def close_conversation(db: AsyncSession, conversation: Conversation) -> No
         db.add(thread)
 
     await db.commit()
+    await _broadcast_conversation_updated(db, conversation)
 
     if conversation.discord_thread_id:
         from discord.thread_mirror import archive_conversation_thread_by_id  # noqa: PLC0415

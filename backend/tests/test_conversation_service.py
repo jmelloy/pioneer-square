@@ -153,6 +153,26 @@ class TestCreateConversation:
         assert first.user_id == "user-1"
         assert second.user_id == "user-1"
 
+    async def test_broadcasts_conversation_created(self, db_session):
+        """#1298: every insert broadcasts conversation-created to its guild."""
+        insert_guild(db_session, "g-cn3")
+        guild_pk = await _guild_pk("g-cn3")
+
+        with patch(
+            "foreman.conversation_service.broadcast", new_callable=AsyncMock
+        ) as mock_broadcast:
+            async with database_module.AsyncSessionLocal() as db:
+                conversation = await create_conversation(db, guild_pk, "user-1")
+                await db.commit()
+
+        mock_broadcast.assert_awaited_once()
+        guild_arg, payload = mock_broadcast.call_args.args
+        assert guild_arg == "g-cn3"
+        assert payload["type"] == "conversation-created"
+        assert payload["conversationId"] == conversation.id
+        assert payload["userId"] == "user-1"
+        assert payload["status"] == "active"
+
     async def test_get_or_create_conversation_prefers_most_recently_updated(self, db_session):
         """With multiple conversations now possible per (guild, user) pair,
         get_or_create_conversation's "the" conversation for existing callers
@@ -316,6 +336,29 @@ class TestRenameConversation:
 
         mock_rename.assert_not_called()
 
+    async def test_broadcasts_conversation_updated(self, db_session):
+        insert_guild(db_session, "g-rn3")
+        guild_pk = await _guild_pk("g-rn3")
+
+        with patch(
+            "foreman.conversation_service.broadcast", new_callable=AsyncMock
+        ) as mock_broadcast:
+            async with database_module.AsyncSessionLocal() as db:
+                # get_or_create_conversation inserts (and broadcasts
+                # conversation-created for) a fresh conversation here since
+                # "user-1" has none yet — reset before the rename so this
+                # assertion covers only rename_conversation's own broadcast.
+                conversation = await get_or_create_conversation(db, guild_pk, "user-1")
+                mock_broadcast.reset_mock()
+                await rename_conversation(db, conversation, "Renamed")
+
+        mock_broadcast.assert_awaited_once()
+        guild_arg, payload = mock_broadcast.call_args.args
+        assert guild_arg == "g-rn3"
+        assert payload["type"] == "conversation-updated"
+        assert payload["conversationId"] == conversation.id
+        assert payload["name"] == "Renamed"
+
 
 class TestCloseConversation:
     async def test_closes_conversation_and_active_thread(self, db_session):
@@ -344,3 +387,25 @@ class TestCloseConversation:
 
         assert conversation.status == "closed"
         assert refreshed_thread.status == "closed"
+
+    async def test_broadcasts_conversation_updated(self, db_session):
+        insert_guild(db_session, "g-cc2")
+        guild_pk = await _guild_pk("g-cc2")
+
+        with patch(
+            "foreman.conversation_service.broadcast", new_callable=AsyncMock
+        ) as mock_broadcast:
+            async with database_module.AsyncSessionLocal() as db:
+                # See the analogous reset in TestRenameConversation — the
+                # get_or_create_conversation call below also broadcasts
+                # conversation-created for a brand-new conversation.
+                conversation = await get_or_create_conversation(db, guild_pk, "user-1")
+                mock_broadcast.reset_mock()
+                await close_conversation(db, conversation)
+
+        mock_broadcast.assert_awaited_once()
+        guild_arg, payload = mock_broadcast.call_args.args
+        assert guild_arg == "g-cc2"
+        assert payload["type"] == "conversation-updated"
+        assert payload["conversationId"] == conversation.id
+        assert payload["status"] == "closed"
