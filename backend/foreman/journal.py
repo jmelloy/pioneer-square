@@ -207,6 +207,7 @@ class TurnJournal:
                 createdAt=now.isoformat(),
                 taskId=self._reply.task_id,
                 threadId=self._reply.thread_id,
+                conversationId=self._reply.conversation_id,
             ),
         )
         self._scheduler.spawn(
@@ -243,6 +244,7 @@ class TurnJournal:
                 createdAt=now.isoformat(),
                 taskId=self._reply.task_id,
                 threadId=self._reply.thread_id,
+                conversationId=self._reply.conversation_id,
             ),
         )
         await self._add_message(
@@ -272,6 +274,7 @@ class TurnJournal:
                 createdAt=now.isoformat(),
                 taskId=self._reply.task_id,
                 threadId=self._reply.thread_id,
+                conversationId=self._reply.conversation_id,
             ),
         )
         await self._add_message(

@@ -9,6 +9,7 @@
     ],
     "chat": [
       "content",
+      "conversationId",
       "createdAt",
       "from",
       "isError",
@@ -139,6 +140,7 @@
     ],
     "chat": [
       "content",
+      "conversationId",
       "createdAt",
       "from",
       "isError",

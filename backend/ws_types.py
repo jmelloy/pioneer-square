@@ -105,6 +105,11 @@ class ChatMsg(_WS):
     # thread pane in addition to the guild-wide comms pane. None for messages
     # sent before any thread exists yet, or not scoped to a conversation.
     threadId: str | None = None
+    # The Conversation (#1298) this message belongs to — same resolution as
+    # threadId (both come from the same ForemanReply), but keyed by the
+    # stable Conversation id rather than its current Thread's id so the
+    # Conversations UI can filter live messages without depending on Thread.
+    conversationId: int | None = None
 
 
 class TerminalOutputMsg(_WS):

@@ -192,6 +192,7 @@ async def post_conversation_message(
                 "content": content,
                 "createdAt": created_at.isoformat(),
                 "userId": github_user_id,
+                "conversationId": conversation.id,
             }
         ),
     )
