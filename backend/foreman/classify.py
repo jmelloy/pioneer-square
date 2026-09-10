@@ -10,13 +10,15 @@ agree on this classification, so it lives here as a single source of truth:
 - ``routes.tasks.create_task_followup`` — the REST follow-up endpoint, which
   has no dispatch ``event`` string of its own but tags its call with the
   synthetic event name ``"user-followup"`` purely to share this classifier.
+- ``routes.conversations.post_conversation_message`` — the conversation-scoped
+  REST message endpoint (#1297), tagged ``"conversation-message"``.
 
 If you add a new human-originated trigger path, add its event name to
 ``_HUMAN_FOREMAN_EVENTS`` below and route it through ``is_human_event`` rather
 than hand-rolling the check.
 """
 
-_HUMAN_FOREMAN_EVENTS = frozenset({"chat", "user-followup"})
+_HUMAN_FOREMAN_EVENTS = frozenset({"chat", "user-followup", "conversation-message"})
 
 
 def is_human_event(event: str) -> bool:

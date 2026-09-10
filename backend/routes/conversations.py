@@ -14,14 +14,20 @@ docstring).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
+from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException
-from foreman.conversation_service import close_conversation, rename_conversation
-from models import Conversation
+from foreman import triggers
+from foreman.conversation_service import close_conversation, rename_conversation, touch_conversation
+from foreman.runner import reset_foreman_poll
+from models import Conversation, Message
 from pydantic import BaseModel
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from ws_types import ChatMsg
 
 router = APIRouter()
 
@@ -110,3 +116,94 @@ async def get_conversation(
     db: AsyncSession = Depends(get_db_dep),
 ):
     return _to_out(await _get_conversation_in_guild(db, guild_id, conversation_id))
+
+
+class ConversationMessageCreate(BaseModel):
+    content: str
+
+
+class ConversationMessageOut(BaseModel):
+    id: int
+    conversationId: int
+    content: str
+    createdAt: str
+
+
+@router.post(
+    "/api/guilds/{guild_id}/conversations/{conversation_id}/messages",
+    response_model=ConversationMessageOut,
+)
+async def post_conversation_message(
+    guild_id: str,
+    conversation_id: int,
+    body: ConversationMessageCreate,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Post a user message into an existing conversation and trigger the Foreman (#1297).
+
+    Scoped explicitly by ``conversation_id`` rather than the (guild, user)
+    heuristic ``ensure_conversation_thread`` uses — a user can have more than
+    one open ``Conversation`` (#1296), so this always lands the message (and
+    the Foreman run it triggers) in the exact conversation the caller picked,
+    never a different one for the same user. The triggered run sees this
+    conversation's own tasks/events via the "This conversation" state block
+    (``foreman.runner._load_conversation_context``) and decides whether to
+    call ``send_followup`` on one of them or reply directly — the "followups
+    inside a conversation" pattern from Epic #1271.
+    """
+    content = body.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content must not be empty")
+
+    conversation = await _get_conversation_in_guild(db, guild_id, conversation_id)
+    if conversation.user_id is not None and conversation.user_id != github_user_id:
+        raise HTTPException(status_code=403, detail="Not the owner of this conversation")
+
+    created_at = datetime.now(UTC)
+    message = Message(
+        guild_id=conversation.guild_id,
+        from_agent="user",
+        to_agent="foreman",
+        content=content,
+        message_type="chat",
+        created_at=created_at,
+        user_id=github_user_id,
+        conversation_id=conversation.id,
+        source="api",
+    )
+    db.add(message)
+    await db.commit()
+    await db.refresh(message)
+
+    await touch_conversation(db, conversation)
+
+    await broadcast_msg(
+        guild_id,
+        ChatMsg.model_validate(
+            {
+                "from": "user",
+                "to": "foreman",
+                "content": content,
+                "createdAt": created_at.isoformat(),
+                "userId": github_user_id,
+            }
+        ),
+    )
+
+    await triggers.trigger_foreman(
+        guild_id,
+        "conversation-message",
+        triggers.format_conversation_message(conversation.id, content),
+        user_id=github_user_id,
+        conversation_id=conversation.id,
+        task_name=f"foreman.conversation-message:{conversation.id}",
+    )
+    reset_foreman_poll(guild_id)
+
+    return ConversationMessageOut(
+        id=message.id,
+        conversationId=conversation.id,
+        content=content,
+        createdAt=created_at.isoformat(),
+    )
