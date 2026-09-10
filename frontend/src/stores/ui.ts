@@ -5,8 +5,8 @@ export function taskTabId(id: string): string {
   return 'task-' + id
 }
 
-export function threadTabId(id: string): string {
-  return 'thread-' + id
+export function conversationTabId(id: number): string {
+  return 'conversation-' + id
 }
 
 // Single source of truth for "what's open/selected" across the main-content
@@ -23,8 +23,8 @@ export const useUiStore = defineStore('ui', () => {
   const openedAgentIds = ref<string[]>([])
   const selectedTaskId = ref<string | null>(null)
   const openedTaskIds = ref<string[]>([])
-  const selectedThreadId = ref<string | null>(null)
-  const openedThreadIds = ref<string[]>([])
+  const selectedConversationId = ref<number | null>(null)
+  const openedConversationIds = ref<number[]>([])
 
   function selectWorker(workerId: string | null) {
     selectedWorkerId.value = workerId
@@ -74,22 +74,22 @@ export const useUiStore = defineStore('ui', () => {
     activeTab.value = taskTabId(taskId)
   }
 
-  function selectThread(threadId: string | null) {
-    selectedThreadId.value = threadId
-    if (threadId && !openedThreadIds.value.includes(threadId)) {
-      openedThreadIds.value.push(threadId)
+  function selectConversation(conversationId: number | null) {
+    selectedConversationId.value = conversationId
+    if (conversationId != null && !openedConversationIds.value.includes(conversationId)) {
+      openedConversationIds.value.push(conversationId)
     }
   }
 
-  function closeThread(threadId: string) {
-    const idx = openedThreadIds.value.indexOf(threadId)
-    if (idx !== -1) openedThreadIds.value.splice(idx, 1)
-    if (selectedThreadId.value === threadId) selectedThreadId.value = null
-    if (activeTab.value === threadTabId(threadId)) activeTab.value = 'factory'
+  function closeConversation(conversationId: number) {
+    const idx = openedConversationIds.value.indexOf(conversationId)
+    if (idx !== -1) openedConversationIds.value.splice(idx, 1)
+    if (selectedConversationId.value === conversationId) selectedConversationId.value = null
+    if (activeTab.value === conversationTabId(conversationId)) activeTab.value = 'factory'
   }
 
-  function openThreadTab(threadId: string) {
-    activeTab.value = threadTabId(threadId)
+  function openConversationTab(conversationId: number) {
+    activeTab.value = conversationTabId(conversationId)
   }
 
   // Resets worker/agent selection and the main tab, e.g. on guild switch.
@@ -107,10 +107,10 @@ export const useUiStore = defineStore('ui', () => {
     openedTaskIds.value = []
   }
 
-  // Resets thread selection, e.g. on guild switch or unmount.
-  function resetThreadSelection() {
-    selectedThreadId.value = null
-    openedThreadIds.value = []
+  // Resets conversation selection, e.g. on guild switch or unmount.
+  function resetConversationSelection() {
+    selectedConversationId.value = null
+    openedConversationIds.value = []
   }
 
   return {
@@ -121,8 +121,8 @@ export const useUiStore = defineStore('ui', () => {
     openedAgentIds,
     selectedTaskId,
     openedTaskIds,
-    selectedThreadId,
-    openedThreadIds,
+    selectedConversationId,
+    openedConversationIds,
     selectWorker,
     closeWorker,
     selectAgent,
@@ -130,11 +130,11 @@ export const useUiStore = defineStore('ui', () => {
     selectTask,
     closeTask,
     openTaskTab,
-    selectThread,
-    closeThread,
-    openThreadTab,
+    selectConversation,
+    closeConversation,
+    openConversationTab,
     resetWorkerAgentSelection,
     resetTaskSelection,
-    resetThreadSelection,
+    resetConversationSelection,
   }
 })

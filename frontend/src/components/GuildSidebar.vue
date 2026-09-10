@@ -84,10 +84,10 @@ watch(
 )
 
 watch(
-  () => uiStore.selectedThreadId,
+  () => uiStore.selectedConversationId,
   (id) => {
-    if (id) {
-      uiStore.openThreadTab(id)
+    if (id != null) {
+      uiStore.openConversationTab(id)
       switchMobileTab('work')
     }
   },

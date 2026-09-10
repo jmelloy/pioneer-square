@@ -1,9 +1,9 @@
 <template>
   <div class="modal-overlay" @click.self="$emit('close')">
     <div class="modal">
-      <div class="modal-header">NEW THREAD</div>
+      <div class="modal-header">NEW CONVERSATION</div>
       <div class="modal-body">
-        <label class="field-label">Thread Name (optional)</label>
+        <label class="field-label">Conversation Name (optional)</label>
         <input
           v-model="name"
           class="field-input"
@@ -12,8 +12,8 @@
           ref="nameInput"
         />
         <p class="field-hint">
-          Starts a new conversation thread with the Foreman. A Discord thread is created
-          automatically once the bot picks it up.
+          Starts a new conversation with the Foreman. A Discord thread is created automatically once
+          the bot picks it up.
         </p>
       </div>
       <div class="modal-footer">

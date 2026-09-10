@@ -33,7 +33,7 @@
         </button>
       </div>
       <ChatTab v-if="activeTab === 'chat'" ref="chatTabRef" />
-      <ThreadList v-else />
+      <ConversationList v-else />
     </div>
   </div>
 </template>
@@ -42,13 +42,13 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useGuildStore } from '../stores/guild'
 import { useAgentsStore } from '../stores/agents'
-import { useThreadsStore } from '../stores/threads'
+import { useConversationsStore } from '../stores/conversations'
 import ChatTab from './chat-pane/ChatTab.vue'
-import ThreadList from './sidebar/ThreadList.vue'
+import ConversationList from './sidebar/ConversationList.vue'
 
 const guildStore = useGuildStore()
 const agentsStore = useAgentsStore()
-const threadsStore = useThreadsStore()
+const conversationsStore = useConversationsStore()
 
 const minimized = ref(false)
 const activeTab = ref<'chat' | 'conversations'>('chat')
@@ -56,7 +56,7 @@ const chatTabRef = ref<InstanceType<typeof ChatTab> | null>(null)
 
 const foreman = computed(() => agentsStore.agents.find((a) => a.type === 'foreman'))
 const activeConversationCount = computed(
-  () => threadsStore.threads.filter((t) => t.status === 'active').length,
+  () => conversationsStore.conversations.filter((c) => c.status === 'active').length,
 )
 
 // Poll countdown: guildStore.nextPollAt holds the epoch ms when the next foreman

@@ -106,18 +106,19 @@ export interface TaskTreeData {
   ungrouped: TaskTreeNode[]
 }
 
-// Mirrors backend/routes/threads.py ThreadOut. A Thread binds one Conversation
-// to a Discord thread with an explicit lifecycle (thread-per-conversation
-// architecture, epic #1160). discord_thread_id is null until the Discord bot
-// side creates the actual thread and reports its id back.
-export type ThreadStatus = 'active' | 'archived' | 'closed'
+// Mirrors backend/routes/conversations.py ConversationOut (#1298 — the
+// Conversations UI/API surface, replacing the Thread-scoped one). name/status/
+// discord_thread_id mirror the conversation's currently active Thread — see
+// the Conversation docstring in backend/models.py — but the UI only ever
+// deals with Conversation now; Thread stays a backend implementation detail.
+export type ConversationStatus = 'active' | 'archived' | 'closed'
 
-export interface ConversationThread {
-  id: string
-  conversation_id: number
+export interface Conversation {
+  id: number
+  user_id: string | null
   discord_thread_id: string | null
   name: string | null
-  status: ThreadStatus
+  status: ConversationStatus
   created_at: string
   updated_at: string
 }
@@ -163,9 +164,13 @@ export interface ChatMessage {
   // context). When present, the chat pane badges the line with that task.
   taskId?: string | null
   // Foreman-owned conversation thread (#1167) this message belongs to, when
-  // resolvable (#1175). Lets ThreadDetailPanel filter the shared message
-  // stream down to one thread's own history.
+  // resolvable (#1175). Superseded by conversationId (#1298) for UI purposes;
+  // kept on the wire as a backend implementation detail.
   threadId?: string | null
+  // The Conversation (#1298) this message belongs to, when resolvable. Lets
+  // ConversationDetailPanel filter the shared message stream down to one
+  // conversation's own history.
+  conversationId?: number | null
   [key: string]: unknown
 }
 
@@ -339,23 +344,22 @@ export interface ClaudeUsageWS {
   stopReason?: string | null
 }
 
-// A Foreman-owned conversation thread was created/updated (#1167, #1169).
-export interface ThreadCreatedWS {
-  type: 'thread-created'
-  threadId: string
+// A Conversation was created/updated (#1298, replacing thread-created/updated).
+export interface ConversationCreatedWS {
+  type: 'conversation-created'
   conversationId: number
   userId?: string | null
   name?: string | null
-  status?: ThreadStatus
+  status?: ConversationStatus
   createdAt?: string
 }
 
-export interface ThreadUpdatedWS {
-  type: 'thread-updated'
-  threadId: string
-  status?: ThreadStatus
+export interface ConversationUpdatedWS {
+  type: 'conversation-updated'
+  conversationId: number
+  name?: string | null
+  status?: ConversationStatus
   discordThreadId?: string | null
-  deletedAt?: string | null
 }
 
 export type WSInbound =
@@ -372,8 +376,8 @@ export type WSInbound =
   | NeedsInputWS
   | ForemanPollStatusWS
   | ClaudeUsageWS
-  | ThreadCreatedWS
-  | ThreadUpdatedWS
+  | ConversationCreatedWS
+  | ConversationUpdatedWS
 
 // Fallback for inbound types no store has modeled yet. Deliberately NOT
 // unioned into `WSInbound` — merging a bare `{ type: string }` member into a
@@ -423,6 +427,7 @@ export const WS_INBOUND_FIELDS: { [K in WSInbound['type']]: readonly string[] } 
     'source',
     'taskId',
     'threadId',
+    'conversationId',
   ],
   'guild-updated': ['id', 'name'],
   'agent-joined': [
@@ -476,8 +481,8 @@ export const WS_INBOUND_FIELDS: { [K in WSInbound['type']]: readonly string[] } 
     'numTurns',
     'stopReason',
   ],
-  'thread-created': ['threadId', 'conversationId', 'userId', 'name', 'status', 'createdAt'],
-  'thread-updated': ['threadId', 'status', 'discordThreadId', 'deletedAt'],
+  'conversation-created': ['conversationId', 'userId', 'name', 'status', 'createdAt'],
+  'conversation-updated': ['conversationId', 'name', 'status', 'discordThreadId'],
 }
 
 // Outbound: producer-side; we accept any object with a `type`.
