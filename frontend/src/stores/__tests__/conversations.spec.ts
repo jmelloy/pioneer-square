@@ -1,23 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
-import { useThreadsStore } from '../threads'
+import { useConversationsStore } from '../conversations'
 
 // Mock the api utility
 vi.mock('../../utils/api', () => ({
   api: vi.fn(),
 }))
 
-describe('useThreadsStore', () => {
+describe('useConversationsStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
   })
 
   describe('handleWebSocketMessage', () => {
-    it('inserts a new thread on thread-created', () => {
-      const store = useThreadsStore()
+    it('inserts a new conversation on conversation-created', () => {
+      const store = useConversationsStore()
       store.handleWebSocketMessage({
-        type: 'thread-created',
-        threadId: 'thr-abc',
+        type: 'conversation-created',
         conversationId: 42,
         userId: 'user-1',
         name: 'Deploy pipeline',
@@ -25,10 +24,9 @@ describe('useThreadsStore', () => {
         createdAt: '2025-07-01T00:00:00Z',
       })
 
-      expect(store.threads).toHaveLength(1)
-      expect(store.threads[0]).toMatchObject({
-        id: 'thr-abc',
-        conversation_id: 42,
+      expect(store.conversations).toHaveLength(1)
+      expect(store.conversations[0]).toMatchObject({
+        id: 42,
         name: 'Deploy pipeline',
         status: 'active',
         discord_thread_id: null,
@@ -36,13 +34,12 @@ describe('useThreadsStore', () => {
       })
     })
 
-    it('does not duplicate thread on repeated thread-created', () => {
-      const store = useThreadsStore()
+    it('does not duplicate conversation on repeated conversation-created', () => {
+      const store = useConversationsStore()
       const msg = {
-        type: 'thread-created',
-        threadId: 'thr-abc',
+        type: 'conversation-created',
         conversationId: 42,
-        name: 'Thread A',
+        name: 'Conversation A',
         status: 'active',
         createdAt: '2025-07-01T00:00:00Z',
       } as const
@@ -50,106 +47,106 @@ describe('useThreadsStore', () => {
       store.handleWebSocketMessage(msg)
       store.handleWebSocketMessage(msg)
 
-      expect(store.threads).toHaveLength(1)
+      expect(store.conversations).toHaveLength(1)
     })
 
-    it('updates thread status on thread-updated', () => {
-      const store = useThreadsStore()
-      store.threads.push({
-        id: 'thr-abc',
-        conversation_id: 42,
+    it('updates conversation status on conversation-updated', () => {
+      const store = useConversationsStore()
+      store.conversations.push({
+        id: 42,
+        user_id: null,
         discord_thread_id: null,
-        name: 'Thread A',
+        name: 'Conversation A',
         status: 'active',
         created_at: '2025-07-01T00:00:00Z',
         updated_at: '2025-07-01T00:00:00Z',
       })
 
       store.handleWebSocketMessage({
-        type: 'thread-updated',
-        threadId: 'thr-abc',
+        type: 'conversation-updated',
+        conversationId: 42,
         status: 'archived',
       })
 
-      expect(store.threads[0].status).toBe('archived')
+      expect(store.conversations[0].status).toBe('archived')
     })
 
-    it('updates discord_thread_id on thread-updated', () => {
-      const store = useThreadsStore()
-      store.threads.push({
-        id: 'thr-abc',
-        conversation_id: 42,
+    it('updates discord_thread_id on conversation-updated', () => {
+      const store = useConversationsStore()
+      store.conversations.push({
+        id: 42,
+        user_id: null,
         discord_thread_id: null,
-        name: 'Thread A',
+        name: 'Conversation A',
         status: 'active',
         created_at: '2025-07-01T00:00:00Z',
         updated_at: '2025-07-01T00:00:00Z',
       })
 
       store.handleWebSocketMessage({
-        type: 'thread-updated',
-        threadId: 'thr-abc',
+        type: 'conversation-updated',
+        conversationId: 42,
         discordThreadId: '123456789',
       })
 
-      expect(store.threads[0].discord_thread_id).toBe('123456789')
+      expect(store.conversations[0].discord_thread_id).toBe('123456789')
     })
 
-    it('ignores thread-updated for unknown thread', () => {
-      const store = useThreadsStore()
+    it('ignores conversation-updated for unknown conversation', () => {
+      const store = useConversationsStore()
       store.handleWebSocketMessage({
-        type: 'thread-updated',
-        threadId: 'thr-unknown',
+        type: 'conversation-updated',
+        conversationId: 99,
         status: 'closed',
       })
 
-      expect(store.threads).toHaveLength(0)
+      expect(store.conversations).toHaveLength(0)
     })
 
     it('ignores unrelated message types', () => {
-      const store = useThreadsStore()
+      const store = useConversationsStore()
       store.handleWebSocketMessage({ type: 'task-created', taskId: 't-1', state: 'pending' })
-      expect(store.threads).toHaveLength(0)
+      expect(store.conversations).toHaveLength(0)
     })
   })
 
   describe('statusLabel / statusColor', () => {
     it('returns label for known statuses', () => {
-      const store = useThreadsStore()
+      const store = useConversationsStore()
       expect(store.statusLabel('active')).toBe('active')
       expect(store.statusLabel('archived')).toBe('archived')
       expect(store.statusLabel('closed')).toBe('closed')
     })
 
     it('returns color for known statuses', () => {
-      const store = useThreadsStore()
+      const store = useConversationsStore()
       expect(store.statusColor('active')).toBe('green')
       expect(store.statusColor('archived')).toBe('amber')
       expect(store.statusColor('closed')).toBe('dim')
     })
 
     it('returns input for unknown status', () => {
-      const store = useThreadsStore()
+      const store = useConversationsStore()
       expect(store.statusLabel('unknown')).toBe('unknown')
       expect(store.statusColor('unknown')).toBe('dim')
     })
   })
 
-  describe('clearThreads', () => {
-    it('clears the threads array', () => {
-      const store = useThreadsStore()
-      store.threads.push({
-        id: 'thr-abc',
-        conversation_id: 42,
+  describe('clearConversations', () => {
+    it('clears the conversations array', () => {
+      const store = useConversationsStore()
+      store.conversations.push({
+        id: 42,
+        user_id: null,
         discord_thread_id: null,
-        name: 'Thread A',
+        name: 'Conversation A',
         status: 'active',
         created_at: '2025-07-01T00:00:00Z',
         updated_at: '2025-07-01T00:00:00Z',
       })
 
-      store.clearThreads()
-      expect(store.threads).toHaveLength(0)
+      store.clearConversations()
+      expect(store.conversations).toHaveLength(0)
     })
   })
 })

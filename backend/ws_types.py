@@ -105,6 +105,11 @@ class ChatMsg(_WS):
     # thread pane in addition to the guild-wide comms pane. None for messages
     # sent before any thread exists yet, or not scoped to a conversation.
     threadId: str | None = None
+    # The Conversation (#1298) this message belongs to — same resolution as
+    # threadId (both come from the same ForemanReply), but keyed by the
+    # stable Conversation id rather than its current Thread's id so the
+    # Conversations UI can filter live messages without depending on Thread.
+    conversationId: int | None = None
 
 
 class TerminalOutputMsg(_WS):
@@ -398,6 +403,32 @@ class ThreadUpdatedMsg(_WS):
     deletedAt: str | None = None
 
 
+class ConversationCreatedMsg(_WS):
+    """A :class:`models.Conversation` was created (#1298 — Conversations UI/API surface).
+
+    Broadcast by ``foreman.conversation_service.create_conversation``, the
+    sole Conversation-creation path, mirroring how ``ThreadCreatedMsg`` is
+    broadcast the moment a Thread is created.
+    """
+
+    type: Literal["conversation-created"] = "conversation-created"
+    conversationId: int
+    userId: str | None = None
+    name: str | None = None
+    status: str
+    createdAt: str
+
+
+class ConversationUpdatedMsg(_WS):
+    """A conversation's lifecycle/display state changed — patch-style, like ``ThreadUpdatedMsg``."""
+
+    type: Literal["conversation-updated"] = "conversation-updated"
+    conversationId: int
+    name: str | None = None
+    status: str | None = None
+    discordThreadId: str | None = None
+
+
 class GithubEventMsg(_WS):
     type: Literal["github-event"] = "github-event"
     deliveryId: str | None = None
@@ -534,6 +565,8 @@ OutboundWSMessage = Annotated[
     | ClaudeUsageMsg
     | ThreadCreatedMsg
     | ThreadUpdatedMsg
+    | ConversationCreatedMsg
+    | ConversationUpdatedMsg
     | OfferMsg
     | AnswerMsg
     | IceCandidateMsg,

@@ -23,8 +23,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from foreman import triggers
 from foreman.conversation_service import close_conversation, rename_conversation, touch_conversation
 from foreman.runner import reset_foreman_poll
-from models import Conversation, Message
+from models import THREAD_STATUSES, Conversation, Message
 from pydantic import BaseModel
+from routes.guilds import _message_dict
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from ws_types import ChatMsg
@@ -39,6 +40,8 @@ class ConversationOut(BaseModel):
     name: str | None
     status: str
     discord_thread_id: str | None
+    created_at: datetime
+    updated_at: datetime
 
 
 def _to_out(conversation: Conversation) -> ConversationOut:
@@ -49,6 +52,8 @@ def _to_out(conversation: Conversation) -> ConversationOut:
         name=conversation.name,
         status=conversation.status,
         discord_thread_id=conversation.discord_thread_id,
+        created_at=conversation.created_at,
+        updated_at=conversation.updated_at,
     )
 
 
@@ -187,6 +192,7 @@ async def post_conversation_message(
                 "content": content,
                 "createdAt": created_at.isoformat(),
                 "userId": github_user_id,
+                "conversationId": conversation.id,
             }
         ),
     )
@@ -207,3 +213,58 @@ async def post_conversation_message(
         content=content,
         createdAt=created_at.isoformat(),
     )
+
+
+@router.get("/api/guilds/{guild_id}/conversations", response_model=list[ConversationOut])
+async def list_conversations(
+    guild_id: str,
+    status: str | None = None,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """List a guild's conversations, most recently active first (#1298).
+
+    The Conversations UI/API surface's list endpoint — mirrors
+    ``routes.threads.list_threads`` (same ``status`` filter, same 200-row
+    cap) but queries :class:`models.Conversation` directly rather than
+    joining through ``Thread``, since ``name``/``status`` already live on
+    the conversation itself (see its docstring in ``models.py``).
+    """
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    stmt = (
+        select(Conversation)
+        .where(col(Conversation.guild_id) == guild_pk)
+        .order_by(col(Conversation.updated_at).desc())
+    )
+    if status is not None:
+        if status not in THREAD_STATUSES:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {status!r}")
+        stmt = stmt.where(col(Conversation.status) == status)
+    result = await db.exec(stmt.limit(200))
+    return [_to_out(c) for c in result.all()]
+
+
+@router.get("/api/guilds/{guild_id}/conversations/{conversation_id}/messages")
+async def list_conversation_messages(
+    guild_id: str,
+    conversation_id: int,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Return this conversation's message history, oldest first (#1298).
+
+    Mirrors ``routes.threads.list_thread_messages`` — same ``_message_dict``
+    serialization, same 100-row cap — but scoped directly by
+    ``conversation_id`` instead of resolving it via a ``Thread`` row first.
+    """
+    conversation = await _get_conversation_in_guild(db, guild_id, conversation_id)
+    result = await db.exec(
+        select(Message)
+        .where(col(Message.conversation_id) == conversation.id)
+        .order_by(col(Message.created_at).desc(), col(Message.id).desc())
+        .limit(100)
+    )
+    messages = result.all()
+    return [_message_dict(m) for m in reversed(messages)]

@@ -24,13 +24,19 @@ sys.path.insert(0, os.path.dirname(__file__))
 import database as database_module
 from _test_config import TEST_DATABASE_URL
 from auth_deps import get_guild_pk
+from foreman import triggers
+from foreman.conversation_service import close_conversation
 from foreman.thread_service import get_or_create_active_thread
-from helpers import create_db, insert_guild, truncate_all
-from models import Thread
+from helpers import create_db, insert_conversation, insert_guild, truncate_all
+from models import Conversation, Thread
 from routes.conversations import (
+    ConversationMessageCreate,
     ConversationRename,
     close_conversation_route,
     get_conversation,
+    list_conversation_messages,
+    list_conversations,
+    post_conversation_message,
     rename_conversation_route,
 )
 
@@ -136,3 +142,91 @@ class TestGetConversationRoute:
 
         assert out.id == thread.conversation_id
         assert out.status == "active"
+
+
+class TestListConversationsRoute:
+    """GET /api/guilds/{guild_id}/conversations (#1298)."""
+
+    async def test_lists_conversations_most_recently_updated_first(self, db_session):
+        insert_guild(db_session, "g-conv-list")
+        older_id = insert_conversation(db_session, "g-conv-list", user_id="user-1")
+        newer_id = insert_conversation(db_session, "g-conv-list", user_id="user-2")
+
+        async with database_module.AsyncSessionLocal() as db:
+            out = await list_conversations("g-conv-list", None, "user-1", db)
+
+        assert [c.id for c in out] == [newer_id, older_id]
+
+    async def test_filters_by_status(self, db_session):
+        insert_guild(db_session, "g-conv-list-status")
+        conv_id = insert_conversation(db_session, "g-conv-list-status", user_id="user-1")
+
+        async with database_module.AsyncSessionLocal() as db:
+            conversation = await db.get(Conversation, conv_id)
+            await close_conversation(db, conversation)
+
+        async with database_module.AsyncSessionLocal() as db:
+            active_only = await list_conversations("g-conv-list-status", "active", "user-1", db)
+            closed_only = await list_conversations("g-conv-list-status", "closed", "user-1", db)
+
+        assert active_only == []
+        assert [c.id for c in closed_only] == [conv_id]
+
+    async def test_rejects_invalid_status(self, db_session):
+        insert_guild(db_session, "g-conv-list-bad-status")
+
+        async with database_module.AsyncSessionLocal() as db:
+            with pytest.raises(HTTPException) as exc_info:
+                await list_conversations("g-conv-list-bad-status", "bogus", "user-1", db)
+        assert exc_info.value.status_code == 400
+
+    async def test_404_for_unknown_guild(self, db_session):
+        async with database_module.AsyncSessionLocal() as db:
+            with pytest.raises(HTTPException) as exc_info:
+                await list_conversations("g-does-not-exist", None, "user-1", db)
+        assert exc_info.value.status_code == 404
+
+    async def test_scoped_to_guild(self, db_session):
+        insert_guild(db_session, "g-conv-list-a")
+        insert_guild(db_session, "g-conv-list-b")
+        insert_conversation(db_session, "g-conv-list-a", user_id="user-1")
+
+        async with database_module.AsyncSessionLocal() as db:
+            out = await list_conversations("g-conv-list-b", None, "user-1", db)
+
+        assert out == []
+
+
+class TestListConversationMessagesRoute:
+    """GET /api/guilds/{guild_id}/conversations/{conversation_id}/messages (#1298)."""
+
+    async def test_returns_messages_oldest_first(self, db_session):
+        insert_guild(db_session, "g-conv-msgs")
+        conv_id = insert_conversation(db_session, "g-conv-msgs", user_id="user-1")
+
+        with patch.object(triggers, "trigger_foreman", new=AsyncMock()):
+            async with database_module.AsyncSessionLocal() as db:
+                await post_conversation_message(
+                    "g-conv-msgs", conv_id, ConversationMessageCreate(content="first"), "user-1", db
+                )
+            async with database_module.AsyncSessionLocal() as db:
+                await post_conversation_message(
+                    "g-conv-msgs",
+                    conv_id,
+                    ConversationMessageCreate(content="second"),
+                    "user-1",
+                    db,
+                )
+
+        async with database_module.AsyncSessionLocal() as db:
+            out = await list_conversation_messages("g-conv-msgs", conv_id, "user-1", db)
+
+        assert [m["content"] for m in out] == ["first", "second"]
+
+    async def test_404_for_unknown_conversation(self, db_session):
+        insert_guild(db_session, "g-conv-msgs-missing")
+
+        async with database_module.AsyncSessionLocal() as db:
+            with pytest.raises(HTTPException) as exc_info:
+                await list_conversation_messages("g-conv-msgs-missing", 999999, "user-1", db)
+        assert exc_info.value.status_code == 404

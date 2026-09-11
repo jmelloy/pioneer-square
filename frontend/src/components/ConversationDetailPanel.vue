@@ -1,29 +1,28 @@
 <template>
-  <div class="thread-detail">
-    <div v-if="!thread" class="empty-state">Loading conversation…</div>
+  <div class="conversation-detail">
+    <div v-if="!conversation" class="empty-state">Loading conversation…</div>
     <template v-else>
       <div class="pane-header">
         <div class="pane-title">
           <span class="title-icon">💬</span>
-          <span class="title-text">{{ thread.name || thread.id }}</span>
-          <code class="entity-id-chip">{{ thread.id }}</code>
+          <span class="title-text">{{ conversation.name || conversation.id }}</span>
+          <code class="entity-id-chip">{{ conversation.id }}</code>
         </div>
         <div class="pane-meta">
-          <span class="status-pill" :class="'status-' + thread.status">
-            {{ threadsStore.statusLabel(thread.status) }}
+          <span class="status-pill" :class="'status-' + conversation.status">
+            {{ conversationsStore.statusLabel(conversation.status) }}
           </span>
         </div>
       </div>
 
       <div class="pane-subheader">
-        <span class="sub-field">conversation #{{ thread.conversation_id }}</span>
-        <span v-if="thread.discord_thread_id" class="sub-field discord-chip">
-          discord thread: {{ thread.discord_thread_id }}
+        <span v-if="conversation.discord_thread_id" class="sub-field discord-chip">
+          discord thread: {{ conversation.discord_thread_id }}
         </span>
         <span v-else class="sub-field discord-pending"> discord thread not yet created </span>
         <span class="sub-time-group">
-          <span class="sub-time">created {{ formatRelative(thread.created_at) }}</span>
-          <span class="sub-time">updated {{ formatRelative(thread.updated_at) }}</span>
+          <span class="sub-time">created {{ formatRelative(conversation.created_at) }}</span>
+          <span class="sub-time">updated {{ formatRelative(conversation.updated_at) }}</span>
         </span>
       </div>
 
@@ -95,15 +94,7 @@
 
       <div class="actions">
         <button
-          v-if="thread.status === 'active'"
-          class="pixel-btn"
-          :disabled="acting"
-          @click="onArchive"
-        >
-          Archive
-        </button>
-        <button
-          v-if="thread.status !== 'closed'"
+          v-if="conversation.status !== 'closed'"
           class="pixel-btn close-btn"
           :disabled="acting"
           @click="onClose"
@@ -118,7 +109,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useGuildStore } from '../stores/guild'
-import { useThreadsStore } from '../stores/threads'
+import { useConversationsStore } from '../stores/conversations'
 import { formatClock, formatRelative } from '../utils/format'
 import { renderMarkdown } from '../utils/markdown'
 import { useChatGrouping, isToolUseGroup } from '../composables/useChatGrouping'
@@ -126,28 +117,29 @@ import type { GroupedMessage } from '../composables/useChatGrouping'
 import type { ChatMessage } from '../types'
 
 const props = defineProps<{
-  id: string
+  id: number
 }>()
 
 const guildStore = useGuildStore()
-const threadsStore = useThreadsStore()
+const conversationsStore = useConversationsStore()
 
 const acting = ref(false)
 const loadingMessages = ref(false)
 const messagesEl = ref<HTMLElement | null>(null)
 
-const thread = computed(() => threadsStore.threads.find((t) => t.id === props.id))
+const conversation = computed(() => conversationsStore.conversations.find((c) => c.id === props.id))
 
-// History fetched once per thread (#1175) — separate from the live WS feed
-// below since the guild-wide `guildStore.messages` window is capped and may
-// have already scrolled this thread's older messages out.
+// History fetched once per conversation (#1298) — separate from the live WS
+// feed below since the guild-wide `guildStore.messages` window is capped and
+// may have already scrolled this conversation's older messages out.
 const history = ref<ChatMessage[]>([])
 
 // Live messages arrive on the shared guild WS connection (see stores/guild.ts)
-// tagged with `threadId` (backend/foreman/runner.py, ws_handlers.py); filter
-// down to this thread so in-progress/streaming replies show up immediately.
+// tagged with `conversationId` (backend/foreman/journal.py, routes/conversations.py);
+// filter down to this conversation so in-progress/streaming replies show up
+// immediately.
 const liveMessages = computed(() =>
-  guildStore.messages.filter((m) => (m as ChatMessage).threadId === props.id),
+  guildStore.messages.filter((m) => (m as ChatMessage).conversationId === props.id),
 )
 
 function _msgKey(m: ChatMessage): string {
@@ -211,29 +203,18 @@ function taskBadge(msg: GroupedMessage): string | null {
 async function load() {
   const guildId = guildStore.currentGuild?.id
   if (!guildId) return
-  if (!thread.value) {
+  if (!conversation.value) {
     try {
-      await threadsStore.fetchThread(guildId, props.id)
+      await conversationsStore.fetchConversation(guildId, props.id)
     } catch (e) {
-      console.error('Failed to fetch thread', e)
+      console.error('Failed to fetch conversation', e)
     }
   }
   loadingMessages.value = true
   try {
-    history.value = await threadsStore.fetchThreadMessages(guildId, props.id)
+    history.value = await conversationsStore.fetchConversationMessages(guildId, props.id)
   } finally {
     loadingMessages.value = false
-  }
-}
-
-async function onArchive() {
-  const guildId = guildStore.currentGuild?.id
-  if (!guildId || acting.value) return
-  acting.value = true
-  try {
-    await threadsStore.archiveThread(guildId, props.id)
-  } finally {
-    acting.value = false
   }
 }
 
@@ -242,7 +223,7 @@ async function onClose() {
   if (!guildId || acting.value) return
   acting.value = true
   try {
-    await threadsStore.closeThread(guildId, props.id)
+    await conversationsStore.closeConversation(guildId, props.id)
   } finally {
     acting.value = false
   }
@@ -265,7 +246,7 @@ watch(
 </script>
 
 <style scoped>
-.thread-detail {
+.conversation-detail {
   width: 100%;
   height: 100%;
   display: flex;

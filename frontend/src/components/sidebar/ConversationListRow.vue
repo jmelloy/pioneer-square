@@ -1,13 +1,13 @@
 <template>
   <div
-    class="thread-row"
+    class="conversation-row"
     :class="{ selected: isSelected }"
-    @click="uiStore.selectThread(thread.id)"
+    @click="uiStore.selectConversation(conversation.id)"
   >
-    <span class="thread-dot" :class="'dot-' + thread.status"></span>
-    <span class="thread-name">{{ thread.name || thread.id }}</span>
-    <span class="status-pill" :class="'status-' + thread.status">
-      {{ threadsStore.statusLabel(thread.status) }}
+    <span class="conversation-dot" :class="'dot-' + conversation.status"></span>
+    <span class="conversation-name">{{ conversation.name || conversation.id }}</span>
+    <span class="status-pill" :class="'status-' + conversation.status">
+      {{ conversationsStore.statusLabel(conversation.status) }}
     </span>
   </div>
 </template>
@@ -15,21 +15,21 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useUiStore } from '../../stores/ui'
-import { useThreadsStore } from '../../stores/threads'
-import type { ConversationThread } from '../../types'
+import { useConversationsStore } from '../../stores/conversations'
+import type { Conversation } from '../../types'
 
 const props = defineProps<{
-  thread: ConversationThread
+  conversation: Conversation
 }>()
 
 const uiStore = useUiStore()
-const threadsStore = useThreadsStore()
+const conversationsStore = useConversationsStore()
 
-const isSelected = computed(() => uiStore.selectedThreadId === props.thread.id)
+const isSelected = computed(() => uiStore.selectedConversationId === props.conversation.id)
 </script>
 
 <style scoped>
-.thread-row {
+.conversation-row {
   display: flex;
   align-items: center;
   gap: 7px;
@@ -40,16 +40,16 @@ const isSelected = computed(() => uiStore.selectedThreadId === props.thread.id)
   min-width: 0;
 }
 
-.thread-row:hover {
+.conversation-row:hover {
   background: rgba(232, 170, 0, 0.06);
 }
 
-.thread-row.selected {
+.conversation-row.selected {
   background: rgba(232, 170, 0, 0.12);
   border-left: 3px solid var(--color-brass);
 }
 
-.thread-dot {
+.conversation-dot {
   width: 6px;
   height: 6px;
   border-radius: 2px;
@@ -67,7 +67,7 @@ const isSelected = computed(() => uiStore.selectedThreadId === props.thread.id)
   background: var(--color-text-dim);
 }
 
-.thread-name {
+.conversation-name {
   font-size: 11px;
   color: var(--color-text);
   white-space: nowrap;

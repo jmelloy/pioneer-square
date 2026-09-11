@@ -28,7 +28,7 @@ export const useGuildStore = defineStore('guild', () => {
   let manualClose = false
 
   // Stores that want every inbound frame register here once (see agents.ts /
-  // tasks.ts / threads.ts / usage.ts). Persists across reconnects — unlike
+  // tasks.ts / conversations.ts / usage.ts). Persists across reconnects — unlike
   // the old per-call `onMessage` callback, it isn't reconnect-scoped state
   // that has to be re-threaded through connectWebSocket → _scheduleReconnect
   // → connectWebSocket on every retry.

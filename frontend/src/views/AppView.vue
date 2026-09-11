@@ -39,7 +39,7 @@ import { useAgentsStore } from '../stores/agents'
 import { useAuthStore } from '../stores/auth'
 import { useGitHubStore } from '../stores/github'
 import { useTasksStore } from '../stores/tasks'
-import { useThreadsStore } from '../stores/threads'
+import { useConversationsStore } from '../stores/conversations'
 import { useUsageStore } from '../stores/usage'
 import GuildSidebar from '../components/GuildSidebar.vue'
 import MainView from '../components/MainView.vue'
@@ -64,7 +64,7 @@ const agentsStore = useAgentsStore()
 const authStore = useAuthStore()
 const ghStore = useGitHubStore()
 const tasksStore = useTasksStore()
-const threadsStore = useThreadsStore()
+const conversationsStore = useConversationsStore()
 const usageStore = useUsageStore()
 
 async function initGuild(guildId: string) {
@@ -86,16 +86,16 @@ async function initGuild(guildId: string) {
 
   agentsStore.clearAgents()
   tasksStore.clearTasks()
-  threadsStore.clearThreads()
+  conversationsStore.clearConversations()
   usageStore.clearUsage()
   const guild = await guildStore.joinGuild(guildId)
   if (!guild) {
     router.replace('/')
     return
   }
-  // Load existing tasks and threads for this guild
+  // Load existing tasks and conversations for this guild
   await tasksStore.fetchTasks(guildId)
-  threadsStore.fetchThreads(guildId)
+  conversationsStore.fetchConversations(guildId)
   usageStore.fetchUsage(guildId)
 
   if (guild.agents) {
@@ -115,8 +115,8 @@ async function initGuild(guildId: string) {
       )
   }
 
-  // Routing lives in guildStore: agents/tasks/threads/usage each declared
-  // their own interest via subscribeWS when their store was first used.
+  // Routing lives in guildStore: agents/tasks/conversations/usage each
+  // declared their own interest via subscribeWS when their store was first used.
   guildStore.connectWebSocket(guildId)
 
   if (ghStore.isConfigured) {
@@ -145,7 +145,7 @@ onMounted(async () => {
 onUnmounted(() => {
   guildStore.disconnectWebSocket()
   tasksStore.clearTasks()
-  threadsStore.clearThreads()
+  conversationsStore.clearConversations()
   usageStore.clearUsage()
   document.title = 'Pioneer Square'
 })

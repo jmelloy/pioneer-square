@@ -1,5 +1,5 @@
 <template>
-  <div class="thread-list">
+  <div class="conversation-list">
     <div class="list-toolbar">
       <div class="status-filter">
         <button
@@ -15,11 +15,17 @@
     </div>
 
     <div class="rows">
-      <div v-if="loading && threadsStore.threads.length === 0" class="empty-state">Loading…</div>
-      <div v-else-if="threadsStore.threads.length === 0" class="empty-state">
+      <div v-if="loading && conversationsStore.conversations.length === 0" class="empty-state">
+        Loading…
+      </div>
+      <div v-else-if="conversationsStore.conversations.length === 0" class="empty-state">
         No conversations yet. Send a message to the Foreman to start one.
       </div>
-      <ThreadListRow v-for="thread in threadsStore.threads" :key="thread.id" :thread="thread" />
+      <ConversationListRow
+        v-for="conversation in conversationsStore.conversations"
+        :key="conversation.id"
+        :conversation="conversation"
+      />
     </div>
   </div>
 </template>
@@ -27,11 +33,11 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
 import { useGuildStore } from '../../stores/guild'
-import { useThreadsStore } from '../../stores/threads'
-import type { ThreadStatus } from '../../types'
-import ThreadListRow from './ThreadListRow.vue'
+import { useConversationsStore } from '../../stores/conversations'
+import type { ConversationStatus } from '../../types'
+import ConversationListRow from './ConversationListRow.vue'
 
-const FILTER_OPTIONS: Array<{ value: ThreadStatus | undefined; label: string }> = [
+const FILTER_OPTIONS: Array<{ value: ConversationStatus | undefined; label: string }> = [
   { value: undefined, label: 'All' },
   { value: 'active', label: 'Active' },
   { value: 'archived', label: 'Archived' },
@@ -39,22 +45,22 @@ const FILTER_OPTIONS: Array<{ value: ThreadStatus | undefined; label: string }> 
 ]
 
 const guildStore = useGuildStore()
-const threadsStore = useThreadsStore()
+const conversationsStore = useConversationsStore()
 const loading = ref(false)
-const statusFilter = ref<ThreadStatus | undefined>(undefined)
+const statusFilter = ref<ConversationStatus | undefined>(undefined)
 
 async function load() {
   const guildId = guildStore.currentGuild?.id
   if (!guildId) return
   loading.value = true
   try {
-    await threadsStore.fetchThreads(guildId, statusFilter.value)
+    await conversationsStore.fetchConversations(guildId, statusFilter.value)
   } finally {
     loading.value = false
   }
 }
 
-function setFilter(value: ThreadStatus | undefined) {
+function setFilter(value: ConversationStatus | undefined) {
   statusFilter.value = value
   load()
 }
@@ -65,7 +71,7 @@ watch(() => guildStore.currentGuild?.id, load)
 </script>
 
 <style scoped>
-.thread-list {
+.conversation-list {
   flex: 1;
   display: flex;
   flex-direction: column;
