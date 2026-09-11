@@ -103,6 +103,21 @@ describe('useGuildStore', () => {
       expect(first.closed).toBe(true)
       expect(FakeWebSocket.instances).toHaveLength(2)
     })
+
+    it('ignores the previous socket close after reconnecting', () => {
+      vi.useFakeTimers()
+      const store = useGuildStore()
+      store.connectWebSocket('g-1')
+      const first = FakeWebSocket.instances[0]
+      store.connectWebSocket('g-1')
+
+      first.simulateClose({ wasClean: false, code: 1006 })
+      vi.advanceTimersByTime(60_000)
+
+      expect(FakeWebSocket.instances).toHaveLength(2)
+      expect(store.reconnectAttempt).toBe(0)
+      vi.useRealTimers()
+    })
   })
 
   describe('incoming WS messages', () => {
