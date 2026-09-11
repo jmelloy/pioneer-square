@@ -106,6 +106,7 @@ export const useGuildStore = defineStore('guild', () => {
     }
     if (ws) {
       try {
+        ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null
         ws.close()
       } catch {
         /* ignore */
@@ -129,10 +130,12 @@ export const useGuildStore = defineStore('guild', () => {
     ws = socket
 
     socket.onopen = () => {
+      if (socket !== ws) return
       isConnected.value = true
       reconnectAttempt.value = 0
     }
     socket.onmessage = (event) => {
+      if (socket !== ws) return
       let frame: WSFrame
       try {
         frame = JSON.parse(event.data) as WSFrame
@@ -149,6 +152,7 @@ export const useGuildStore = defineStore('guild', () => {
       }
     }
     socket.onclose = (event) => {
+      if (socket !== ws) return
       isConnected.value = false
       if (manualClose) return
       if (!event.wasClean) {
@@ -157,6 +161,7 @@ export const useGuildStore = defineStore('guild', () => {
       _scheduleReconnect(guildId)
     }
     socket.onerror = (event) => {
+      if (socket !== ws) return
       isConnected.value = false
       console.error('WebSocket error', event)
     }
