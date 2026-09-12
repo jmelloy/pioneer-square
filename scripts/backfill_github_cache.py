@@ -26,9 +26,49 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 from database import AsyncSessionLocal  # noqa: E402
 from db import github_cache  # noqa: E402
+from models import Task  # noqa: E402
+from sqlmodel import col, select  # noqa: E402
+from sqlmodel.ext.asyncio.session import AsyncSession  # noqa: E402
 
 GH_API = "https://api.github.com"
 PER_PAGE = 100
+
+
+async def _issue_conversation_id(db: AsyncSession, repo: str, issue_number: int) -> int | None:
+    """Best-effort conversation_id for an issue, from a matching task (#1300).
+
+    Not guild-scoped like the webhook path's equivalent lookup (this script
+    backfills across whichever repos it's pointed at, with no guild
+    context) — matches purely on (issue_repo, issue_number), preferring the
+    most recently created task that actually has one set.
+    """
+    result = await db.exec(
+        select(col(Task.conversation_id))
+        .where(
+            col(Task.issue_repo) == repo,
+            col(Task.issue_number) == issue_number,
+            col(Task.conversation_id).is_not(None),
+        )
+        .order_by(col(Task.created_at).desc())
+        .limit(1)
+    )
+    return result.first()
+
+
+async def _pr_conversation_id(db: AsyncSession, repo: str, pr_number: int) -> int | None:
+    """Best-effort conversation_id for a PR, from a matching task (#1300). See
+    ``_issue_conversation_id`` for why this isn't guild-scoped."""
+    result = await db.exec(
+        select(col(Task.conversation_id))
+        .where(
+            col(Task.pr_repo) == repo,
+            col(Task.pr_number) == pr_number,
+            col(Task.conversation_id).is_not(None),
+        )
+        .order_by(col(Task.created_at).desc())
+        .limit(1)
+    )
+    return result.first()
 
 
 def _headers(token: str | None) -> dict[str, str]:
@@ -71,10 +111,12 @@ async def backfill_repo(client: httpx.AsyncClient, repo: str) -> None:
 
     async with AsyncSessionLocal() as db:
         for i, issue in enumerate(issues, start=1):
-            await github_cache.upsert_issue(db, repo, issue)
+            conversation_id = await _issue_conversation_id(db, repo, issue["number"])
+            await github_cache.upsert_issue(db, repo, issue, conversation_id=conversation_id)
             print(f"[{repo}] upserted issue #{issue['number']} ({i}/{len(issues)})")
         for i, pr in enumerate(prs, start=1):
-            await github_cache.upsert_pr(db, repo, pr)
+            conversation_id = await _pr_conversation_id(db, repo, pr["number"])
+            await github_cache.upsert_pr(db, repo, pr, conversation_id=conversation_id)
             print(f"[{repo}] upserted PR #{pr['number']} ({i}/{len(prs)})")
 
 

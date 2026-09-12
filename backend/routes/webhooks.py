@@ -1306,17 +1306,27 @@ async def ci_notify(
 
     task_id = body.task_id
     message_task_id: str | None = None  # FK field — only set when task is confirmed to exist
+    # Message.conversation_id (#1300) mirrors the linked task's conversation_id
+    # so this CI notification appears in the owning conversation's timeline;
+    # stays null when no task is linked or that task has no conversation.
+    message_conversation_id: int | None = None
     if task_id:
         # Validate the caller-provided task_id belongs to this guild before using it as FK
-        task_exists = await db.scalar(
-            select(col(Task.id)).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
-        )
-        message_task_id = task_id if task_exists else None
+        task_row = (
+            await db.exec(
+                select(col(Task.id), col(Task.conversation_id)).where(
+                    col(Task.id) == task_id, col(Task.guild_id) == guild_pk
+                )
+            )
+        ).one_or_none()
+        message_task_id = task_id if task_row else None
+        message_conversation_id = task_row.conversation_id if task_row else None
     elif body.pr_number is not None:
         task_row = await _find_task(db, guild_pk, repo, body.pr_number)
         if task_row:
             task_id = task_row.id
             message_task_id = task_id
+            message_conversation_id = task_row.conversation_id
 
     task_part = f" (task {task_id})" if task_id else ""
     run_part = (
@@ -1334,6 +1344,7 @@ async def ci_notify(
             message_type="chat",
             created_at=created_at,
             task_id=message_task_id,
+            conversation_id=message_conversation_id,
         )
     )
     await db.commit()
