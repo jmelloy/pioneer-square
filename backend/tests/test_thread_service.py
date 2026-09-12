@@ -505,7 +505,7 @@ class TestReactivateConversationThread:
         assert reactivated is not None
         assert reactivated.id == thread.id
         assert reactivated.status == "active"
-        mock_unarchive.assert_called_once_with(thread_id=thread.id, status="active")
+        mock_unarchive.assert_called_once_with("discord-thread-react", status="active")
 
         async with database_module.AsyncSessionLocal() as db:
             conversation = await db.get(Conversation, conversation.id)
