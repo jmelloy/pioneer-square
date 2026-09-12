@@ -407,13 +407,112 @@ async def test_cmd_pickup_creates_task_and_broadcasts(monkeypatch):
     ):
         from routes.discord import _cmd_pickup
 
-        await _cmd_pickup("tok-p", "test-guild", "https://github.com/org/repo/issues/10")
+        await _cmd_pickup(
+            {"token": "tok-p"}, "test-guild", "https://github.com/org/repo/issues/10"
+        )
 
     assert mock_db.add.called
     assert mock_db.commit.called
     assert broadcast_calls
     assert sent
     assert "10" in sent[0]["embeds"][0]["title"]
+
+
+@pytest.mark.asyncio
+async def test_cmd_pickup_no_linked_account_leaves_conversation_unset(monkeypatch):
+    """/ps pickup from an unlinked Discord account leaves user_id/conversation_id null (#1300)."""
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "app-id")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+
+    guild = MagicMock()
+    guild.id = 7
+
+    mock_db = AsyncMock()
+    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_db.__aexit__ = AsyncMock(return_value=False)
+    mock_db.exec = AsyncMock(
+        side_effect=[
+            MagicMock(one_or_none=MagicMock(return_value=guild)),
+            MagicMock(one_or_none=MagicMock(return_value=None)),
+        ]
+    )
+    mock_db.add = MagicMock()
+    mock_db.commit = AsyncMock()
+
+    async def fake_patch(path, payload):
+        pass
+
+    async def fake_broadcast(guild_slug, msg):
+        pass
+
+    interaction = {
+        "token": "tok-p",
+        "member": {"user": {"id": "d-999", "username": "unlinked"}},
+    }
+
+    with (
+        patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
+        patch("discord_notifier.patch", new=fake_patch),
+        patch("routes.discord.broadcast_msg", new=fake_broadcast),
+    ):
+        from routes.discord import _cmd_pickup
+
+        await _cmd_pickup(interaction, "test-guild", "https://github.com/org/repo/issues/12")
+
+    added_task = mock_db.add.call_args[0][0]
+    assert added_task.user_id is None
+    assert added_task.conversation_id is None
+
+
+@pytest.mark.asyncio
+async def test_cmd_pickup_linked_account_stamps_conversation_id(monkeypatch):
+    """/ps pickup from a linked Discord account resolves a conversation for the task (#1300)."""
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "app-id")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+
+    guild = MagicMock()
+    guild.id = 7
+
+    mock_db = AsyncMock()
+    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_db.__aexit__ = AsyncMock(return_value=False)
+    mock_db.exec = AsyncMock(
+        side_effect=[
+            MagicMock(one_or_none=MagicMock(return_value=guild)),
+            MagicMock(one_or_none=MagicMock(return_value="u-123")),
+        ]
+    )
+    mock_db.add = MagicMock()
+    mock_db.commit = AsyncMock()
+
+    async def fake_patch(path, payload):
+        pass
+
+    async def fake_broadcast(guild_slug, msg):
+        pass
+
+    async def fake_resolve_conversation_id(db, guild_pk, **kwargs):
+        assert kwargs.get("user_id") == "u-123"
+        return 42
+
+    interaction = {
+        "token": "tok-p",
+        "member": {"user": {"id": "d-1", "username": "alice"}},
+    }
+
+    with (
+        patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
+        patch("discord_notifier.patch", new=fake_patch),
+        patch("routes.discord.broadcast_msg", new=fake_broadcast),
+        patch("routes.discord.resolve_conversation_id", new=fake_resolve_conversation_id),
+    ):
+        from routes.discord import _cmd_pickup
+
+        await _cmd_pickup(interaction, "test-guild", "https://github.com/org/repo/issues/13")
+
+    added_task = mock_db.add.call_args[0][0]
+    assert added_task.user_id == "u-123"
+    assert added_task.conversation_id == 42
 
 
 @pytest.mark.asyncio
@@ -430,7 +529,7 @@ async def test_cmd_pickup_invalid_url_sends_error(monkeypatch):
     with patch("discord_notifier.patch", new=fake_patch):
         from routes.discord import _cmd_pickup
 
-        await _cmd_pickup("tok-bad", "test-guild", "not-a-url")
+        await _cmd_pickup({"token": "tok-bad"}, "test-guild", "not-a-url")
 
     assert sent
     assert "Invalid" in sent[0]["content"]
@@ -467,14 +566,67 @@ async def test_cmd_review_creates_task(monkeypatch):
     ):
         from routes.discord import _cmd_review
 
-        await _cmd_review("tok-r", "test-guild", "https://github.com/org/repo/pull/99")
+        await _cmd_review({"token": "tok-r"}, "test-guild", "https://github.com/org/repo/pull/99")
 
     assert mock_db.add.called
     added_task = mock_db.add.call_args[0][0]
     assert added_task.phase == "review"
     assert added_task.pr_number == 99
+    assert added_task.user_id is None
+    assert added_task.conversation_id is None
     assert sent
     assert "99" in sent[0]["embeds"][0]["title"]
+
+
+@pytest.mark.asyncio
+async def test_cmd_review_linked_account_stamps_conversation_id(monkeypatch):
+    """/ps review from a linked Discord account resolves a conversation for the task (#1300)."""
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "app-id")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+
+    guild = MagicMock()
+    guild.id = 5
+
+    mock_db = AsyncMock()
+    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_db.__aexit__ = AsyncMock(return_value=False)
+    mock_db.exec = AsyncMock(
+        side_effect=[
+            MagicMock(one_or_none=MagicMock(return_value=guild)),
+            MagicMock(one_or_none=MagicMock(return_value="u-456")),
+        ]
+    )
+    mock_db.add = MagicMock()
+    mock_db.commit = AsyncMock()
+
+    async def fake_patch(path, payload):
+        pass
+
+    async def fake_broadcast(guild_slug, msg):
+        pass
+
+    async def fake_resolve_conversation_id(db, guild_pk, **kwargs):
+        assert kwargs.get("user_id") == "u-456"
+        return 77
+
+    interaction = {
+        "token": "tok-r",
+        "member": {"user": {"id": "d-2", "username": "bob"}},
+    }
+
+    with (
+        patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
+        patch("discord_notifier.patch", new=fake_patch),
+        patch("routes.discord.broadcast_msg", new=fake_broadcast),
+        patch("routes.discord.resolve_conversation_id", new=fake_resolve_conversation_id),
+    ):
+        from routes.discord import _cmd_review
+
+        await _cmd_review(interaction, "test-guild", "https://github.com/org/repo/pull/100")
+
+    added_task = mock_db.add.call_args[0][0]
+    assert added_task.user_id == "u-456"
+    assert added_task.conversation_id == 77
 
 
 @pytest.mark.asyncio
