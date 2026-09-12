@@ -76,7 +76,6 @@ import logging
 import os
 import random
 import time
-from datetime import UTC, datetime
 
 import websockets
 from discord.auth import mentions_bot_user, mentions_foreman_role
@@ -171,47 +170,6 @@ async def _is_channel_wired(channel_id: str) -> bool:
     wired = await _query_channel_wired(channel_id)
     _channel_wired_cache[channel_id] = (wired, now + _CHANNEL_WIRED_CACHE_TTL)
     return wired
-
-
-async def _sync_thread_status(
-    discord_thread_id: str, status: str, *, soft_delete: bool = False
-) -> None:
-    """DEPRECATED (issue #1168): no longer called.
-
-    Retained temporarily for backward compatibility with any external
-    callers. The gateway handlers now use
-    ``discord.thread_mirror.relay_discord_thread_event`` instead, which
-    does NOT write Discord state onto the Foreman Thread row — the Foreman
-    owns thread lifecycle, Discord merely mirrors it.
-    """
-    try:
-        from database import AsyncSessionLocal  # noqa: PLC0415
-        from models import Thread  # noqa: PLC0415
-        from sqlmodel import col, select  # noqa: PLC0415
-
-        async with AsyncSessionLocal() as db:
-            result = await db.exec(
-                select(Thread).where(
-                    col(Thread.discord_thread_id) == discord_thread_id,
-                    col(Thread.deleted_at).is_(None),
-                )
-            )
-            thread = result.first()
-            if thread is None:
-                return
-            now = datetime.now(UTC)
-            thread.status = status
-            thread.updated_at = now
-            if soft_delete:
-                thread.deleted_at = now
-            db.add(thread)
-            await db.commit()
-    except Exception:
-        logger.warning(
-            "discord gateway: failed to sync thread status discord_thread_id=%s",
-            discord_thread_id,
-            exc_info=True,
-        )
 
 
 async def _query_channel_wired(channel_id: str) -> bool:

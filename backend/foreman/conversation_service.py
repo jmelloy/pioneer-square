@@ -264,3 +264,48 @@ async def close_conversation(db: AsyncSession, conversation: Conversation) -> No
         from discord.thread_mirror import archive_conversation_thread_by_id  # noqa: PLC0415
 
         await archive_conversation_thread_by_id(conversation.discord_thread_id)
+
+
+async def close_active_conversation_for_user(guild_slug: str, user_id: str) -> None:
+    """Close *user_id*'s active conversation in *guild_slug*, if one exists (#1288).
+
+    Replaces the old ``discord_notifier.archive_conversation_thread``, which
+    archived a Discord thread keyed by a legacy ``"<guild>:<user_id>"``
+    subject — a key Foreman-managed conversation threads (bound via
+    ``Conversation.discord_thread_id``, not that legacy table) never wrote,
+    so it silently did nothing for any conversation created after #1167.
+    Called by ``routes/foreman.py:clear_foreman_context`` — clearing a user's
+    Foreman history is the closest existing "conversation closed" signal, so
+    this both marks the ``Conversation`` closed and archives its mirrored
+    Discord thread via :func:`close_conversation`. Silent no-op if the guild
+    or an active conversation can't be resolved. Never raises.
+    """
+    from auth_deps import get_guild_pk  # noqa: PLC0415
+    from database import AsyncSessionLocal  # noqa: PLC0415
+
+    try:
+        async with AsyncSessionLocal() as db:
+            guild_pk = await get_guild_pk(db, guild_slug)
+            if guild_pk is None:
+                return
+            result = await db.exec(
+                select(Conversation)
+                .where(
+                    col(Conversation.guild_id) == guild_pk,
+                    col(Conversation.user_id) == user_id,
+                    col(Conversation.status) == "active",
+                )
+                .order_by(col(Conversation.updated_at).desc())
+                .limit(1)
+            )
+            conversation = result.first()
+            if conversation is None:
+                return
+            await close_conversation(db, conversation)
+    except Exception:
+        logger.warning(
+            "conversation_service: failed to close active conversation guild=%s user=%s",
+            guild_slug,
+            user_id,
+            exc_info=True,
+        )

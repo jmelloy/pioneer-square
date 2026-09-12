@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from discord.thread_mirror import (
-    _get_discord_thread_id,
     _stamp_discord_thread_id,
     archive_conversation_thread_by_id,
     on_thread_created,
@@ -120,46 +119,38 @@ class TestOnThreadCreated:
 
 
 class TestOnThreadUpdated:
-    """Test on_thread_updated mirrors Foreman status to Discord."""
+    """Test on_thread_updated mirrors Foreman status to Discord.
+
+    Issue #1288: on_thread_updated is keyed by the Discord thread id the
+    caller already has in hand (``Thread.discord_thread_id``) — it does no
+    lookup of its own, so these tests pass it directly instead of mocking a
+    lookup helper.
+    """
 
     async def test_archives_discord_thread_when_foreman_archives(
         self, mock_bot_token, mock_bot_request
     ):
-        with patch(
-            "discord.thread_mirror._get_discord_thread_id",
-            new_callable=AsyncMock,
-            return_value="discord-thread-999",
-        ):
-            await on_thread_updated(thread_id="th-abc", status="archived")
-            mock_bot_request.assert_called_once_with(
-                "patch",
-                "/channels/discord-thread-999",
-                {"archived": True},
-            )
+        await on_thread_updated("discord-thread-999", status="archived")
+        mock_bot_request.assert_called_once_with(
+            "patch",
+            "/channels/discord-thread-999",
+            {"archived": True},
+        )
 
     async def test_unarchives_discord_thread_when_foreman_reactivates(
         self, mock_bot_token, mock_bot_request
     ):
-        with patch(
-            "discord.thread_mirror._get_discord_thread_id",
-            new_callable=AsyncMock,
-            return_value="discord-thread-999",
-        ):
-            await on_thread_updated(thread_id="th-abc", status="active")
-            mock_bot_request.assert_called_once_with(
-                "patch",
-                "/channels/discord-thread-999",
-                {"archived": False},
-            )
+        await on_thread_updated("discord-thread-999", status="active")
+        mock_bot_request.assert_called_once_with(
+            "patch",
+            "/channels/discord-thread-999",
+            {"archived": False},
+        )
 
-    async def test_noop_when_no_discord_thread(self, mock_bot_token):
-        with patch(
-            "discord.thread_mirror._get_discord_thread_id",
-            new_callable=AsyncMock,
-            return_value=None,
-        ):
-            # Should not raise
-            await on_thread_updated(thread_id="th-abc", status="archived")
+    async def test_noop_when_no_discord_thread(self, mock_bot_token, mock_bot_request):
+        # Should not raise
+        await on_thread_updated(None, status="archived")
+        mock_bot_request.assert_not_called()
 
 
 class TestRelayDiscordThreadEvent:

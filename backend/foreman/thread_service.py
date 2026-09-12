@@ -288,7 +288,7 @@ async def reactivate_conversation_thread(
         try:
             from discord.thread_mirror import on_thread_updated  # noqa: PLC0415
 
-            await on_thread_updated(thread_id=thread.id, status="active")
+            await on_thread_updated(thread.discord_thread_id, status="active")
         except Exception:
             logger.warning(
                 "thread_service: failed to un-archive Discord thread for reactivated "
@@ -338,7 +338,7 @@ async def broadcast_thread_updated(db: AsyncSession, thread: Thread) -> None:
             from discord.thread_mirror import on_thread_updated  # noqa: PLC0415
 
             await on_thread_updated(
-                thread_id=thread.id,
+                thread.discord_thread_id,
                 status=thread.status,
                 deleted_at=thread.deleted_at.isoformat() if thread.deleted_at else None,
             )
