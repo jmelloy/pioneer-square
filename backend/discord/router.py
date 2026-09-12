@@ -208,9 +208,15 @@ def _resolve_conversation_session(subject_key: str) -> str | None:
     Conversation-first in ``resolve_session`` via
     ``Conversation.discord_thread_id`` directly, never through this table.
 
+    Returns None for a bare Foreman ``Thread.id`` (``"th-..."``, no ``:``) —
+    the caller (``resolve_session``) handles that format itself via the
+    async ``_resolve_foreman_thread_session`` fallback.
+
     No task scoping — a per-conversation thread is ad-hoc Foreman
     chat, not tied to any one task.
     """
+    if subject_key.startswith("th-"):
+        return None
     slug, _, _user_id = subject_key.partition(":")
     return slug or None
 

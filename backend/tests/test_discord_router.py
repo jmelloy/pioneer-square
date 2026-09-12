@@ -127,6 +127,80 @@ async def test_resolve_session_unresolvable_channel_returns_none(client):
 
 
 @pytest.mark.asyncio
+async def test_resolve_session_conversation_resolves_via_discord_thread_id_directly(client):
+    """Issue #1288: a conversation thread routes via Conversation.discord_thread_id
+    directly, with no discord_thread_bindings row at all — the Conversation-first
+    primary path, distinct from the legacy/fallback binding-table lookups exercised
+    by the other subject types above."""
+    import database as database_module
+    from auth_deps import get_guild_pk
+    from foreman.thread_service import (
+        get_or_create_active_thread,
+        sync_conversation_after_thread_update,
+    )
+
+    _test_client, db_url = client
+    insert_guild(db_url, "g-router-conv1")
+
+    async with database_module.AsyncSessionLocal() as db:
+        guild_pk = await get_guild_pk(db, "g-router-conv1")
+        thread, _ = await get_or_create_active_thread(db, guild_pk, "user-conv1")
+        thread.discord_thread_id = "discord-thread-conv1"
+        db.add(thread)
+        await sync_conversation_after_thread_update(db, thread, previous_status=thread.status)
+        await db.commit()
+
+    session = await router.resolve_session("discord-thread-conv1")
+
+    assert session == ("g-router-conv1", None)
+
+
+@pytest.mark.asyncio
+async def test_resolve_session_conversation_fallback_when_superseded(client):
+    """A Discord thread bound in discord_thread_bindings under an older Foreman
+    Thread that a newer one has since superseded (so Conversation.discord_thread_id
+    no longer points at it) still routes, via the Thread-id-keyed fallback."""
+    import database as database_module
+    from auth_deps import get_guild_pk
+    from models import Conversation, Thread
+
+    _test_client, db_url = client
+    insert_guild(db_url, "g-router-conv2")
+
+    async with database_module.AsyncSessionLocal() as db:
+        guild_pk = await get_guild_pk(db, "g-router-conv2")
+        now = datetime.now(UTC)
+        conversation = Conversation(
+            guild_id=guild_pk,
+            user_id="user-conv2",
+            created_at=now,
+            updated_at=now,
+            status="active",
+            # A newer thread has already superseded the one bound below, so
+            # the Conversation's own discord_thread_id points elsewhere.
+            discord_thread_id="discord-thread-new1",
+        )
+        db.add(conversation)
+        await db.flush()
+        old_thread = Thread(
+            id="th-superseded1",
+            conversation_id=conversation.id,
+            status="archived",
+            discord_thread_id="discord-thread-old1",
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(old_thread)
+        await db.commit()
+
+    _insert_binding(db_url, "conversation", "th-superseded1", "discord-thread-old1")
+
+    session = await router.resolve_session("discord-thread-old1")
+
+    assert session == ("g-router-conv2", None)
+
+
+@pytest.mark.asyncio
 async def test_persist_inbound_message_finds_conversation_by_discord_thread_id(client):
     """Issue #1278: a reply posted into an existing (even archived) Discord
     thread is attributed to the Conversation bound to it via
