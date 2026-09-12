@@ -170,23 +170,31 @@ channel. No-op if blank.
 
 ### Thread-per-conversation
 
-Ad-hoc Foreman chat — not scoped to any task — gets its own Discord thread per `(guild, user)`
-pair instead of cluttering the main channel, keeping each conversation isolated the same way a
-PR/issue or task-stream thread does:
+Ad-hoc Foreman chat — not scoped to any task — gets its own Discord thread per Foreman
+`Conversation` instead of cluttering the main channel, keeping each conversation isolated the
+same way a PR/issue or task-stream thread does. Conversation-first (issue #1288): Discord never
+creates or owns this thread itself — it mirrors the Foreman's own conversation lifecycle
+(`foreman.thread_service`/`foreman.conversation_service`).
 
-- **Lazy creation** — the first ad-hoc reply for a user in a guild posts a starter message in the
-  resolved channel, then creates a thread named from that reply's content (truncated to ~80
-  chars, prefixed `💬`).
-- **Persistence** — the mapping is stored in `discord_thread_bindings`, keyed
-  `subject_type="conversation"`, `subject_key="<guild-slug>:<user_id>"`.
-- **Reuse & routing** — every later ad-hoc reply for that user reuses the same thread, and a
-  reply typed *in* the thread routes back to that same Foreman conversation
-  (`discord/router.py`), exactly like an issue or task-stream thread.
-- **Auto-archive** — created with an explicit 24h `auto_archive_duration` so an idle conversation
-  archives natively regardless of the channel's own default.
+- **Lazy creation** — the first time the Foreman creates a thread for a conversation
+  (`foreman.thread_service.ensure_conversation_thread`), `discord/thread_mirror.on_thread_created`
+  mirrors it: posts a starter message in the resolved channel, then creates a thread named from
+  that reply's content (truncated to 100 chars, prefixed `💬`).
+- **Persistence** — the binding lives on `Conversation.discord_thread_id` (unique), the source of
+  truth for a conversation's Discord thread; a `discord_thread_bindings` row (subject
+  `"conversation"`) is also kept as a routing fallback for a thread a newer one has since
+  superseded.
+- **Reuse & routing** — every later reply in that conversation reuses the same thread
+  (`discord_notifier.notify_foreman_chat` reads `Conversation.discord_thread_id` directly), and a
+  reply typed *in* the thread routes back to that same Foreman conversation (`discord/router.py`,
+  resolved straight from `Conversation.discord_thread_id`) — exactly like an issue or task-stream
+  thread, minus the lookup table.
+- **Auto-archive** — the Foreman's own idle sweep (`foreman/thread_maintenance.py`) archives a
+  quiet conversation's thread; Discord's own inactivity timer is a backstop, not the primary path.
 - **Explicit cleanup** — clearing a user's Foreman history (`POST
-  /guilds/{guild_id}/foreman/clear-context`) also archives their conversation thread, since that
-  is the closest existing "conversation closed" signal.
+  /guilds/{guild_id}/foreman/clear-context`) closes their active `Conversation`
+  (`foreman.conversation_service.close_active_conversation_for_user`), which also archives its
+  mirrored Discord thread — the closest existing "conversation closed" signal.
 
 An @-mention reply (which always targets the channel/DM it came from) and any task-scoped reply
 take priority over this — see `notify_foreman_chat` in `backend/discord_notifier.py`.

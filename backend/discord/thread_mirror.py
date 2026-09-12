@@ -17,18 +17,26 @@ Architecture:
       Discord confirms thread creation
 
 Entry points:
-    ``on_thread_created``  — called when Foreman creates a new thread
-    ``on_thread_updated``  — called when Foreman updates thread status
-    ``mirror_foreman_message`` — posts a Foreman reply into the mirrored Discord thread
-    ``relay_discord_thread_event`` — replaces ``_sync_thread_status``: relays
-        Discord-side archive/delete events inward without treating them as
-        authoritative state changes
+    ``on_thread_created``  — called when Foreman creates a new thread; the
+        only place that stamps ``Thread.discord_thread_id`` (and, through it,
+        ``Conversation.discord_thread_id`` — see ``_stamp_discord_thread_id``)
+    ``on_thread_updated``  — called when Foreman changes a thread's status,
+        given the Discord thread id directly by the caller (which already
+        holds the ``Thread``/``Conversation`` row) — no id lookup here
+    ``relay_discord_thread_event`` — replaces the deleted ``_sync_thread_status``:
+        relays Discord-side archive/delete events inward without treating
+        them as authoritative state changes
     ``rename_conversation_thread`` / ``archive_conversation_thread_by_id`` —
         issue #1278: mirror a *Conversation*-driven rename/close straight from
         ``Conversation.discord_thread_id`` (the source of truth for a
         conversation's Discord binding), with no ``Thread`` id lookup needed —
         used by ``foreman.conversation_service.rename_conversation``/
         ``close_conversation``.
+
+Aside from ``on_thread_created`` (which stamps the mirror id back onto
+``Thread``/``Conversation`` right after Discord confirms creation), every
+other entry point here is keyed by a Discord thread id the caller already
+has — never by looking a ``Thread`` id up itself (issue #1288).
 
 Requires: ``DISCORD_BOT_TOKEN``, ``DISCORD_GATEWAY_ENABLED``
 """
@@ -54,11 +62,17 @@ async def on_thread_created(
 
     Called when the Foreman creates a new thread (``thread-created`` event).
     Creates a Discord thread in the guild's configured channel and stamps
-    ``Thread.discord_thread_id`` with the result. Returns the Discord thread
-    ID, or None if creation failed or Discord is not configured.
+    ``Thread.discord_thread_id`` with the result — which
+    ``_stamp_discord_thread_id`` mirrors onto ``Conversation.discord_thread_id``
+    too, the field ``discord/router.py``'s inbound resolution and
+    ``discord_notifier.notify_foreman_chat`` both read directly. Returns the
+    Discord thread ID, or None if creation failed or Discord is not
+    configured.
 
     This is the ONLY path that creates Discord threads for conversations —
-    never ``discord_notifier._ensure_conversation_thread`` independently.
+    this module never creates one independently of a Foreman thread-lifecycle
+    event (issue #1288 removed the last fallback that once did,
+    ``discord_notifier._ensure_conversation_thread``).
     """
     if not discord_notifier.is_configured():
         return None
@@ -87,9 +101,11 @@ async def on_thread_created(
     # Stamp the discord_thread_id back onto the Foreman Thread row
     await _stamp_discord_thread_id(thread_id, discord_thread_id)
 
-    # Also save a DiscordThreadBinding so inbound routing (discord/router.py)
-    # can resolve messages in this Discord thread back to the conversation.
-    # subject_type="conversation" with key="<thread_id>" maps cleanly.
+    # Also save a DiscordThreadBinding as a compatibility fallback for inbound
+    # routing (discord/router.py) — the primary lookup there is
+    # Conversation.discord_thread_id (just stamped above), but this binding
+    # keeps a reply routable even after a newer Thread supersedes this one as
+    # the conversation's active thread (see _resolve_foreman_thread_session).
     await discord_notifier._save_thread("conversation", thread_id, discord_thread_id)
 
     logger.info(
@@ -136,20 +152,22 @@ async def _stamp_discord_thread_id(thread_id: str, discord_thread_id: str) -> No
 
 
 async def on_thread_updated(
-    thread_id: str,
+    discord_thread_id: str | None,
     status: str | None = None,
     deleted_at: str | None = None,
 ) -> None:
     """Mirror a Foreman thread status change to its Discord thread.
 
-    Called when the Foreman changes thread status (``thread-updated`` event).
-    Archives the Discord thread when Foreman archives/closes it, and
-    un-archives when Foreman re-activates it.
+    Called when the Foreman changes thread status (``thread-updated`` event),
+    with the Discord thread id the caller already has in hand (its own
+    ``Thread.discord_thread_id`` field) — this does no ``Thread`` lookup of
+    its own (issue #1288). Archives the Discord thread when Foreman
+    archives/closes it, and un-archives when Foreman re-activates it. No-op
+    if *discord_thread_id* is None (the Foreman thread was never mirrored to
+    Discord).
     """
     if not discord_notifier.is_configured():
         return
-
-    discord_thread_id = await _get_discord_thread_id(thread_id)
     if not discord_thread_id:
         return
 
@@ -175,37 +193,6 @@ async def on_thread_updated(
             "thread_mirror: un-archived Discord thread %s (foreman status=active)",
             discord_thread_id,
         )
-
-
-async def mirror_foreman_message(
-    thread_id: str,
-    content: str,
-    *,
-    guild_slug: str | None = None,
-) -> None:
-    """Post a Foreman reply into the mirrored Discord thread.
-
-    This is the mirror-side equivalent of ``notify_foreman_chat`` for
-    Foreman-owned threads: when the Foreman replies within a thread context,
-    this posts the reply to the corresponding Discord thread.
-
-    Falls back silently if no Discord thread exists for this Foreman thread.
-    """
-    if not content or not content.strip():
-        return
-    if not discord_notifier.is_configured():
-        return
-
-    discord_thread_id = await _get_discord_thread_id(thread_id)
-    if not discord_thread_id:
-        return
-
-    # Truncate to Discord's message limit
-    await discord_notifier._bot_request(
-        "post",
-        f"/channels/{discord_thread_id}/messages",
-        {"content": content[:2000]},
-    )
 
 
 async def relay_discord_thread_event(
@@ -270,8 +257,7 @@ async def rename_conversation_thread(discord_thread_id: str, name: str) -> None:
     Called by ``foreman.conversation_service.rename_conversation`` directly
     with ``Conversation.discord_thread_id`` — the source of truth for a
     conversation's Discord binding — so no ``Thread`` id lookup is needed
-    here, unlike ``on_thread_updated``/``mirror_foreman_message`` which are
-    keyed by the Foreman's internal ``Thread.id``. No-op if Discord isn't
+    here, same as ``on_thread_updated`` (issue #1288). No-op if Discord isn't
     configured. Never raises (``discord_notifier.rename_thread`` never
     raises).
     """
@@ -292,27 +278,3 @@ async def archive_conversation_thread_by_id(discord_thread_id: str) -> None:
     if not discord_notifier.is_configured():
         return
     await discord_notifier.archive_thread(discord_thread_id)
-
-
-async def _get_discord_thread_id(thread_id: str) -> str | None:
-    """Look up the Discord thread ID for a Foreman thread."""
-    try:
-        from database import AsyncSessionLocal  # noqa: PLC0415
-        from models import Thread  # noqa: PLC0415
-        from sqlmodel import col, select  # noqa: PLC0415
-
-        async with AsyncSessionLocal() as db:
-            result = await db.exec(
-                select(Thread.discord_thread_id).where(
-                    col(Thread.id) == thread_id,
-                    col(Thread.deleted_at).is_(None),
-                )
-            )
-            return result.first()
-    except Exception:
-        logger.warning(
-            "thread_mirror: failed to look up discord_thread_id for thread=%s",
-            thread_id,
-            exc_info=True,
-        )
-        return None

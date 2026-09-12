@@ -5,7 +5,19 @@ message belongs to, forwards it, and lets the existing Foreman chat mirror
 thread.
 
 Thread routing model (#885 — unified via the single ``discord_thread_bindings``
-table, keyed on ``(subject_type, subject_key)``):
+table, keyed on ``(subject_type, subject_key)``; made Conversation-first by
+#1288):
+    - a message in a Discord thread bound directly to a ``Conversation``
+      (``Conversation.discord_thread_id`` — see
+      ``_resolve_conversation_by_discord_thread``) is that conversation's
+      ad-hoc Foreman chat — routed with ``task_id=None``, same as a plain
+      wired channel, but the reply lands back in that same Discord thread
+      (``notify_foreman_chat`` reads the binding straight off
+      ``Conversation.discord_thread_id`` too) instead of the guild's main
+      channel. This is the primary, no-``discord_thread_bindings``-lookup
+      path for every conversation thread created since #1168; the table's
+      ``"conversation"`` subject rows below only matter for legacy or
+      superseded threads that predate or have fallen behind this lookup.
     - a message in an ``"issue"`` thread (a per-PR/issue thread) is chat about
       whichever task is linked to that issue/PR — routed with ``task_id`` set,
       so the reply lands back in the same thread (see
@@ -16,11 +28,6 @@ table, keyed on ``(subject_type, subject_key)``):
       threads carried no inbound binding at all, so a reply here was silently
       dropped before ever reaching this router (see
       ``discord/gateway.py:_query_channel_wired``, which now also covers them).
-    - a message in a ``"conversation"`` thread (a per-``(guild, user)``
-      thread-per-conversation for ad-hoc Foreman chat, #1161) is routed with
-      ``task_id=None``, same as a plain wired channel — but the reply lands
-      back in that conversation's own thread (``notify_foreman_chat`` reuses
-      it via the same subject key) instead of the guild's main channel.
     - a *top-level* message — anything that isn't a reply inside an existing
       Discord thread already bound to a ``Conversation`` (issue #1296) —
       always starts a brand-new ``Conversation`` instead of continuing
@@ -31,9 +38,10 @@ table, keyed on ``(subject_type, subject_key)``):
       routing), or in any other wired channel with no thread binding, is
       general/ad-hoc chat for that Pioneer Square guild — routed with
       ``task_id=None``, so the reply is posted directly to the guild's main
-      configured channel (or a fresh ``"conversation"`` thread when a
-      *user_id* resolves — see ``notify_foreman_chat``). ``notify_foreman_chat``
-      never creates a new dated thread; that fallback has been removed.
+      configured channel. ``notify_foreman_chat`` never creates a Discord
+      thread itself — one only exists here once the Foreman's own thread
+      lifecycle (``foreman.thread_service``) creates it and mirrors it via
+      ``discord/thread_mirror.on_thread_created``.
     - one exception to the above: a message that @-mentions the bot user
       (``discord.auth.mentions_bot_user``) or the foreman role
       (``discord.auth.mentions_foreman_role``) always gets a response, in any
@@ -190,31 +198,34 @@ def _resolve_foreman_daily_session(subject_key: str) -> str | None:
 
 
 def _resolve_conversation_session(subject_key: str) -> str | None:
-    """Return the guild slug for a ``"conversation"`` subject_key.
+    """Return the guild slug for a legacy ``"conversation"`` subject_key ``"slug:user_id"``.
 
-    Handles two key formats:
-    - Legacy: ``"slug:user_id"`` (from ``_ensure_conversation_thread``)
-    - Foreman-managed (#1168): a bare thread_id like ``"th-abc123"``
-      (from ``discord/thread_mirror.on_thread_created``) — requires async
-      DB lookup, so returns None here and is handled by the async fallback
-      in ``resolve_session``.
+    This is the pre-#1274 binding format, written only by the now-removed
+    ``discord_notifier._ensure_conversation_thread`` fallback — no code path
+    creates one anymore (issue #1288). Kept only so a Discord thread created
+    under the old scheme before that removal still routes. Every
+    Foreman-managed conversation thread created since (#1168) is resolved
+    Conversation-first in ``resolve_session`` via
+    ``Conversation.discord_thread_id`` directly, never through this table.
 
     No task scoping — a per-conversation thread is ad-hoc Foreman
     chat, not tied to any one task.
     """
-    if subject_key.startswith("th-"):
-        # Foreman-managed thread: can't resolve synchronously, handled by
-        # _resolve_foreman_thread_session in the async caller.
-        return None
     slug, _, _user_id = subject_key.partition(":")
     return slug or None
 
 
 async def _resolve_foreman_thread_session(thread_id: str) -> str | None:
-    """Return the guild slug for a Foreman-managed thread_id (#1168).
+    """Return the guild slug for a Foreman ``Thread.id`` (#1168), by joining
+    Thread -> Conversation -> Guild.
 
-    Resolves Thread -> Conversation -> Guild to find the guild slug.
-    Never raises.
+    Compatibility fallback only (issue #1288) — ``resolve_session`` tries
+    ``Conversation.discord_thread_id`` directly first; this only fires for a
+    Discord thread bound in ``discord_thread_bindings`` under an *older*
+    Foreman ``Thread`` that a newer thread has since superseded as its
+    conversation's active one (so ``Conversation.discord_thread_id`` no
+    longer points at it), e.g. a reply that lands in a stale thread just
+    before Discord's own archive catches up. Never raises.
     """
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415
@@ -236,6 +247,44 @@ async def _resolve_foreman_thread_session(thread_id: str) -> str | None:
         logger.warning(
             "discord router: foreman thread session lookup failed thread=%s",
             thread_id,
+            exc_info=True,
+        )
+        return None
+
+
+async def _resolve_conversation_by_discord_thread(channel_id: str) -> tuple[str, int] | None:
+    """Return ``(ps_guild_slug, conversation_id)`` for a Discord thread bound
+    directly to a :class:`Conversation`, or None (issue #1288).
+
+    The primary, Conversation-first inbound resolution path:
+    ``Conversation.discord_thread_id`` is the single source of truth for a
+    conversation's Discord binding (unique index — see the model's
+    docstring), set by ``discord/thread_mirror.on_thread_created`` and kept
+    current by ``foreman.thread_service`` as the conversation's active
+    ``Thread`` changes. No ``Thread`` join, and no dependency on
+    ``discord_thread_bindings`` at all — a reply in *any* Discord thread a
+    conversation currently owns resolves here before ``resolve_session``
+    ever consults the binding table's ``"conversation"`` rows (which only
+    exist for legacy/stale threads — see ``_resolve_conversation_session``/
+    ``_resolve_foreman_thread_session``). Never raises.
+    """
+    try:
+        from database import AsyncSessionLocal  # noqa: PLC0415
+        from models import Conversation, Guild  # noqa: PLC0415
+        from sqlmodel import col, select  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
+            result = await db.exec(
+                select(col(Guild.slug), col(Conversation.id))
+                .join(Conversation, col(Conversation.guild_id) == col(Guild.id))
+                .where(col(Conversation.discord_thread_id) == channel_id)
+            )
+            row = result.first()
+            return (row[0], row[1]) if row else None
+    except Exception:
+        logger.warning(
+            "discord router: conversation-by-discord-thread lookup failed channel=%s",
+            channel_id,
             exc_info=True,
         )
         return None
@@ -282,12 +331,26 @@ async def _guild_pk_for_slug(guild_slug: str) -> int | None:
 async def resolve_session(channel_id: str) -> tuple[str, str | None] | None:
     """Return ``(ps_guild_slug, task_id)`` for *channel_id*, or None if unresolvable.
 
-    ``task_id`` is None for general/ad-hoc chat. Looks up the single
-    ``discord_thread_bindings`` row for *channel_id* and dispatches on its
-    ``subject_type`` — see the routing model in the module docstring. Falls
-    back to the plain ``/join-channel`` binding when *channel_id* isn't a
-    known thread at all.
+    ``task_id`` is None for general/ad-hoc chat. Resolution order (issue
+    #1288 — Conversation-first):
+
+    1. ``Conversation.discord_thread_id == channel_id`` directly
+       (``_resolve_conversation_by_discord_thread``) — the primary path for
+       every ad-hoc Foreman conversation thread, with no
+       ``discord_thread_bindings``/``Thread`` involvement at all.
+    2. The single ``discord_thread_bindings`` row for *channel_id*, dispatched
+       on its ``subject_type`` — see the routing model in the module
+       docstring. Its ``"conversation"`` rows are a compatibility fallback
+       only (legacy or superseded threads) by this point, since (1) already
+       catches every current one.
+    3. The plain ``/join-channel`` binding, when *channel_id* isn't a known
+       thread at all.
     """
+    conversation_session = await _resolve_conversation_by_discord_thread(channel_id)
+    if conversation_session:
+        guild_slug, _conversation_id = conversation_session
+        return (guild_slug, None)
+
     binding = await _lookup_binding(channel_id)
     if binding:
         subject_type, subject_key = binding

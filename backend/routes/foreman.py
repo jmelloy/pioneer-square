@@ -19,11 +19,10 @@ from __future__ import annotations
 
 import logging
 
-import discord_notifier
 from auth_deps import require_member, require_worker_or_member_path
 from database import get_db_dep
 from fastapi import APIRouter, Depends, HTTPException
-from foreman.conversation_service import resolve_conversation_id
+from foreman.conversation_service import close_active_conversation_for_user, resolve_conversation_id
 from foreman.runner import clear_foreman_history, get_foreman_history
 from models import (
     Guild,
@@ -81,11 +80,12 @@ async def clear_foreman_context(
         removed,
     )
     # Clearing history is the closest existing "conversation closed" signal —
-    # archive this user's per-conversation Discord thread (#1161) to match.
+    # close this user's active Conversation (#1161/#1288), which also
+    # archives its mirrored Discord thread via Conversation.discord_thread_id.
     # Fire-and-forget: Discord API latency must not block the response.
     spawn(
-        discord_notifier.archive_conversation_thread(guild_id, github_user_id),
-        name=f"discord.archive-conversation:{guild_id}",
+        close_active_conversation_for_user(guild_id, github_user_id),
+        name=f"discord.close-conversation:{guild_id}",
     )
     return {"status": "cleared", "removed": removed}
 
