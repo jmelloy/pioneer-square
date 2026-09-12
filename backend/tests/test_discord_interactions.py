@@ -407,9 +407,7 @@ async def test_cmd_pickup_creates_task_and_broadcasts(monkeypatch):
     ):
         from routes.discord import _cmd_pickup
 
-        await _cmd_pickup(
-            {"token": "tok-p"}, "test-guild", "https://github.com/org/repo/issues/10"
-        )
+        await _cmd_pickup({"token": "tok-p"}, "test-guild", "https://github.com/org/repo/issues/10")
 
     assert mock_db.add.called
     assert mock_db.commit.called
