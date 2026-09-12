@@ -16,6 +16,7 @@ from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException
+from foreman.conversation_service import resolve_conversation_id
 from models import Agent, Task
 from sqlalchemy import update
 from sqlmodel import col, select
@@ -55,6 +56,10 @@ async def start_agent_run(
     task_id = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
     created_at = datetime.now(UTC)
     name = req.prompt[:60] or "Interactive Pi"
+    # This is a UI-driven interactive run, not a reply within an existing
+    # conversation, so get-or-create the caller's conversation (#1300)
+    # rather than leaving it unattributed.
+    conversation_id = await resolve_conversation_id(db, guild_pk, user_id=github_user_id)
     db.add(
         Task(
             id=task_id,
@@ -70,6 +75,7 @@ async def start_agent_run(
             phase="execute",
             created_at=created_at,
             user_id=github_user_id,
+            conversation_id=conversation_id,
         )
     )
     await db.commit()

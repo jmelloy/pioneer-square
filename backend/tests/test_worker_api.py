@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 from helpers import _sync_session, insert_guild, insert_member, make_auth_token
-from models import Agent, Guild, GuildSpawnDefaults, SpawnSettings, User, Worker
+from models import Agent, Guild, GuildSpawnDefaults, SpawnSettings, Task, User, Worker
 from sqlalchemy import select, update
 from sqlmodel import col  # noqa: E402
 
@@ -218,6 +218,57 @@ def test_assign_task_appears_in_list(client):
     assert len(tasks) == 2
     descriptions = {t["description"] for t in tasks}
     assert descriptions == {"Task one", "Task two"}
+
+
+def test_assign_task_stamps_conversation_id(client):
+    """Manual worker task assignment resolves/creates a conversation for the
+    caller instead of leaving Task.conversation_id null (#1300)."""
+    test_client, db_url = client
+    insert_guild(db_url, "guildconv1")
+    worker_id = _create_worker(test_client, "guildconv1")
+
+    resp = test_client.post(
+        f"/guilds/guildconv1/workers/{worker_id}/tasks",
+        json={"description": "Task with conversation", "tool": "claude"},
+        headers=_auth(db_url),
+    )
+    assert resp.status_code == 200
+    task_id = resp.json()["id"]
+
+    with _sync_session(db_url) as session:
+        conversation_id = session.scalar(
+            select(col(Task.conversation_id)).where(col(Task.id) == task_id)
+        )
+    assert conversation_id is not None
+
+
+def test_assign_task_reuses_same_conversation_for_same_user(client):
+    """Two manual assignments by the same user attach to the same conversation."""
+    test_client, db_url = client
+    insert_guild(db_url, "guildconv2")
+    worker_id = _create_worker(test_client, "guildconv2")
+    headers = _auth(db_url)
+
+    first = test_client.post(
+        f"/guilds/guildconv2/workers/{worker_id}/tasks",
+        json={"description": "Task one", "tool": "claude"},
+        headers=headers,
+    )
+    second = test_client.post(
+        f"/guilds/guildconv2/workers/{worker_id}/tasks",
+        json={"description": "Task two", "tool": "claude"},
+        headers=headers,
+    )
+
+    with _sync_session(db_url) as session:
+        conv1 = session.scalar(
+            select(col(Task.conversation_id)).where(col(Task.id) == first.json()["id"])
+        )
+        conv2 = session.scalar(
+            select(col(Task.conversation_id)).where(col(Task.id) == second.json()["id"])
+        )
+    assert conv1 is not None
+    assert conv1 == conv2
 
 
 # ---------------------------------------------------------------------------

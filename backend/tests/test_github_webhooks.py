@@ -873,6 +873,106 @@ def test_ci_notify_uses_explicit_task_id(client, monkeypatch):
     assert "t-db-cn6" not in row.content  # DB lookup was bypassed
 
 
+def test_ci_notify_stamps_conversation_id_from_resolved_task(client, monkeypatch):
+    """Message.conversation_id mirrors the (repo, pr_number)-resolved task's
+    conversation_id (#1300)."""
+    test_client, db_url = client
+    insert_guild(db_url, "gcn7")
+    monkeypatch.setenv("PIONEER_CI_KEY", "key7")
+    conversation_id = insert_conversation(db_url, "gcn7", "user-cn7")
+    _insert_task_with_worker(
+        db_url,
+        task_id="t-cn7",
+        guild_id="gcn7",
+        pr_number=8,
+        pr_repo="org/proj",
+        pr_url="https://github.com/org/proj/pull/8",
+        conversation_id=conversation_id,
+    )
+    resp = test_client.post(
+        "/guilds/gcn7/foreman/ci-notify",
+        json={"repo": "org/proj", "pr_number": 8, "workflow_name": "CI", "conclusion": "success"},
+        headers={"Authorization": "Bearer key7"},
+    )
+    assert resp.status_code == 202
+
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(
+            select(col(Guild.id)).where(col(Guild.slug) == "gcn7", col(Guild.deleted_at).is_(None))
+        )
+        row = session.execute(
+            select(Message).where(col(Message.guild_id) == guild_pk)
+        ).scalar_one_or_none()
+    assert row is not None
+    assert row.conversation_id == conversation_id
+
+
+def test_ci_notify_stamps_conversation_id_from_explicit_task_id(client, monkeypatch):
+    """Message.conversation_id mirrors the caller-provided task_id's conversation_id."""
+    test_client, db_url = client
+    insert_guild(db_url, "gcn8")
+    monkeypatch.setenv("PIONEER_CI_KEY", "key8")
+    conversation_id = insert_conversation(db_url, "gcn8", "user-cn8")
+    _insert_task_with_worker(
+        db_url,
+        task_id="t-cn8",
+        guild_id="gcn8",
+        conversation_id=conversation_id,
+    )
+    resp = test_client.post(
+        "/guilds/gcn8/foreman/ci-notify",
+        json={
+            "repo": "org/proj",
+            "workflow_name": "CI",
+            "conclusion": "success",
+            "task_id": "t-cn8",
+        },
+        headers={"Authorization": "Bearer key8"},
+    )
+    assert resp.status_code == 202
+
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(
+            select(col(Guild.id)).where(col(Guild.slug) == "gcn8", col(Guild.deleted_at).is_(None))
+        )
+        row = session.execute(
+            select(Message).where(col(Message.guild_id) == guild_pk)
+        ).scalar_one_or_none()
+    assert row is not None
+    assert row.conversation_id == conversation_id
+
+
+def test_ci_notify_leaves_conversation_id_null_when_task_has_none(client, monkeypatch):
+    """No conversation is invented when the linked task has none (documented null)."""
+    test_client, db_url = client
+    insert_guild(db_url, "gcn9")
+    monkeypatch.setenv("PIONEER_CI_KEY", "key9")
+    _insert_task_with_worker(
+        db_url,
+        task_id="t-cn9",
+        guild_id="gcn9",
+        pr_number=9,
+        pr_repo="org/proj",
+        pr_url="https://github.com/org/proj/pull/9",
+    )
+    resp = test_client.post(
+        "/guilds/gcn9/foreman/ci-notify",
+        json={"repo": "org/proj", "pr_number": 9, "workflow_name": "CI", "conclusion": "success"},
+        headers={"Authorization": "Bearer key9"},
+    )
+    assert resp.status_code == 202
+
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(
+            select(col(Guild.id)).where(col(Guild.slug) == "gcn9", col(Guild.deleted_at).is_(None))
+        )
+        row = session.execute(
+            select(Message).where(col(Message.guild_id) == guild_pk)
+        ).scalar_one_or_none()
+    assert row is not None
+    assert row.conversation_id is None
+
+
 def test_webhook_does_not_overwrite_existing_pr_url(client):
     """Webhook must not clobber a pr_url that was already set by the worker."""
     test_client, db_url = client

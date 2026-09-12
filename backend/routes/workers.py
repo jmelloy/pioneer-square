@@ -22,6 +22,7 @@ from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
 from events import broadcast_msg, emit_terminal_line
 from fastapi import APIRouter, Depends, HTTPException
+from foreman.conversation_service import resolve_conversation_id
 from models import Task, Worker, live_tasks_filter
 from pydantic import BaseModel, field_validator
 from spawn_config import SpawnLayer, get_spawn_row, resolve_spawn, row_to_layer, upsert_spawn_row
@@ -381,6 +382,10 @@ async def assign_task(
     if worker_row[0] or worker_row[1] is not None:
         raise HTTPException(status_code=409, detail="Worker is draining and cannot accept tasks")
     name = data.name or data.description[:60]
+    # This is a manual, UI-driven assignment rather than a reply within an
+    # existing conversation, so get-or-create the caller's conversation
+    # (#1300) rather than leaving it unattributed.
+    conversation_id = await resolve_conversation_id(db, guild_pk, user_id=github_user_id)
     db.add(
         Task(
             id=task_id,
@@ -401,6 +406,7 @@ async def assign_task(
             parent_task_id=data.parent_task_id,
             created_at=created_at,
             user_id=github_user_id,
+            conversation_id=conversation_id,
         )
     )
     await db.commit()
