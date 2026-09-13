@@ -48,6 +48,7 @@ from database import AsyncSessionLocal
 from discord.auth import is_member_authorized
 from events import broadcast_msg
 from fastapi import APIRouter, BackgroundTasks, Request, Response
+from foreman.conversation_service import resolve_conversation_id
 from foreman.github_url_parser import parse_github_urls
 from foreman.tools import spawn_worker
 from models import (
@@ -399,8 +400,19 @@ async def _cmd_workers(interaction_token: str, guild_slug: str) -> None:
         await _send_followup(interaction_token, content="Failed to fetch workers.")
 
 
-async def _cmd_pickup(interaction_token: str, guild_slug: str, issue_url: str) -> None:
+async def _resolve_ps_user_id(db, discord_user_id: str) -> str | None:
+    """Look up the Pioneer Square user linked to a Discord account, if any."""
+    result = await db.exec(
+        select(col(DiscordAccountLink.ps_user_id)).where(
+            col(DiscordAccountLink.discord_user_id) == discord_user_id
+        )
+    )
+    return result.one_or_none()
+
+
+async def _cmd_pickup(interaction: dict, guild_slug: str, issue_url: str) -> None:
     """Create a task to pick up a GitHub issue and assign it to an idle worker."""
+    interaction_token = interaction.get("token", "")
     parsed = _parse_issue_url(issue_url)
     if not parsed:
         await _send_followup(
@@ -410,6 +422,7 @@ async def _cmd_pickup(interaction_token: str, guild_slug: str, issue_url: str) -
         return
 
     issue_repo, issue_number = parsed
+    identity = _interaction_user(interaction)
 
     try:
         async with AsyncSessionLocal() as db:
@@ -421,6 +434,19 @@ async def _cmd_pickup(interaction_token: str, guild_slug: str, issue_url: str) -
                 )
                 return
             guild_pk = guild.id
+
+            # /ps pickup has no existing conversation to attribute this task
+            # to — only a linked Discord account gives it a real user_id to
+            # resolve/create a conversation for (#1300). Unlinked callers get
+            # an unattributed task, same as before.
+            ps_user_id: str | None = None
+            conversation_id: int | None = None
+            if identity:
+                ps_user_id = await _resolve_ps_user_id(db, identity[0])
+                if ps_user_id:
+                    conversation_id = await resolve_conversation_id(
+                        db, guild_pk, user_id=ps_user_id
+                    )
 
             task_id = _new_task_id()
             task_name = f"{issue_repo}#{issue_number}"
@@ -438,6 +464,8 @@ async def _cmd_pickup(interaction_token: str, guild_slug: str, issue_url: str) -
                 issue_repo=issue_repo,
                 issue_number=issue_number,
                 created_at=created_at,
+                user_id=ps_user_id,
+                conversation_id=conversation_id,
             )
             db.add(task)
             await db.commit()
@@ -468,8 +496,9 @@ async def _cmd_pickup(interaction_token: str, guild_slug: str, issue_url: str) -
         await _send_followup(interaction_token, content="Failed to create task.")
 
 
-async def _cmd_review(interaction_token: str, guild_slug: str, pr_url: str) -> None:
+async def _cmd_review(interaction: dict, guild_slug: str, pr_url: str) -> None:
     """Create a PR review task."""
+    interaction_token = interaction.get("token", "")
     parsed = _parse_pr_url(pr_url)
     if not parsed:
         await _send_followup(
@@ -479,6 +508,7 @@ async def _cmd_review(interaction_token: str, guild_slug: str, pr_url: str) -> N
         return
 
     pr_repo, pr_number = parsed
+    identity = _interaction_user(interaction)
 
     try:
         async with AsyncSessionLocal() as db:
@@ -490,6 +520,18 @@ async def _cmd_review(interaction_token: str, guild_slug: str, pr_url: str) -> N
                 )
                 return
             guild_pk = guild.id
+
+            # Same attribution logic as /ps pickup (#1300): only a linked
+            # Discord account resolves to a user_id we can key a
+            # conversation off of. Unlinked callers leave it unattributed.
+            ps_user_id: str | None = None
+            conversation_id: int | None = None
+            if identity:
+                ps_user_id = await _resolve_ps_user_id(db, identity[0])
+                if ps_user_id:
+                    conversation_id = await resolve_conversation_id(
+                        db, guild_pk, user_id=ps_user_id
+                    )
 
             task_id = _new_task_id()
             task_name = f"Review PR {pr_url}"
@@ -508,6 +550,8 @@ async def _cmd_review(interaction_token: str, guild_slug: str, pr_url: str) -> N
                 pr_number=pr_number,
                 pr_repo=pr_repo,
                 created_at=created_at,
+                user_id=ps_user_id,
+                conversation_id=conversation_id,
             )
             db.add(task)
             await db.commit()
@@ -1026,10 +1070,10 @@ async def _dispatch_command(interaction: dict) -> None:
         await _cmd_workers(token, guild_slug)
     elif sub_name == "pickup":
         issue_url = sub_opts.get("issue-url", "")
-        await _cmd_pickup(token, guild_slug, issue_url)
+        await _cmd_pickup(interaction, guild_slug, issue_url)
     elif sub_name == "review":
         pr_url = sub_opts.get("pr-url", "")
-        await _cmd_review(token, guild_slug, pr_url)
+        await _cmd_review(interaction, guild_slug, pr_url)
     elif sub_name == "cancel":
         task_id_val = sub_opts.get("task-id", "")
         await _cmd_cancel(token, guild_slug, task_id_val)
