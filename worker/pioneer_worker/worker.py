@@ -1248,7 +1248,7 @@ class Worker:
         # (task assignments, follow-ups, redirects, etc.) must wait until we've
         # actually joined, otherwise we'd start work before the backend sees us
         # online.
-        _PRE_JOIN_ALLOWED = {"pong", "worker-message"}
+        _PRE_JOIN_ALLOWED = {"pong", "worker-message", "task-assigned"}
         async for msg in self.ws.messages():
             mtype = msg.get("type")
             logger.debug("WS message: type=%s keys=%s", mtype, list(msg.keys()))

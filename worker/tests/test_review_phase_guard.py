@@ -90,6 +90,25 @@ async def test_task_assigned_defaults_phase_to_execute():
     assert queued["phase"] == "execute"
 
 
+async def test_task_assigned_replay_during_join_is_queued():
+    """Backend replays pending tasks while join is still in flight."""
+    worker = Worker(_make_cfg())
+    worker._joined = False
+    worker._send = AsyncMock()
+
+    await _pump_one_message(
+        worker,
+        {
+            "type": "task-assigned",
+            "workerId": "w-test01",
+            "taskId": "t-replay",
+            "description": "Do replayed work",
+        },
+    )
+
+    assert worker.task_queue.get_nowait()["id"] == "t-replay"
+
+
 async def test_task_followup_captures_phase():
     """task-followup must forward the phase field so review semantics survive follow-ups."""
     worker = Worker(_make_cfg())
