@@ -36,7 +36,6 @@ from .runner_types import (  # pyright: ignore[reportMissingImports]
     RunResult,
     StopReason,
 )
-from .sleep_monitor import SystemSleepMonitor
 from .ws_client import WSClient
 
 logger = logging.getLogger(__name__)
@@ -152,11 +151,7 @@ class Worker:
 
     def __init__(self, cfg: config_mod.Config) -> None:
         self.cfg = cfg
-        # No-op on non-macOS or when pyobjc isn't installed; see sleep_monitor.py.
-        self.sleep_monitor = SystemSleepMonitor(
-            on_sleep=self._on_system_sleep, on_wake=self._on_system_wake
-        )
-        self.ws = WSClient(cfg.ws_url, sleep_monitor=self.sleep_monitor)
+        self.ws = WSClient(cfg.ws_url)
         self._shutdown_event = asyncio.Event()
         # Reason for the current shutdown, sent to the backend in worker-disconnect
         # so the foreman can tell an idle-timeout reap from a signal/crash.
@@ -761,25 +756,6 @@ class Worker:
             self._control_server.stop()
             self._control_server = None
 
-    # ------------------------------------------------------------------ Sleep/wake
-    # These run on SystemSleepMonitor's background thread (see sleep_monitor.py),
-    # so they hop onto the worker's event loop rather than touching asyncio state
-    # directly.
-    def _on_system_sleep(self) -> None:
-        if self._loop is not None:
-            fut = asyncio.run_coroutine_threadsafe(self.ws.close(), self._loop)
-            fut.add_done_callback(
-                lambda f: f.exception() and logger.error("sleep-hook error: %s", f.exception())
-            )
-
-    def _on_system_wake(self) -> None:
-        # SystemSleepMonitor already cleared its own sleeping flag (after
-        # waiting out the wake grace period) before firing this callback, so
-        # WSClient's reconnect loop — paused on sleep_monitor.is_sleeping —
-        # resumes on its own. No explicit reconnect needed here; that would
-        # leave the worker stuck disconnected if the one-off attempt failed.
-        pass
-
     async def _fetch_pending_tasks(self) -> list[dict]:
         async with await self._http() as client:
             resp = await client.get(
@@ -1104,7 +1080,6 @@ class Worker:
         self._loop = asyncio.get_running_loop()
         self._install_signal_handlers()
         self._start_control_api()
-        self.sleep_monitor.start()
 
         await self._register()
         assert self.cfg.worker_id, "worker_id must be set after registration"
@@ -1239,7 +1214,6 @@ class Worker:
             logger.info("Worker shutting down; closing WebSocket")
             await self.ws.close()
             self._stop_control_api()
-            self.sleep_monitor.stop()
 
     # ------------------------------------------------------------------ Listener
     async def _listen(self) -> None:
