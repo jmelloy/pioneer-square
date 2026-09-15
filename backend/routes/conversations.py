@@ -14,6 +14,8 @@ docstring).
 
 from __future__ import annotations
 
+import time
+from collections import defaultdict
 from datetime import UTC, datetime
 
 from auth_deps import get_guild_pk, require_member
@@ -123,6 +125,26 @@ async def get_conversation(
     return _to_out(await _get_conversation_in_guild(db, guild_id, conversation_id))
 
 
+# Basic per-user rate limit for reply posting (#1311): blunts accidental
+# double-submits and naive spam. Per-process, in-memory only — fine for the
+# single-backend-instance deployment today; move to a shared store if the
+# backend ever runs replicated.
+_RATE_LIMIT_WINDOW_SECONDS = 10.0
+_RATE_LIMIT_MAX_MESSAGES = 5
+_recent_message_times: dict[str, list[float]] = defaultdict(list)
+
+
+def _check_rate_limit(user_id: str) -> None:
+    now = time.monotonic()
+    window_start = now - _RATE_LIMIT_WINDOW_SECONDS
+    recent = [t for t in _recent_message_times[user_id] if t > window_start]
+    if len(recent) >= _RATE_LIMIT_MAX_MESSAGES:
+        _recent_message_times[user_id] = recent
+        raise HTTPException(status_code=429, detail="Too many messages — please slow down")
+    recent.append(now)
+    _recent_message_times[user_id] = recent
+
+
 class ConversationMessageCreate(BaseModel):
     content: str
 
@@ -160,6 +182,8 @@ async def post_conversation_message(
     content = body.content.strip()
     if not content:
         raise HTTPException(status_code=400, detail="content must not be empty")
+
+    _check_rate_limit(github_user_id)
 
     conversation = await _get_conversation_in_guild(db, guild_id, conversation_id)
     if conversation.user_id is not None and conversation.user_id != github_user_id:
