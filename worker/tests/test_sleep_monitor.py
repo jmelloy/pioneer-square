@@ -1,104 +1,54 @@
-"""Tests for SystemSleepMonitor and its hook into WSClient's reconnect loop.
-
-pyobjc isn't installed in this test environment (this suite doesn't run on
-macOS), so these tests exercise the no-op stub path plus the WSClient
-integration using a fake sleep_monitor stand-in — the same shape the real
-monitor exposes (an ``is_sleeping`` ``threading.Event``).
-"""
+"""Tests for WSClient's sleep/wake reconnect debounce."""
 
 from __future__ import annotations
 
-import asyncio
-import threading
-import time
+from itertools import chain, repeat
 from unittest.mock import AsyncMock
 
 from pioneer_worker import ws_client as ws_client_mod
-from pioneer_worker.sleep_monitor import SystemSleepMonitor
 from pioneer_worker.ws_client import WSClient
 
 
-def test_stub_is_sleeping_always_false_without_pyobjc():
-    """Without pyobjc (the case in this test environment), the monitor must
-    be a fully inert no-op: start()/stop() do nothing and is_sleeping stays
-    unset forever."""
-    monitor = SystemSleepMonitor()
-    assert monitor.is_sleeping.is_set() is False
+async def test_ws_client_waits_after_large_clock_gap(monkeypatch):
+    """A long event-loop pause likely means laptop sleep; wait before reconnecting."""
+    times = chain([0.0, 120.0, 150.0], repeat(150.0))
+    monkeypatch.setattr(ws_client_mod.time, "time", lambda: next(times))
+    sleep_mock = AsyncMock()
+    monkeypatch.setattr(ws_client_mod.asyncio, "sleep", sleep_mock)
 
-    monitor.start()
-    assert monitor.is_sleeping.is_set() is False
-
-    monitor.stop()
-    assert monitor.is_sleeping.is_set() is False
-
-
-def test_resleep_during_grace_period_keeps_is_sleeping_set():
-    """A wake that doesn't outlast the grace period (Power Nap / notification
-    wake) must not clear is_sleeping — otherwise the worker flaps
-    online/offline on every brief wake cycle."""
-    monitor = SystemSleepMonitor(wake_grace_seconds=0.05)
-
-    monitor._handle_will_sleep()
-    assert monitor.is_sleeping.is_set()
-
-    # Brief wake, then re-sleep before the grace period elapses.
-    monitor._handle_did_wake()
-    monitor._handle_will_sleep()
-    time.sleep(0.2)
-    assert monitor.is_sleeping.is_set(), "re-sleep during grace must keep reconnects paused"
-
-    # A wake that lasts the full grace period does resume.
-    monitor._handle_did_wake()
-    time.sleep(0.2)
-    assert not monitor.is_sleeping.is_set()
-
-
-class _FakeSleepMonitor:
-    """Minimal stand-in exposing the same surface WSClient depends on."""
-
-    def __init__(self, *, is_sleeping: bool = False) -> None:
-        self.is_sleeping = threading.Event()
-        if is_sleeping:
-            self.is_sleeping.set()
-
-
-async def test_ws_client_skips_connect_attempts_while_sleeping(monkeypatch):
-    """connect() must not call websockets.connect while sleep_monitor reports
-    is_sleeping — the whole point is not to hammer a dead network link."""
-    monkeypatch.setattr(ws_client_mod, "_SLEEP_POLL_INTERVAL", 0.01)
-    monitor = _FakeSleepMonitor(is_sleeping=True)
-    client = WSClient("ws://example.invalid", sleep_monitor=monitor)
-
+    client = WSClient(
+        "ws://example.invalid",
+        wake_gap_threshold=60.0,
+        wake_grace_seconds=0.25,
+    )
     fake_ws = AsyncMock()
     fake_ws.state = None
     fake_ws.closed = False
     connect_mock = AsyncMock(return_value=fake_ws)
     monkeypatch.setattr(ws_client_mod.websockets, "connect", connect_mock)
 
-    connect_task = asyncio.ensure_future(client.connect())
-    await asyncio.sleep(0.05)
-    assert connect_mock.await_count == 0, "must not dial while is_sleeping is True"
-
-    monitor.is_sleeping.clear()
-    ws = await asyncio.wait_for(connect_task, timeout=2.0)
+    ws = await client.connect()
 
     assert ws is fake_ws
+    sleep_mock.assert_awaited_once_with(0.25)
     assert connect_mock.await_count == 1
 
 
-async def test_ws_client_connects_normally_when_not_sleeping(monkeypatch):
-    """Baseline: with no sleep_monitor at all, connect() behaves as before —
-    dials immediately, no polling."""
-    client = WSClient("ws://example.invalid")
-    assert client._is_system_sleeping is False
+async def test_ws_client_connects_normally_without_clock_gap(monkeypatch):
+    times = chain([0.0, 1.0], repeat(1.0))
+    monkeypatch.setattr(ws_client_mod.time, "time", lambda: next(times))
+    sleep_mock = AsyncMock()
+    monkeypatch.setattr(ws_client_mod.asyncio, "sleep", sleep_mock)
 
+    client = WSClient("ws://example.invalid")
     fake_ws = AsyncMock()
     fake_ws.state = None
     fake_ws.closed = False
     connect_mock = AsyncMock(return_value=fake_ws)
     monkeypatch.setattr(ws_client_mod.websockets, "connect", connect_mock)
 
-    ws = await asyncio.wait_for(client.connect(), timeout=2.0)
+    ws = await client.connect()
 
     assert ws is fake_ws
+    sleep_mock.assert_not_awaited()
     assert connect_mock.await_count == 1
