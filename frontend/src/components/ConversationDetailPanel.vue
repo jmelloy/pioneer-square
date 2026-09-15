@@ -92,6 +92,27 @@
         </div>
       </div>
 
+      <div v-if="conversation.status !== 'closed'" class="reply-row">
+        <div class="reply-input-group">
+          <textarea
+            v-model="replyText"
+            class="reply-input"
+            placeholder="Reply..."
+            rows="3"
+            :disabled="sending"
+            @keydown.enter.exact.prevent="onReply"
+          ></textarea>
+          <button
+            class="pixel-btn send-btn"
+            :disabled="sending || !replyText.trim()"
+            @click="onReply"
+          >
+            {{ sending ? '…' : '▶' }}
+          </button>
+        </div>
+        <div v-if="replyError" class="reply-error">{{ replyError }}</div>
+      </div>
+
       <div class="actions">
         <button
           v-if="conversation.status !== 'closed'"
@@ -112,6 +133,7 @@ import { useGuildStore } from '../stores/guild'
 import { useConversationsStore } from '../stores/conversations'
 import { formatClock, formatRelative } from '../utils/format'
 import { renderMarkdown } from '../utils/markdown'
+import { ApiError } from '../utils/api'
 import { useChatGrouping, isToolUseGroup } from '../composables/useChatGrouping'
 import type { GroupedMessage } from '../composables/useChatGrouping'
 import type { ChatMessage } from '../types'
@@ -126,6 +148,9 @@ const conversationsStore = useConversationsStore()
 const acting = ref(false)
 const loadingMessages = ref(false)
 const messagesEl = ref<HTMLElement | null>(null)
+const replyText = ref('')
+const sending = ref(false)
+const replyError = ref<string | null>(null)
 
 const conversation = computed(() => conversationsStore.conversations.find((c) => c.id === props.id))
 
@@ -215,6 +240,25 @@ async function load() {
     history.value = await conversationsStore.fetchConversationMessages(guildId, props.id)
   } finally {
     loadingMessages.value = false
+  }
+}
+
+async function onReply() {
+  const guildId = guildStore.currentGuild?.id
+  const content = replyText.value.trim()
+  if (!guildId || !content || sending.value) return
+  sending.value = true
+  replyError.value = null
+  try {
+    // Append immediately; the server's WS broadcast (deduped via _msgKey)
+    // will land on top of this once it arrives.
+    const posted = await conversationsStore.postConversationMessage(guildId, props.id, content)
+    history.value = [...history.value, posted]
+    replyText.value = ''
+  } catch (e) {
+    replyError.value = e instanceof ApiError ? e.message : 'Failed to send reply'
+  } finally {
+    sending.value = false
   }
 }
 
@@ -618,6 +662,58 @@ watch(
     opacity: 1;
     transform: translateY(-2px);
   }
+}
+
+.reply-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-top: 2px solid var(--color-brass-dark);
+  flex-shrink: 0;
+}
+
+.reply-input-group {
+  display: flex;
+  gap: 8px;
+}
+
+.reply-input {
+  flex: 1;
+  background: var(--color-bg);
+  border: 2px solid var(--color-brass-dark);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  padding: 6px 10px;
+  outline: none;
+  resize: none;
+  line-height: 1.4;
+  transition: border-color 0.15s;
+}
+
+.reply-input:disabled {
+  opacity: 0.6;
+}
+
+@media (max-width: 768px) {
+  .reply-input {
+    font-size: 16px;
+  }
+}
+
+.reply-input:focus {
+  border-color: var(--color-brass);
+  box-shadow: 0 0 8px rgba(232, 170, 0, 0.35);
+}
+
+.reply-input::placeholder {
+  color: var(--color-text-dim);
+  font-style: italic;
+}
+
+.reply-error {
+  font-size: 10px;
+  color: var(--color-red);
 }
 
 .actions {

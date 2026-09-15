@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { useConversationsStore } from '../conversations'
+import { api } from '../../utils/api'
 
 // Mock the api utility
 vi.mock('../../utils/api', () => ({
   api: vi.fn(),
 }))
+
+const apiMock = vi.mocked(api)
 
 describe('useConversationsStore', () => {
   beforeEach(() => {
@@ -129,6 +132,39 @@ describe('useConversationsStore', () => {
       const store = useConversationsStore()
       expect(store.statusLabel('unknown')).toBe('unknown')
       expect(store.statusColor('unknown')).toBe('dim')
+    })
+  })
+
+  describe('postConversationMessage', () => {
+    it('posts to the messages endpoint and returns a ChatMessage-shaped result', async () => {
+      apiMock.mockResolvedValueOnce({
+        id: 5,
+        conversationId: 42,
+        content: 'hello there',
+        createdAt: '2026-01-01T00:00:00Z',
+      })
+      const store = useConversationsStore()
+
+      const result = await store.postConversationMessage('g1', 42, 'hello there')
+
+      expect(apiMock).toHaveBeenCalledWith('/api/guilds/g1/conversations/42/messages', {
+        method: 'POST',
+        json: { content: 'hello there' },
+      })
+      expect(result).toMatchObject({
+        from: 'user',
+        to: 'foreman',
+        content: 'hello there',
+        createdAt: '2026-01-01T00:00:00Z',
+        conversationId: 42,
+      })
+    })
+
+    it('propagates errors from the api call', async () => {
+      apiMock.mockRejectedValueOnce(new Error('boom'))
+      const store = useConversationsStore()
+
+      await expect(store.postConversationMessage('g1', 42, 'hi')).rejects.toThrow('boom')
     })
   })
 
