@@ -80,6 +80,34 @@ export const useConversationsStore = defineStore('conversations', () => {
     return conversation
   }
 
+  // Post a reply into a conversation (#1311). Wraps
+  // POST /conversations/{id}/messages (#1297) — the server also broadcasts
+  // the new message over the guild WS, so ConversationDetailPanel's live
+  // feed picks it up without this action touching any message list itself.
+  async function postConversationMessage(
+    guildId: string,
+    conversationId: number,
+    content: string,
+  ): Promise<ChatMessage> {
+    const created = await api<{
+      id: number
+      conversationId: number
+      content: string
+      createdAt: string
+    }>(`/api/guilds/${guildId}/conversations/${conversationId}/messages`, {
+      method: 'POST',
+      json: { content },
+    })
+    return {
+      type: 'chat',
+      from: 'user',
+      to: 'foreman',
+      content: created.content,
+      createdAt: created.createdAt,
+      conversationId: created.conversationId,
+    }
+  }
+
   /**
    * Handle incoming WebSocket messages for conversation lifecycle events.
    * Mirrors the pattern used by agents.ts and tasks.ts stores.
@@ -139,6 +167,7 @@ export const useConversationsStore = defineStore('conversations', () => {
     fetchConversation,
     fetchConversationMessages,
     closeConversation,
+    postConversationMessage,
     clearConversations,
     handleWebSocketMessage,
     statusLabel,

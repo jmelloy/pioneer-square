@@ -12,6 +12,8 @@ import os
 import sys
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -24,8 +26,18 @@ from helpers import (  # noqa: E402
     make_auth_token,
 )
 from models import Message  # noqa: E402
+from routes import conversations as conversations_route  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 from sqlmodel import col  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limit():
+    """Tests share the default ``gh-user-test`` user id, so the module-level
+    rate-limit state (#1311) must not leak between tests in this file."""
+    conversations_route._recent_message_times.clear()
+    yield
+    conversations_route._recent_message_times.clear()
 
 
 def _url(guild_id: str, conversation_id: int) -> str:
@@ -215,6 +227,36 @@ def test_trims_and_rejects_whitespace_only_content_without_persisting(client):
             .all()
         )
     assert count == []
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting (#1311)
+# ---------------------------------------------------------------------------
+
+
+def test_rate_limits_rapid_posting(client):
+    test_client, db_url = client
+    guild_id = "g-cm-rate"
+    insert_guild(db_url, guild_id)
+    conv_id = insert_conversation(db_url, guild_id, user_id="gh-user-test")
+    token = make_auth_token(db_url)
+
+    with patch.object(triggers, "trigger_foreman", new=AsyncMock()):
+        for _ in range(conversations_route._RATE_LIMIT_MAX_MESSAGES):
+            resp = test_client.post(
+                _url(guild_id, conv_id),
+                json={"content": "hi"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert resp.status_code == 200
+
+        resp = test_client.post(
+            _url(guild_id, conv_id),
+            json={"content": "one too many"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert resp.status_code == 429
 
 
 # ---------------------------------------------------------------------------
