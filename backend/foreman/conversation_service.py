@@ -70,10 +70,17 @@ async def _broadcast_conversation_created(db: AsyncSession, conversation: Conver
         )
 
 
-async def _broadcast_conversation_updated(db: AsyncSession, conversation: Conversation) -> None:
+async def broadcast_conversation_updated(db: AsyncSession, conversation: Conversation) -> None:
     """Broadcast a ``conversation-updated`` WS event (#1298). Best-effort.
 
-    Mirrors ``foreman.thread_service.broadcast_thread_updated``.
+    Public (not ``_``-prefixed) because ``foreman.thread_service`` also calls
+    this — every path that mutates a ``Thread`` and mirrors the change onto
+    its ``Conversation`` (``sync_conversation_after_thread_update``, the
+    idle-sweep archive/close, the archive/close REST endpoints,
+    ``reactivate_conversation_thread``) needs the frontend's ``conversations``
+    store to actually learn about it; before #1314 those paths only wrote the
+    DB row, so the conversation list/detail panel showed a stale status until
+    the user manually reloaded.
     """
     try:
         guild_slug = await _guild_slug(db, conversation.guild_id)
@@ -227,7 +234,7 @@ async def rename_conversation(db: AsyncSession, conversation: Conversation, name
         db.add(thread)
 
     await db.commit()
-    await _broadcast_conversation_updated(db, conversation)
+    await broadcast_conversation_updated(db, conversation)
 
     if conversation.discord_thread_id:
         from discord.thread_mirror import rename_conversation_thread  # noqa: PLC0415
@@ -258,7 +265,7 @@ async def close_conversation(db: AsyncSession, conversation: Conversation) -> No
         db.add(thread)
 
     await db.commit()
-    await _broadcast_conversation_updated(db, conversation)
+    await broadcast_conversation_updated(db, conversation)
 
     if conversation.discord_thread_id:
         from discord.thread_mirror import archive_conversation_thread_by_id  # noqa: PLC0415

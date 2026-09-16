@@ -26,7 +26,7 @@ import os
 from datetime import UTC, datetime, timedelta
 
 from database import get_db
-from foreman.thread_service import sync_conversation_after_thread_update
+from foreman.thread_service import broadcast_thread_updated, sync_conversation_after_thread_update
 from models import Conversation, Task, Thread
 from sqlmodel import col, select
 
@@ -143,6 +143,17 @@ async def _sweep_threads_once(guild_id: str) -> dict[str, int]:
                 orphaned_cleaned += 1
 
         await db.commit()
+
+        # Broadcast + Discord-mirror every status flip made above, now that
+        # it's actually committed (see broadcast_thread_updated's docstring
+        # for why this has to happen after, not before, commit). Before
+        # #1314 these transitions only ever touched the DB — the frontend's
+        # conversations store never learned a thread it was showing as
+        # "active" had gone idle, and archived Discord threads were never
+        # actually archived on Discord's side.
+        for thread in (*stale_active, *stale_archived):
+            await db.refresh(thread)
+            await broadcast_thread_updated(db, thread)
     finally:
         await db.close()
 

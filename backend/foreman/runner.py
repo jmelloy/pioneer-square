@@ -1100,28 +1100,46 @@ async def _poll_loop(guild_id: str) -> None:
                     "assigned to someone else."
                 )
 
-            # periodic-check is never a human-originated event (see
-            # foreman.classify.is_human_event), so it never needs
-            # foreman.triggers.trigger_foreman's thread-ensure side effect —
-            # call run_foreman_ai directly instead of routing through the
-            # trigger dispatcher, which lives in foreman.triggers and imports
-            # run_foreman_ai from this module; importing it back here would
-            # recreate a circular import.
-            if conversation_user_ids:
-                for user_id in conversation_user_ids:
+            # Only bother the foreman (and, through it, every user with an
+            # active conversation) when there's actually something to check:
+            # a non-terminal task to watch, or a devReady issue to pick up.
+            # Without this guard, a guild with zero active tasks kept firing
+            # an identical "no non-terminal tasks" narration into every active
+            # conversation on every cycle forever (bounded only by the
+            # POLL_MAX_SECS backoff ceiling) — from inside one of those
+            # conversations this reads as a stuck loop endlessly repeating
+            # the same status message (#1314). Sweeps above (closed-issue,
+            # stale-github-link, thread-health) still run unconditionally
+            # every cycle regardless of this guard.
+            if active_tasks or devready_lines:
+                # periodic-check is never a human-originated event (see
+                # foreman.classify.is_human_event), so it never needs
+                # foreman.triggers.trigger_foreman's thread-ensure side effect —
+                # call run_foreman_ai directly instead of routing through the
+                # trigger dispatcher, which lives in foreman.triggers and imports
+                # run_foreman_ai from this module; importing it back here would
+                # recreate a circular import.
+                if conversation_user_ids:
+                    for user_id in conversation_user_ids:
+                        spawn(
+                            run_foreman_ai(
+                                guild_id,
+                                msg,
+                                user_id=user_id,
+                                trigger="periodic-check",
+                            ),
+                            name=f"foreman.poll:{guild_id}:{user_id}",
+                        )
+                else:
                     spawn(
-                        run_foreman_ai(
-                            guild_id,
-                            msg,
-                            user_id=user_id,
-                            trigger="periodic-check",
-                        ),
-                        name=f"foreman.poll:{guild_id}:{user_id}",
+                        run_foreman_ai(guild_id, msg, trigger="periodic-check"),
+                        name=f"foreman.poll:{guild_id}",
                     )
             else:
-                spawn(
-                    run_foreman_ai(guild_id, msg, trigger="periodic-check"),
-                    name=f"foreman.poll:{guild_id}",
+                logger.debug(
+                    "guild=%s periodic-check: nothing to report (no active tasks, no "
+                    "devReady issues) — skipping foreman narration this cycle",
+                    guild_id,
                 )
 
             # Announce next check interval so the UI can display a countdown.

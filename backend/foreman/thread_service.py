@@ -31,7 +31,7 @@ from foreman.conversation_service import create_conversation, get_or_create_conv
 from models import Conversation, Task, Thread
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
-from ws_types import ThreadCreatedMsg, ThreadUpdatedMsg
+from ws_types import ThreadCreatedMsg
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +74,19 @@ async def get_or_create_active_thread(
     Reuses the most recently active thread for the conversation if one
     exists (bumping ``updated_at`` so the idle sweep — see
     ``foreman/thread_maintenance.py`` — doesn't archive an in-progress
-    conversation out from under it); otherwise creates a fresh
-    Conversation + Thread. This is the sole Thread-creation path (#1167): a
+    conversation out from under it). If none is active — typically because
+    the idle sweep already archived it — reactivates the conversation's most
+    recently updated thread instead of forking a brand-new one (#1314):
+    without this, every message arriving after an idle archive would mint a
+    fresh ``Thread`` row (and, via ``on_thread_created``, a second physical
+    Discord thread channel) losing the old row's ``discord_thread_id`` in the
+    process, silently multiplying threads for one conversation every
+    idle/resume cycle — the frontend/WS chat path (``ensure_conversation_thread``)
+    is the only caller that went through this branch; Discord's own inbound
+    path already reactivates the exact thread a reply landed in via
+    ``reactivate_conversation_thread``, so this brings the two into parity.
+    Only creates a fresh Conversation + Thread when the conversation has no
+    thread at all yet. This is the sole Thread-creation path (#1167): a
     thread is always a side effect of the Foreman handling a message.
 
     ``force_new=True`` (#1296) skips reuse entirely: it always inserts a
@@ -87,6 +98,7 @@ async def get_or_create_active_thread(
     starts its own conversation instead of silently continuing whatever
     conversation happened to be active.
     """
+    reactivated = False
     if force_new:
         conversation = await create_conversation(db, guild_pk, user_id)
         thread = None
@@ -103,14 +115,29 @@ async def get_or_create_active_thread(
             .limit(1)
         )
         thread = result.first()
+        if thread is None:
+            result = await db.exec(
+                select(Thread)
+                .where(
+                    col(Thread.conversation_id) == conversation.id,
+                    col(Thread.deleted_at).is_(None),
+                )
+                .order_by(col(Thread.updated_at).desc())
+                .limit(1)
+            )
+            thread = result.first()
+            reactivated = thread is not None
     now = datetime.now(UTC)
     if thread is not None:
+        thread.status = "active"
         thread.updated_at = now
         db.add(thread)
         _sync_conversation_from_thread(conversation, thread, now)
         db.add(conversation)
         await db.commit()
         await db.refresh(thread)
+        if reactivated:
+            await broadcast_thread_updated(db, thread)
         return thread, False
 
     thread = Thread(
@@ -302,15 +329,31 @@ async def reactivate_conversation_thread(
 
 
 async def broadcast_thread_updated(db: AsyncSession, thread: Thread) -> None:
-    """Broadcast a ``thread-updated`` WS event and mirror to Discord.
+    """Broadcast a Thread status change and mirror it to Discord and the frontend.
+
+    Call this AFTER committing the transaction that changed *thread* (and its
+    ``Conversation`` mirror) — every caller below writes ``Thread``/
+    ``Conversation`` rows first, then calls this, matching the commit-then-
+    broadcast ordering ``conversation_service.rename_conversation``/
+    ``close_conversation`` already use, so a WS listener that reacts by
+    immediately re-fetching over REST never races an uncommitted transaction.
 
     Resolves the guild slug via Thread -> Conversation -> Guild. Best
     effort — swallows and logs lookup/broadcast failures so a WS hiccup
     never blocks the caller's own transition, matching every other
     Gateway/sweep handler in this codebase.
 
-    Also triggers the Discord thread mirror (issue #1168) to archive/
-    un-archive the corresponding Discord thread when Foreman changes status.
+    Does two things:
+
+    - Mirrors the status to Discord (issue #1168): archives/un-archives the
+      corresponding Discord thread when Foreman changes status.
+    - Broadcasts ``conversation-updated`` (not the legacy ``thread-updated``
+      the frontend no longer listens for since #1298's Conversation-first
+      surface) so the conversations list/detail panel picks up the change
+      live instead of only on the next manual reload (#1314). Before this was
+      wired in, ``thread_maintenance``'s idle sweep and the
+      ``routes/threads.py`` archive/close endpoints silently updated the DB
+      but never told the frontend or Discord.
     """
     try:
         from models import Guild  # noqa: PLC0415 — avoid import cycle at module load
@@ -323,15 +366,6 @@ async def broadcast_thread_updated(db: AsyncSession, thread: Thread) -> None:
         guild_slug = result.first()
         if not guild_slug:
             return
-        await broadcast(
-            guild_slug,
-            ThreadUpdatedMsg(
-                threadId=thread.id,
-                status=thread.status,
-                discordThreadId=thread.discord_thread_id,
-                deletedAt=thread.deleted_at.isoformat() if thread.deleted_at else None,
-            ).model_dump(by_alias=True, exclude_none=True),
-        )
 
         # Mirror status change to Discord (issue #1168)
         try:
@@ -348,9 +382,15 @@ async def broadcast_thread_updated(db: AsyncSession, thread: Thread) -> None:
                 thread.id,
                 exc_info=True,
             )
+
+        conversation = await db.get(Conversation, thread.conversation_id)
+        if conversation is not None:
+            from foreman.conversation_service import broadcast_conversation_updated  # noqa: PLC0415
+
+            await broadcast_conversation_updated(db, conversation)
     except Exception:
         logger.warning(
-            "thread_service: failed to broadcast thread-updated thread=%s", thread.id, exc_info=True
+            "thread_service: failed to broadcast thread update thread=%s", thread.id, exc_info=True
         )
 
 

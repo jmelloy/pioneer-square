@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
 from fastapi import APIRouter, Depends, HTTPException
-from foreman.thread_service import sync_conversation_after_thread_update
+from foreman.thread_service import broadcast_thread_updated, sync_conversation_after_thread_update
 from models import THREAD_STATUSES, Conversation, Message, Thread
 from pydantic import BaseModel
 from routes.guilds import _message_dict
@@ -123,6 +123,7 @@ async def create_thread(
     await sync_conversation_after_thread_update(db, thread)
     await db.commit()
     await db.refresh(thread)
+    await broadcast_thread_updated(db, thread)
     return _to_out(thread)
 
 
@@ -157,6 +158,7 @@ async def _set_status(
     await sync_conversation_after_thread_update(db, thread, previous_status=previous_status)
     await db.commit()
     await db.refresh(thread)
+    await broadcast_thread_updated(db, thread)
     return _to_out(thread)
 
 

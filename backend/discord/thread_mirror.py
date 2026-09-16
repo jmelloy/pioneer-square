@@ -124,7 +124,10 @@ async def _stamp_discord_thread_id(thread_id: str, discord_thread_id: str) -> No
     """
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415
-        from foreman.thread_service import sync_conversation_after_thread_update  # noqa: PLC0415
+        from foreman.thread_service import (  # noqa: PLC0415
+            broadcast_thread_updated,
+            sync_conversation_after_thread_update,
+        )
         from models import Thread  # noqa: PLC0415
         from sqlmodel import col, select  # noqa: PLC0415
 
@@ -143,6 +146,11 @@ async def _stamp_discord_thread_id(thread_id: str, discord_thread_id: str) -> No
             db.add(thread)
             await sync_conversation_after_thread_update(db, thread, previous_status=thread.status)
             await db.commit()
+            await db.refresh(thread)
+            # So the frontend's conversation panel picks up the freshly-bound
+            # discord_thread_id live instead of showing "discord thread not
+            # yet created" until the next manual reload (#1314).
+            await broadcast_thread_updated(db, thread)
     except Exception:
         logger.warning(
             "thread_mirror: failed to stamp discord_thread_id on thread=%s",
