@@ -22,9 +22,12 @@ sys.path.insert(0, os.path.dirname(__file__))
 import database as database_module
 from _test_config import TEST_DATABASE_URL
 from auth_deps import get_guild_pk
-from foreman.thread_service import get_or_create_active_thread
+from foreman.thread_service import (
+    get_or_create_active_thread,
+    sync_conversation_after_thread_update,
+)
 from helpers import create_db, insert_guild, truncate_all
-from models import Conversation
+from models import Conversation, Thread
 from routes.threads import _set_status
 
 
@@ -69,6 +72,13 @@ class TestSetStatusMirrorsConversation:
     async def test_closing_an_already_superseded_thread_does_not_stomp_conversation(
         self, db_session
     ):
+        """``get_or_create_active_thread`` now reactivates an archived thread
+        instead of forking a new one (#1314), so "the conversation rolls to a
+        brand-new active thread" has to be produced some other way here — a
+        second thread created directly, the way the ``/threads`` REST
+        endpoint does (``routes/threads.py:create_thread``)."""
+        from datetime import UTC, datetime
+
         insert_guild(db_session, "g-route-stale")
         guild_pk = await _guild_pk("g-route-stale")
 
@@ -79,9 +89,21 @@ class TestSetStatusMirrorsConversation:
             await _set_status("g-route-stale", old_thread.id, "archived", "user-1", db)
 
         async with database_module.AsyncSessionLocal() as db:
-            # The conversation rolls to a brand-new active thread before the
-            # old one is ever closed.
-            await get_or_create_active_thread(db, guild_pk, "user-1", name_hint="fresh")
+            # The conversation rolls to a brand-new active thread (distinct
+            # row, not a reactivation of old_thread) before the old one is
+            # ever closed.
+            now = datetime.now(UTC)
+            fresh_thread = Thread(
+                id="th-route-stale-fresh",
+                conversation_id=old_thread.conversation_id,
+                name="fresh",
+                status="active",
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(fresh_thread)
+            await sync_conversation_after_thread_update(db, fresh_thread)
+            await db.commit()
 
         async with database_module.AsyncSessionLocal() as db:
             await _set_status("g-route-stale", old_thread.id, "closed", "user-1", db)

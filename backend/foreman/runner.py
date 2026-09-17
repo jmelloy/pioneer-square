@@ -947,6 +947,11 @@ async def _poll_loop(guild_id: str) -> None:
     foreman (embedded or external) currently owns this guild. The foreman-poll-status
     broadcast is sent after each poll so the UI can display the countdown to the
     *next* check.
+
+    The scheduling wrapper (sleep/cancellation/backoff bookkeeping) lives
+    here; the actual per-cycle work is in ``_poll_loop_once`` so it can be
+    awaited directly in a test without any of this loop's task/cancellation
+    machinery.
     """
     interval = POLL_MIN_SECS
     while True:
@@ -960,195 +965,206 @@ async def _poll_loop(guild_id: str) -> None:
             return
 
         try:
-            # Reload config each cycle so guild owners see changes without restarting.
-            cfg = await _load_foreman_config(guild_id)
-            poll_max = int(cfg.get("poll_max_interval", POLL_MAX_SECS))
-
-            db = await get_db()
-            try:
-                guild_pk_val = await get_guild_pk(db, guild_id)
-                result = await db.exec(
-                    select(
-                        col(Task.id),
-                        col(Task.state),
-                        col(Task.name),
-                        col(Task.pr_url),
-                        col(Task.pr_number),
-                        col(Task.pr_repo),
-                        col(Task.phase),
-                        col(Task.issue_repo),
-                        col(Task.issue_number),
-                    ).where(
-                        col(Task.guild_id) == guild_pk_val,
-                        ~col(Task.state).in_(list(TERMINAL_STATES)),
-                        live_tasks_filter(),
-                    )
-                )
-                active_tasks = [dict(r._mapping) for r in result.all()]
-
-                conversation_result = await db.exec(
-                    select(col(Conversation.user_id))
-                    .where(
-                        col(Conversation.guild_id) == guild_pk_val,
-                        col(Conversation.user_id).is_not(None),
-                        col(Conversation.status) == "active",
-                    )
-                    .distinct()
-                )
-                conversation_user_ids = [u for u in conversation_result.all() if u]
-
-                # Kept-alive done tasks (issue still open ⇒ deleted_at left NULL)
-                # rely on the issue-close sweep to ever be stamped; a dropped
-                # issues webhook would otherwise strand them live forever. Gather
-                # their issues too so the sweep below covers them.
-                # ponytail: re-polls each such open issue every cycle; add a
-                # per-issue cooldown if the GitHub API budget bites.
-                kept_alive_result = await db.exec(
-                    select(col(Task.issue_repo), col(Task.issue_number))
-                    .where(
-                        col(Task.guild_id) == guild_pk_val,
-                        col(Task.state).in_(list(TERMINAL_STATES)),
-                        col(Task.deleted_at).is_(None),
-                        col(Task.issue_number).is_not(None),
-                    )
-                    .distinct()
-                )
-                kept_alive_issues = {(r[0], r[1]) for r in kept_alive_result.all() if r[0] and r[1]}
-
-                # Opportunistically refresh the model catalog while we have a DB
-                # session open. The function is a no-op when the catalog is fresh.
-                from util.models_dev import refresh_model_catalog_if_stale as _refresh_catalog
-
-                refreshed = await _refresh_catalog(db)
-                if refreshed:
-                    await db.commit()
-            finally:
-                await db.close()
-
-            n = len(active_tasks)
-            next_interval = min(interval * 2, poll_max)
-            logger.debug(
-                "guild=%s polling %d active tasks, next check in %.0fm",
-                guild_id,
-                n,
-                next_interval / 60,
-            )
-
-            # Always fire a [periodic-check] — even with zero active tasks. An empty
-            # board is exactly when the devReady sweep (which runs on every
-            # periodic-check) needs to pull in new work; gating on active_tasks
-            # silently stalled devReady pickup once a guild drained.
-            linked_issues = {
-                (t["issue_repo"], t["issue_number"])
-                for t in active_tasks
-                if t.get("issue_repo") and t.get("issue_number")
-            } | kept_alive_issues
-            # Sweep whenever any linked issue exists — kept-alive done tasks need
-            # it even when there are no non-terminal tasks left on the board.
-            if linked_issues:
-                await _sweep_closed_issues(guild_id, linked_issues)
-
-            # Independent of active_tasks/linked_issues above: refreshes the
-            # github_issues/github_pull_requests cache for *every* live task's
-            # linked issue/PR (terminal included), so the tasks/tree view never
-            # shows indefinitely-stale status just because its tasks finished.
-            await _refresh_stale_github_links(guild_id)
-
-            # Thread-per-conversation health sweep (#1160/#1163): auto-archive
-            # idle threads, auto-close idle-archived threads, and unlink dead
-            # threads from non-terminal tasks. Best effort — never raises.
-            from foreman.thread_maintenance import sweep_threads
-
-            await sweep_threads(guild_id)
-
-            if active_tasks:
-                task_summary = "; ".join(f"{t['id']} ({t['state']})" for t in active_tasks)
-                pr_tasks = [t for t in active_tasks if t.get("pr_url")]
-                pr_status_lines = await _fetch_pr_status_lines(guild_id, pr_tasks)
-
-                msg = (
-                    f"[periodic-check] Automated status poll — {n} non-terminal "
-                    f"task(s): {task_summary}. Check whether any are stalled. "
-                    "Use get_task_status to inspect a task if it looks stuck."
-                )
-                if pr_status_lines:
-                    msg += (
-                        "\n\nFresh GitHub PR status (fetched this cycle for each "
-                        "open-PR task):\n"
-                        + "\n".join(pr_status_lines)
-                        + "\nFor merged PRs, call finalize_task now. For CI failures or "
-                        "requested changes on these PRs, call send_followup with concrete "
-                        "fix instructions. Approved PRs with no open issues need no "
-                        "further action."
-                    )
-                else:
-                    msg += " If everything looks healthy, no action is needed."
-            else:
-                msg = "[periodic-check] Automated status poll — no non-terminal tasks."
-
-            # Pre-fetched devReady issues ready for pickup (see prompt "Periodic
-            # devReady issue pickup"). Injecting them here saves the foreman a
-            # search_github_issues round-trip and guarantees the sweep runs.
-            devready_lines = await _fetch_devready_issues(guild_id, linked_issues)
-            if devready_lines:
-                msg += (
-                    "\n\nUnassigned devReady issues ready for pickup (fetched this "
-                    "cycle, already deduped against active tasks):\n"
-                    + "\n".join(devready_lines)
-                    + "\nFor each, call claim_github_issue then create_task + assign_task "
-                    "(passing issue_number and issue_repo on both). Skip any already "
-                    "assigned to someone else."
-                )
-
-            # Only bother the foreman (and, through it, every user with an
-            # active conversation) when there's actually something to check:
-            # a non-terminal task to watch, or a devReady issue to pick up.
-            # Without this guard, a guild with zero active tasks kept firing
-            # an identical "no non-terminal tasks" narration into every active
-            # conversation on every cycle forever (bounded only by the
-            # POLL_MAX_SECS backoff ceiling) — from inside one of those
-            # conversations this reads as a stuck loop endlessly repeating
-            # the same status message (#1314). Sweeps above (closed-issue,
-            # stale-github-link, thread-health) still run unconditionally
-            # every cycle regardless of this guard.
-            if active_tasks or devready_lines:
-                # periodic-check is never a human-originated event (see
-                # foreman.classify.is_human_event), so it never needs
-                # foreman.triggers.trigger_foreman's thread-ensure side effect —
-                # call run_foreman_ai directly instead of routing through the
-                # trigger dispatcher, which lives in foreman.triggers and imports
-                # run_foreman_ai from this module; importing it back here would
-                # recreate a circular import.
-                if conversation_user_ids:
-                    for user_id in conversation_user_ids:
-                        spawn(
-                            run_foreman_ai(
-                                guild_id,
-                                msg,
-                                user_id=user_id,
-                                trigger="periodic-check",
-                            ),
-                            name=f"foreman.poll:{guild_id}:{user_id}",
-                        )
-                else:
-                    spawn(
-                        run_foreman_ai(guild_id, msg, trigger="periodic-check"),
-                        name=f"foreman.poll:{guild_id}",
-                    )
-            else:
-                logger.debug(
-                    "guild=%s periodic-check: nothing to report (no active tasks, no "
-                    "devReady issues) — skipping foreman narration this cycle",
-                    guild_id,
-                )
-
-            # Announce next check interval so the UI can display a countdown.
-            interval = next_interval
-            await broadcast_msg(guild_id, ForemanPollStatusMsg(nextCheckIn=interval))
+            interval = await _poll_loop_once(guild_id, interval)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("guild=%s _poll_loop iteration failed", guild_id)
+
+
+async def _poll_loop_once(guild_id: str, interval: float) -> float:
+    """Run a single ``_poll_loop`` cycle for *guild_id*. Returns the next interval.
+
+    Split out from ``_poll_loop`` purely so tests can exercise one cycle's
+    logic (in particular the "skip narration when there's nothing to report"
+    guard, #1314) with a single direct ``await`` — no background task,
+    cancellation, or ``asyncio.sleep`` patching required.
+    """
+    # Reload config each cycle so guild owners see changes without restarting.
+    cfg = await _load_foreman_config(guild_id)
+    poll_max = int(cfg.get("poll_max_interval", POLL_MAX_SECS))
+
+    db = await get_db()
+    try:
+        guild_pk_val = await get_guild_pk(db, guild_id)
+        result = await db.exec(
+            select(
+                col(Task.id),
+                col(Task.state),
+                col(Task.name),
+                col(Task.pr_url),
+                col(Task.pr_number),
+                col(Task.pr_repo),
+                col(Task.phase),
+                col(Task.issue_repo),
+                col(Task.issue_number),
+            ).where(
+                col(Task.guild_id) == guild_pk_val,
+                ~col(Task.state).in_(list(TERMINAL_STATES)),
+                live_tasks_filter(),
+            )
+        )
+        active_tasks = [dict(r._mapping) for r in result.all()]
+
+        conversation_result = await db.exec(
+            select(col(Conversation.user_id))
+            .where(
+                col(Conversation.guild_id) == guild_pk_val,
+                col(Conversation.user_id).is_not(None),
+                col(Conversation.status) == "active",
+            )
+            .distinct()
+        )
+        conversation_user_ids = [u for u in conversation_result.all() if u]
+
+        # Kept-alive done tasks (issue still open ⇒ deleted_at left NULL)
+        # rely on the issue-close sweep to ever be stamped; a dropped
+        # issues webhook would otherwise strand them live forever. Gather
+        # their issues too so the sweep below covers them.
+        # ponytail: re-polls each such open issue every cycle; add a
+        # per-issue cooldown if the GitHub API budget bites.
+        kept_alive_result = await db.exec(
+            select(col(Task.issue_repo), col(Task.issue_number))
+            .where(
+                col(Task.guild_id) == guild_pk_val,
+                col(Task.state).in_(list(TERMINAL_STATES)),
+                col(Task.deleted_at).is_(None),
+                col(Task.issue_number).is_not(None),
+            )
+            .distinct()
+        )
+        kept_alive_issues = {(r[0], r[1]) for r in kept_alive_result.all() if r[0] and r[1]}
+
+        # Opportunistically refresh the model catalog while we have a DB
+        # session open. The function is a no-op when the catalog is fresh.
+        from util.models_dev import refresh_model_catalog_if_stale as _refresh_catalog
+
+        refreshed = await _refresh_catalog(db)
+        if refreshed:
+            await db.commit()
+    finally:
+        await db.close()
+
+    n = len(active_tasks)
+    next_interval = min(interval * 2, poll_max)
+    logger.debug(
+        "guild=%s polling %d active tasks, next check in %.0fm",
+        guild_id,
+        n,
+        next_interval / 60,
+    )
+
+    # Always fire a [periodic-check] — even with zero active tasks. An empty
+    # board is exactly when the devReady sweep (which runs on every
+    # periodic-check) needs to pull in new work; gating on active_tasks
+    # silently stalled devReady pickup once a guild drained.
+    linked_issues = {
+        (t["issue_repo"], t["issue_number"])
+        for t in active_tasks
+        if t.get("issue_repo") and t.get("issue_number")
+    } | kept_alive_issues
+    # Sweep whenever any linked issue exists — kept-alive done tasks need
+    # it even when there are no non-terminal tasks left on the board.
+    if linked_issues:
+        await _sweep_closed_issues(guild_id, linked_issues)
+
+    # Independent of active_tasks/linked_issues above: refreshes the
+    # github_issues/github_pull_requests cache for *every* live task's
+    # linked issue/PR (terminal included), so the tasks/tree view never
+    # shows indefinitely-stale status just because its tasks finished.
+    await _refresh_stale_github_links(guild_id)
+
+    # Thread-per-conversation health sweep (#1160/#1163): auto-archive
+    # idle threads, auto-close idle-archived threads, and unlink dead
+    # threads from non-terminal tasks. Best effort — never raises.
+    from foreman.thread_maintenance import sweep_threads
+
+    await sweep_threads(guild_id)
+
+    if active_tasks:
+        task_summary = "; ".join(f"{t['id']} ({t['state']})" for t in active_tasks)
+        pr_tasks = [t for t in active_tasks if t.get("pr_url")]
+        pr_status_lines = await _fetch_pr_status_lines(guild_id, pr_tasks)
+
+        msg = (
+            f"[periodic-check] Automated status poll — {n} non-terminal "
+            f"task(s): {task_summary}. Check whether any are stalled. "
+            "Use get_task_status to inspect a task if it looks stuck."
+        )
+        if pr_status_lines:
+            msg += (
+                "\n\nFresh GitHub PR status (fetched this cycle for each "
+                "open-PR task):\n"
+                + "\n".join(pr_status_lines)
+                + "\nFor merged PRs, call finalize_task now. For CI failures or "
+                "requested changes on these PRs, call send_followup with concrete "
+                "fix instructions. Approved PRs with no open issues need no "
+                "further action."
+            )
+        else:
+            msg += " If everything looks healthy, no action is needed."
+    else:
+        msg = "[periodic-check] Automated status poll — no non-terminal tasks."
+
+    # Pre-fetched devReady issues ready for pickup (see prompt "Periodic
+    # devReady issue pickup"). Injecting them here saves the foreman a
+    # search_github_issues round-trip and guarantees the sweep runs.
+    devready_lines = await _fetch_devready_issues(guild_id, linked_issues)
+    if devready_lines:
+        msg += (
+            "\n\nUnassigned devReady issues ready for pickup (fetched this "
+            "cycle, already deduped against active tasks):\n"
+            + "\n".join(devready_lines)
+            + "\nFor each, call claim_github_issue then create_task + assign_task "
+            "(passing issue_number and issue_repo on both). Skip any already "
+            "assigned to someone else."
+        )
+
+    # Only bother the foreman (and, through it, every user with an
+    # active conversation) when there's actually something to check:
+    # a non-terminal task to watch, or a devReady issue to pick up.
+    # Without this guard, a guild with zero active tasks kept firing
+    # an identical "no non-terminal tasks" narration into every active
+    # conversation on every cycle forever (bounded only by the
+    # POLL_MAX_SECS backoff ceiling) — from inside one of those
+    # conversations this reads as a stuck loop endlessly repeating
+    # the same status message (#1314). Sweeps above (closed-issue,
+    # stale-github-link, thread-health) still run unconditionally
+    # every cycle regardless of this guard.
+    if active_tasks or devready_lines:
+        # periodic-check is never a human-originated event (see
+        # foreman.classify.is_human_event), so it never needs
+        # foreman.triggers.trigger_foreman's thread-ensure side effect —
+        # call run_foreman_ai directly instead of routing through the
+        # trigger dispatcher, which lives in foreman.triggers and imports
+        # run_foreman_ai from this module; importing it back here would
+        # recreate a circular import.
+        if conversation_user_ids:
+            for user_id in conversation_user_ids:
+                spawn(
+                    run_foreman_ai(
+                        guild_id,
+                        msg,
+                        user_id=user_id,
+                        trigger="periodic-check",
+                    ),
+                    name=f"foreman.poll:{guild_id}:{user_id}",
+                )
+        else:
+            spawn(
+                run_foreman_ai(guild_id, msg, trigger="periodic-check"),
+                name=f"foreman.poll:{guild_id}",
+            )
+    else:
+        logger.debug(
+            "guild=%s periodic-check: nothing to report (no active tasks, no "
+            "devReady issues) — skipping foreman narration this cycle",
+            guild_id,
+        )
+
+    # Announce next check interval so the UI can display a countdown.
+    await broadcast_msg(guild_id, ForemanPollStatusMsg(nextCheckIn=next_interval))
+    return next_interval
 
 
 def ensure_poll_loop(guild_id: str) -> None:

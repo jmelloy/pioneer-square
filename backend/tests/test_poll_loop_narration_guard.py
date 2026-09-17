@@ -6,11 +6,18 @@ cycle, even when there was nothing new to report (zero non-terminal tasks,
 zero devReady issues). From inside one of those conversations this read as
 a stuck loop endlessly repeating the same "no non-terminal tasks" status
 message, bounded only by the (multi-hour, eventually 24h) backoff ceiling.
+
+Exercises ``_poll_loop_once`` — the single-cycle worker ``_poll_loop``
+delegates to — directly with one plain ``await``. No background task,
+cancellation, or ``asyncio.sleep`` patching is involved: those would touch
+process-global asyncio state shared with every other concurrently-running
+coroutine (including other tests' leftover background tasks under
+pytest-asyncio's shared event loop), which is exactly the kind of
+cross-test flakiness this file used to hit in CI.
 """
 
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
 from unittest.mock import AsyncMock, patch
@@ -42,6 +49,14 @@ def db_session(monkeypatch):
     engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
     session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     monkeypatch.setattr(database_module, "AsyncSessionLocal", session_factory)
+    # foreman.runner._load_foreman_config uses the name `AsyncSessionLocal`
+    # imported directly into its own module namespace (`from database import
+    # AsyncSessionLocal`), a separate binding from `database.AsyncSessionLocal`
+    # above — patching only the latter leaves it pointed at the real
+    # production sessionmaker, whose engine ends up bound to whichever
+    # test's event loop touches it first and breaks every test after with
+    # "Future attached to a different loop".
+    monkeypatch.setattr(runner, "AsyncSessionLocal", session_factory)
 
     yield TEST_DATABASE_URL
 
@@ -67,43 +82,23 @@ async def _insert_active_conversation(guild_id: str, user_id: str) -> None:
         await db.commit()
 
 
-async def _run_one_poll_iteration(guild_id: str, spawned: list) -> None:
-    """Run exactly one ``_poll_loop`` iteration, then stop it.
-
-    Patches out ``asyncio.sleep`` (fires instantly — never raises, since
-    ``asyncio.sleep`` is a single global function shared by every coroutine
-    in the process, including unrelated library internals, so anything that
-    counts calls or raises from it is a trap for cross-test flakiness) and
-    every collaborator that would otherwise hit the network (GitHub,
-    models.dev). ``broadcast_msg`` — called exactly once, at the very end of
-    each successful iteration, right before the loop goes back around for
-    another sleep — is used as the deterministic "one iteration finished"
-    signal: its side effect cancels the loop's own task, which
-    ``_poll_loop`` catches via its ``except asyncio.CancelledError: return``
-    around the next sleep.
-    """
+async def _run_one_poll_cycle(guild_id: str, spawned: list) -> float:
+    """Run exactly one ``_poll_loop_once`` cycle, patching out every
+    collaborator that would otherwise hit the network (GitHub, models.dev)
+    or actually run the foreman AI — none of those are what this test is
+    about."""
 
     def _fake_spawn(coro, *, name=None):
         spawned.append((name, coro))
         coro.close()  # never actually run the foreman AI in this test
 
     with (
-        patch("foreman.runner.asyncio.sleep", AsyncMock(return_value=None)),
         patch("foreman.runner.spawn", side_effect=_fake_spawn),
         patch("util.models_dev.refresh_model_catalog_if_stale", AsyncMock(return_value=False)),
         patch("foreman.thread_maintenance.sweep_threads", AsyncMock(return_value={})),
-        patch("foreman.runner.broadcast_msg", AsyncMock()) as mock_broadcast_msg,
+        patch("foreman.runner.broadcast_msg", AsyncMock()),
     ):
-        runner._poll_tasks.pop(guild_id, None)
-        task = asyncio.create_task(runner._poll_loop(guild_id))
-        runner._poll_tasks[guild_id] = task
-        mock_broadcast_msg.side_effect = lambda *a, **kw: task.cancel()
-        try:
-            await asyncio.wait_for(task, timeout=5)
-        except asyncio.CancelledError:
-            pass
-        finally:
-            runner._poll_tasks.pop(guild_id, None)
+        return await runner._poll_loop_once(guild_id, runner.POLL_MIN_SECS)
 
 
 class TestPollLoopNarrationGuard:
@@ -112,7 +107,7 @@ class TestPollLoopNarrationGuard:
         await _insert_active_conversation("g-poll-quiet", "user-1")
 
         spawned: list = []
-        await _run_one_poll_iteration("g-poll-quiet", spawned)
+        await _run_one_poll_cycle("g-poll-quiet", spawned)
 
         assert spawned == []
 
@@ -122,7 +117,7 @@ class TestPollLoopNarrationGuard:
         insert_task(db_session, "g-poll-busy", "t-busy1", state="working")
 
         spawned: list = []
-        await _run_one_poll_iteration("g-poll-busy", spawned)
+        await _run_one_poll_cycle("g-poll-busy", spawned)
 
         assert len(spawned) == 1
         name, _coro = spawned[0]
