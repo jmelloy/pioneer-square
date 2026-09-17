@@ -149,7 +149,14 @@ class TestGetOrCreateActiveThread:
 
         assert thread2.updated_at >= first_updated
 
-    async def test_new_thread_created_when_previous_is_archived(self, db_session):
+    async def test_archived_thread_is_reactivated_not_forked(self, db_session):
+        """#1314: a message arriving after the idle sweep archived the only
+        thread must reactivate that same row (mirroring
+        ``reactivate_conversation_thread``'s behavior on the Discord inbound
+        path), not fork a second ``Thread`` row for one ``Conversation`` —
+        the old fork-a-new-one behavior lost the archived row's
+        ``discord_thread_id`` and minted a redundant Discord thread channel
+        every idle/resume cycle."""
         insert_guild(db_session, "g-thread4")
         guild_pk = await _guild_pk("g-thread4")
 
@@ -162,8 +169,9 @@ class TestGetOrCreateActiveThread:
         async with database_module.AsyncSessionLocal() as db:
             thread2, created2 = await get_or_create_active_thread(db, guild_pk, "user-1")
 
-        assert created2 is True
-        assert thread2.id != thread1.id
+        assert created2 is False
+        assert thread2.id == thread1.id
+        assert thread2.status == "active"
 
     async def test_different_users_get_different_threads(self, db_session):
         insert_guild(db_session, "g-thread5")
@@ -355,7 +363,12 @@ class TestEnsureConversationThread:
 
 
 class TestBroadcastThreadUpdated:
-    async def test_broadcasts_to_owning_guild(self, db_session):
+    async def test_broadcasts_conversation_updated_to_owning_guild(self, db_session):
+        """#1314: the frontend's conversations store only listens for
+        conversation-updated (not the legacy thread-updated event, which
+        predates #1298's Conversation-first surface), so this must broadcast
+        that instead of (or in addition to) a thread-scoped event.
+        """
         insert_guild(db_session, "g-updated1")
         guild_pk = await _guild_pk("g-updated1")
 
@@ -363,19 +376,23 @@ class TestBroadcastThreadUpdated:
             thread, _ = await get_or_create_active_thread(db, guild_pk, "user-1")
             thread.status = "archived"
             db.add(thread)
+            # broadcast_thread_updated reads the *Conversation*'s mirrored
+            # status (not Thread.status directly) — real call sites always
+            # sync the mirror before calling it, same as here.
+            await sync_conversation_after_thread_update(db, thread, previous_status="active")
             await db.commit()
             await db.refresh(thread)
 
             with patch(
-                "foreman.thread_service.broadcast", new_callable=AsyncMock
+                "foreman.conversation_service.broadcast", new_callable=AsyncMock
             ) as mock_broadcast:
                 await broadcast_thread_updated(db, thread)
 
         mock_broadcast.assert_awaited_once()
         guild_arg, payload = mock_broadcast.call_args.args
         assert guild_arg == "g-updated1"
-        assert payload["type"] == "thread-updated"
-        assert payload["threadId"] == thread.id
+        assert payload["type"] == "conversation-updated"
+        assert payload["conversationId"] == thread.conversation_id
         assert payload["status"] == "archived"
 
     async def test_swallows_broadcast_failure(self, db_session):
@@ -387,7 +404,7 @@ class TestBroadcastThreadUpdated:
             thread, _ = await get_or_create_active_thread(db, guild_pk, "user-1")
 
             with patch(
-                "foreman.thread_service.broadcast",
+                "foreman.conversation_service.broadcast",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("ws down"),
             ):
@@ -412,12 +429,14 @@ class TestConversationMirroring:
         assert conversation.status == "active"
         assert conversation.discord_thread_id is None
 
-    async def test_new_thread_after_archive_resets_conversation_to_active(self, db_session):
-        """Mirrors TestGetOrCreateActiveThread.test_new_thread_created_when_previous_is_archived:
+    async def test_reactivated_thread_resets_conversation_to_active(self, db_session):
+        """Mirrors TestGetOrCreateActiveThread.test_archived_thread_is_reactivated_not_forked:
         once the old thread is archived directly (as the Discord-side
-        archive/close routes do) and a fresh message rolls a new thread, the
-        conversation's mirrored fields must reflect the *new* thread, not the
-        stale archived one."""
+        archive/close routes do) and a fresh message arrives, the
+        conversation's mirrored fields must reflect the reactivated thread —
+        including its preserved ``discord_thread_id`` and original name,
+        since reactivation reuses the row rather than starting a fresh one
+        (#1314)."""
         insert_guild(db_session, "g-mirror2")
         guild_pk = await _guild_pk("g-mirror2")
 
@@ -436,15 +455,24 @@ class TestConversationMirroring:
             )
             conversation = await db.get(Conversation, new_thread.conversation_id)
 
-        assert created is True
+        assert created is False
+        assert new_thread.id == old_thread.id
         assert conversation.status == "active"
-        assert conversation.name == "second session"
-        assert conversation.discord_thread_id is None
+        assert conversation.name == "first session"
+        assert conversation.discord_thread_id == "discord-old"
 
     async def test_sync_helper_skips_when_conversation_already_moved_on(self, db_session):
         """A stale (superseded) thread transitioning archived -> closed must
         not stomp a conversation that has already rolled to a newer active
-        thread — see ``sync_conversation_after_thread_update``'s guard."""
+        thread — see ``sync_conversation_after_thread_update``'s guard.
+
+        ``get_or_create_active_thread`` now reactivates an archived thread
+        rather than forking a new one (#1314), so "rolled to a newer active
+        thread" has to be produced some other way here — e.g. a second
+        thread created directly, the way the ``/threads`` REST endpoint
+        does (``routes/threads.py:create_thread``)."""
+        from datetime import UTC, datetime
+
         insert_guild(db_session, "g-mirror3")
         guild_pk = await _guild_pk("g-mirror3")
 
@@ -455,8 +483,20 @@ class TestConversationMirroring:
             await db.commit()
 
         async with database_module.AsyncSessionLocal() as db:
-            # Conversation rolls to a brand-new active thread.
-            await get_or_create_active_thread(db, guild_pk, "user-1", name_hint="new session")
+            # Conversation rolls to a brand-new active thread (distinct row,
+            # not a reactivation of old_thread).
+            now = datetime.now(UTC)
+            new_thread = Thread(
+                id="th-mirror3new",
+                conversation_id=old_thread.conversation_id,
+                name="new session",
+                status="active",
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(new_thread)
+            await sync_conversation_after_thread_update(db, new_thread)
+            await db.commit()
 
         async with database_module.AsyncSessionLocal() as db:
             old_thread = await db.get(Thread, old_thread.id)

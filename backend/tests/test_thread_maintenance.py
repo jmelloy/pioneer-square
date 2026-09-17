@@ -129,7 +129,13 @@ class TestSweepThreads:
         """A conversation that already rolled to a new active thread must
         keep showing that thread's state even after its old, now-orphaned
         thread ages out of "archived" into "closed" (issue #1274's mirroring
-        guard)."""
+        guard).
+
+        ``get_or_create_active_thread`` now reactivates an archived thread
+        instead of forking a new one (#1314), so "rolled to a newer active
+        thread" has to be produced some other way here — a second thread
+        created directly, the way the ``/threads`` REST endpoint does
+        (``routes/threads.py:create_thread``)."""
         insert_guild(db_session, "g-sweep-superseded")
         guild_pk = await _guild_pk("g-sweep-superseded")
         async with database_module.AsyncSessionLocal() as db:
@@ -140,9 +146,18 @@ class TestSweepThreads:
         await _backdate_thread(old_thread.id, datetime.now(UTC) - timedelta(days=15))
 
         async with database_module.AsyncSessionLocal() as db:
-            new_thread, _ = await get_or_create_active_thread(
-                db, guild_pk, "user-1", name_hint="fresh session"
+            now = datetime.now(UTC)
+            new_thread = Thread(
+                id="th-supersede-new",
+                conversation_id=old_thread.conversation_id,
+                name="fresh session",
+                status="active",
+                created_at=now,
+                updated_at=now,
             )
+            db.add(new_thread)
+            await sync_conversation_after_thread_update(db, new_thread)
+            await db.commit()
 
         with patch("discord_notifier.is_configured", return_value=False):
             summary = await thread_maintenance.sweep_threads("g-sweep-superseded")
