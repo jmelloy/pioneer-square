@@ -124,7 +124,7 @@ variable "ecs_capacity_desired_capacity" {
 variable "ecs_capacity_target_capacity" {
   description = "ECS managed scaling target capacity percentage for the ASG capacity provider. 100 packs tasks tightly; lower values keep headroom."
   type        = number
-  default     = 80
+  default     = 100
 }
 
 variable "ecs_capacity_root_volume_gib" {
@@ -219,7 +219,7 @@ variable "worker_cpu" {
 variable "worker_memory" {
   description = "ECS task memory (MiB) for on-demand worker tasks."
   type        = number
-  default     = 1536
+  default     = 3072
 }
 
 variable "worker_ephemeral_storage_gib" {

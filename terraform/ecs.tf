@@ -371,6 +371,7 @@ resource "aws_ecs_task_definition" "worker" {
 
       environment = [
         { name = "WORKER_LOG_LEVEL", value = var.log_level },
+        { name = "PIONEER_MAX_AGENTS", value = "1" },
         { name = "PIONEER_S3_BUCKET", value = aws_s3_bucket.assets.bucket },
         { name = "PIONEER_S3_PREFIX", value = "worker-sessions" },
         { name = "AWS_DEFAULT_REGION", value = local.region },
