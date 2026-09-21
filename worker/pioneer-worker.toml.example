@@ -49,8 +49,14 @@ token = "env:GITHUB_TOKEN"
 # codex = "/usr/local/bin/codex"
 # pi = "/usr/local/bin/pi"
 
+# Shared env overrides for all harness subprocesses on this machine.
+# [env]
+# PIONEER_FOO = "bar"
+
 [claude]
 max_turns = 50
+# [claude.env]
+# ANTHROPIC_API_KEY = "env:ANTHROPIC_API_KEY"
 
 [codex]
 # OpenAI API key for Codex tasks. Use "env:VAR_NAME" to read from an
@@ -63,6 +69,15 @@ max_turns = 50
 
 # Run `codex doctor` at worker startup and log the result (non-fatal).
 doctor = true
+# [codex.env]
+# OPENAI_API_KEY = "env:OPENAI_API_KEY"
+
+[pi]
+# Defaults for pi tasks on this machine. Task-level model/provider still wins.
+# model = "openai/gpt-5.1-codex-max"
+# provider = "openai"
+# [pi.env]
+# PI_MODEL = "gpt-5.1-codex-max"
 
 # [s3]
 # Periodically sync session-log dot-directories to S3 using `aws s3 sync`.

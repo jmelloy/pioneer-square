@@ -162,6 +162,19 @@ def test_load_codex_doctor_can_be_disabled(tmp_path):
     assert cfg.codex_doctor is False
 
 
+def test_load_env_overrides_from_toml(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCAL_PI_MODEL", "machine-model")
+    toml_path = tmp_path / "pioneer-worker.toml"
+    toml_path.write_text(
+        'backend_url = "ws://x:1"\nguild_id = "g"\n'
+        '[env]\nSHARED = "shared"\n'
+        '[pi.env]\nPI_MODEL = "env:LOCAL_PI_MODEL"\n'
+    )
+    cfg = load(str(toml_path))
+    assert cfg.env == {"SHARED": "shared"}
+    assert cfg.tool_env == {"pi": {"PI_MODEL": "machine-model"}}
+
+
 # ---------------------------------------------------------------------------
 # load() — environment variable overrides
 # ---------------------------------------------------------------------------

@@ -227,7 +227,7 @@ class Worker:
         # Per-tool env vars (claude/pi/codex). Kept OUT of os.environ so one tool's
         # credentials never leak into another's subprocess; merged over os.environ
         # only when spawning that specific tool. See _env_for_tool.
-        self._tool_env: dict[str, dict[str, str]] = {}
+        self._tool_env: dict[str, dict[str, str]] = {k: dict(v) for k, v in cfg.tool_env.items()}
 
     # ------------------------------------------------------------------ HTTP
     def _hostname(self) -> str:
@@ -405,6 +405,11 @@ class Worker:
             logger.warning("Could not fetch task GitHub token: %s", exc)
         return self.cfg.github_token
 
+    def _apply_local_env_overrides(self) -> None:
+        """Apply shared env from pioneer-worker.toml to this worker process."""
+        for key, value in self.cfg.env.items():
+            os.environ[key] = value
+
     async def _fetch_guild_env_vars(self) -> None:
         """Fetch guild-level env vars from foreman config and apply to the process environment.
 
@@ -449,6 +454,8 @@ class Worker:
                 if scoped:
                     self._tool_env[tool] = scoped
                     logger.info("Loaded %d scoped env var(s) for tool %r", len(scoped), tool)
+            for tool, scoped in self.cfg.tool_env.items():
+                self._tool_env.setdefault(tool, {}).update(scoped)
         except Exception as exc:
             logger.warning("Could not fetch foreman env vars: %s", exc)
 
@@ -456,10 +463,11 @@ class Worker:
         """Return the environment a *tool*'s runner subprocess should inherit.
 
         Base process env (which already carries the shared foreman env_vars)
-        overlaid with the tool's own scoped vars. Scoped vars win so a guild can
-        override a shared default for one tool without affecting the others.
+        overlaid with local shared env and the tool's own scoped vars. Scoped
+        vars win so one tool can override a shared default without affecting others.
         """
         env = dict(os.environ)
+        env.update(self.cfg.env)
         env.update(self._tool_env.get(tool, {}))
         return env
 
@@ -1080,6 +1088,7 @@ class Worker:
         self._loop = asyncio.get_running_loop()
         self._install_signal_handlers()
         self._start_control_api()
+        self._apply_local_env_overrides()
 
         await self._register()
         assert self.cfg.worker_id, "worker_id must be set after registration"
