@@ -253,7 +253,7 @@ class TestPerToolEnvScoping:
         monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.setenv("SHARED_VAR", "shared")
-        worker = Worker(_make_cfg())
+        worker = Worker(_make_cfg(env={"LOCAL_SHARED": "local"}))
         worker._tool_env = {
             "claude": {"CLAUDE_CODE_OAUTH_TOKEN": "claude-tok"},
             "pi": {"AWS_BEARER_TOKEN_BEDROCK": "pi-bedrock"},
@@ -262,9 +262,10 @@ class TestPerToolEnvScoping:
         claude_env = worker._env_for_tool("claude")
         pi_env = worker._env_for_tool("pi")
 
-        # Each tool sees its own scoped var plus the shared process env...
+        # Each tool sees its own scoped var plus shared env...
         assert claude_env["CLAUDE_CODE_OAUTH_TOKEN"] == "claude-tok"
         assert claude_env["SHARED_VAR"] == "shared"
+        assert claude_env["LOCAL_SHARED"] == "local"
         assert pi_env["AWS_BEARER_TOKEN_BEDROCK"] == "pi-bedrock"
         # ...but never the other tool's scoped var.
         assert "AWS_BEARER_TOKEN_BEDROCK" not in claude_env
@@ -272,6 +273,12 @@ class TestPerToolEnvScoping:
         # Scoped vars must not have leaked into the real process environment.
         assert "AWS_BEARER_TOKEN_BEDROCK" not in os.environ
         assert "CLAUDE_CODE_OAUTH_TOKEN" not in os.environ
+
+    async def test_local_tool_env_overrides_fetched_env(self):
+        worker = Worker(_make_cfg(tool_env={"pi": {"PI_MODEL": "local-model"}}))
+        worker._tool_env = {"pi": {"PI_MODEL": "guild-model"}}
+        worker._tool_env.setdefault("pi", {}).update(worker.cfg.tool_env["pi"])
+        assert worker._env_for_tool("pi")["PI_MODEL"] == "local-model"
 
     async def test_scoped_credential_gates_tool_availability(self, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

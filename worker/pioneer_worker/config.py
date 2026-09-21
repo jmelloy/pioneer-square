@@ -61,6 +61,10 @@ class Config:
     pi_path: str = "pi"
     pi_model: str | None = None
     pi_provider: str | None = None
+    # Local environment overrides. `env` is shared by all subprocesses; `tool_env`
+    # is scoped to one harness (claude/codex/pi) and wins over shared env.
+    env: dict[str, str] = field(default_factory=dict)
+    tool_env: dict[str, dict[str, str]] = field(default_factory=dict)
     pull_interval: float = 300.0
     claude_max_turns: int | None = None
     max_agents: int = 4
@@ -249,6 +253,34 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
             )
         _openai_api_key = _env_val  # None if var is absent, key string if present
 
+    def _env_value(value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError("env values must be strings")
+        if value.startswith("env:"):
+            name = value[4:].strip()
+            if not name:
+                raise ValueError("env: directive has a blank variable name")
+            return os.environ.get(name, "")
+        return value
+
+    def _env_block(block: object, *, section: str) -> dict[str, str]:
+        if block is None:
+            return {}
+        if not isinstance(block, dict):
+            raise ValueError(f"{section} must be a table")
+        return {str(k): _env_value(v) for k, v in block.items() if not isinstance(v, dict)}
+
+    _shared_env = _env_block(raw.get("env"), section="[env]")
+    _tool_env = {
+        tool: env
+        for tool, env in {
+            "claude": _env_block(claude_block.get("env"), section="[claude.env]"),
+            "codex": _env_block(codex_block.get("env"), section="[codex.env]"),
+            "pi": _env_block(pi_block.get("env"), section="[pi.env]"),
+        }.items()
+        if env
+    }
+
     _max_agents_env = os.environ.get("PIONEER_MAX_AGENTS")
     if _max_agents_env:
         try:
@@ -344,6 +376,13 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         or pi_block.get("provider")
         or os.environ.get("PIONEER_PI_PROVIDER")
         or None,
+        env=dict(overrides.get("env") if overrides.get("env") is not None else _shared_env),
+        tool_env={
+            k: dict(v)
+            for k, v in (
+                overrides.get("tool_env") if overrides.get("tool_env") is not None else _tool_env
+            ).items()
+        },
         pull_interval=float(
             overrides.get("pull_interval")
             if overrides.get("pull_interval") is not None
