@@ -50,7 +50,6 @@ from foreman.thread_service import resolve_thread_id
 from models import (
     Agent,
     ApiRequestLog,
-    Conversation,
     ForemanTurn,
     GithubEvent,
     GithubIssue,
@@ -1006,17 +1005,6 @@ async def _poll_loop_once(guild_id: str, interval: float) -> float:
         )
         active_tasks = [dict(r._mapping) for r in result.all()]
 
-        conversation_result = await db.exec(
-            select(col(Conversation.user_id))
-            .where(
-                col(Conversation.guild_id) == guild_pk_val,
-                col(Conversation.user_id).is_not(None),
-                col(Conversation.status) == "active",
-            )
-            .distinct()
-        )
-        conversation_user_ids = [u for u in conversation_result.all() if u]
-
         # Kept-alive done tasks (issue still open ⇒ deleted_at left NULL)
         # rely on the issue-close sweep to ever be stamped; a dropped
         # issues webhook would otherwise strand them live forever. Gather
@@ -1139,22 +1127,10 @@ async def _poll_loop_once(guild_id: str, interval: float) -> float:
         # trigger dispatcher, which lives in foreman.triggers and imports
         # run_foreman_ai from this module; importing it back here would
         # recreate a circular import.
-        if conversation_user_ids:
-            for user_id in conversation_user_ids:
-                spawn(
-                    run_foreman_ai(
-                        guild_id,
-                        msg,
-                        user_id=user_id,
-                        trigger="periodic-check",
-                    ),
-                    name=f"foreman.poll:{guild_id}:{user_id}",
-                )
-        else:
-            spawn(
-                run_foreman_ai(guild_id, msg, trigger="periodic-check"),
-                name=f"foreman.poll:{guild_id}",
-            )
+        spawn(
+            run_foreman_ai(guild_id, msg, trigger="periodic-check"),
+            name=f"foreman.poll:{guild_id}",
+        )
     else:
         logger.debug(
             "guild=%s periodic-check: nothing to report (no active tasks, no "

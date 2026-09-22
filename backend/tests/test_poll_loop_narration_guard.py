@@ -1,7 +1,7 @@
 """Tests for the periodic-check narration guard (issue #1314).
 
 Before this guard, ``foreman.runner._poll_loop`` fired a
-``[periodic-check]`` foreman run into every active conversation on *every*
+``[periodic-check]`` foreman run into active conversations on *every*
 cycle, even when there was nothing new to report (zero non-terminal tasks,
 zero devReady issues). From inside one of those conversations this read as
 a stuck loop endlessly repeating the same "no non-terminal tasks" status
@@ -121,4 +121,4 @@ class TestPollLoopNarrationGuard:
 
         assert len(spawned) == 1
         name, _coro = spawned[0]
-        assert name == "foreman.poll:g-poll-busy:user-1"
+        assert name == "foreman.poll:g-poll-busy"
