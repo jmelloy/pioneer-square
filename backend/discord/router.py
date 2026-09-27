@@ -788,9 +788,23 @@ async def _forward_to_foreman(
     reply (``task_id`` set) is first offered to ``_auto_route_task_reply``
     (#959) — if the task's state auto-routes, the message is handled straight
     away and never reaches the Foreman at all.
+
+    ``_persist_inbound_message``'s resolved ``conversation_id`` is passed
+    straight through to ``trigger_foreman`` rather than left for
+    ``run_foreman_ai`` to re-derive from ``(guild_id, user_id)``: that generic
+    fallback picks the user's *most recently updated* Conversation, which can
+    disagree with the specific Conversation this message was just persisted
+    under — e.g. a reply reactivating an older Discord-thread-bound
+    Conversation while a newer, unrelated one exists for the same user (see
+    ``foreman.thread_service.reactivate_conversation_thread``'s "no matching
+    Thread row" fallback). Without pinning it here, the Foreman's reply would
+    silently land in the wrong Conversation, unlike
+    ``routes/conversations.py``'s ``post_conversation_message``, which already
+    pins its own already-known ``conversation_id`` for exactly this reason.
     """
+    conversation_id: int | None = None
     try:
-        await _persist_inbound_message(
+        conversation_id = await _persist_inbound_message(
             guild_slug,
             content,
             user_id=ps_user_id,
@@ -816,6 +830,7 @@ async def _forward_to_foreman(
         human_message,
         user_id=ps_user_id,
         task_id=task_id,
+        conversation_id=conversation_id,
         task_name=task_name,
         reply_channel_id=reply_channel_id,
     )
@@ -879,12 +894,18 @@ async def _persist_inbound_message(
     user_id: str | None,
     task_id: str | None,
     discord_thread_id: str | None = None,
-) -> None:
+) -> int | None:
     """Write the inbound Discord message to the ``messages`` table and
     broadcast it over WS so the frontend chat panel shows it live, tagged
     ``source="discord"``. Best-effort — a failure here must not stop the
     message from reaching the Foreman, so the caller wraps this call in its
     own try/except and forwards to ``foreman.triggers.trigger_foreman`` regardless.
+
+    Returns the resolved ``conversation_id`` (or ``None``) so the caller
+    (``_forward_to_foreman``) can pin the Foreman run to the exact same
+    Conversation this message was just stamped with, instead of letting
+    ``run_foreman_ai`` re-derive one from scratch — see
+    ``_forward_to_foreman``'s docstring for why that matters.
 
     *discord_thread_id* is the Discord channel the message actually landed in
     (``reply_channel_id`` at the call site) — when it's already bound to a
@@ -925,7 +946,7 @@ async def _persist_inbound_message(
     async with AsyncSessionLocal() as db:
         guild_pk = await get_guild_pk(db, guild_slug)
         if guild_pk is None:
-            return
+            return None
 
         try:
             if task_id:
@@ -995,6 +1016,8 @@ async def _persist_inbound_message(
             source="discord",
         ),
     )
+
+    return conversation_id
 
 
 async def _consume_forever(queue: asyncio.Queue) -> None:
