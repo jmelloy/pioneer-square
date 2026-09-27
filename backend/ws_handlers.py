@@ -569,6 +569,7 @@ async def handle_chat(ctx: WSContext, msg: ChatMsg) -> None:
                 "createdAt": created_at.isoformat(),
                 "userId": ctx.ws_user_id if from_agent == "user" else None,
                 "threadId": thread_id,
+                "conversationId": conversation_id,
             }
         ),
     )
@@ -580,10 +581,16 @@ async def handle_chat(ctx: WSContext, msg: ChatMsg) -> None:
         "chat",
         content,
         user_id=ctx.ws_user_id,
+        conversation_id=conversation_id,
         task_name=f"foreman.chat:{ctx.guild_id}",
-        # thread_id was already resolved (and the thread created if needed)
-        # above so it could be stamped onto the Message row — skip the
-        # dispatcher's own ensure_conversation_thread to avoid doing it twice.
+        # thread_id/conversation_id were already resolved (and created if
+        # needed) above so they could be stamped onto the Message row — skip
+        # the dispatcher's own ensure_conversation_thread to avoid doing it
+        # twice, and pin the run to this exact conversation rather than
+        # letting run_foreman_ai re-derive "the" conversation for
+        # (guild_id, user_id) from scratch (see foreman.triggers.trigger_foreman's
+        # docstring on why an explicit conversation_id matters once a user can
+        # have more than one open Conversation, issue #1296).
         skip_thread_ensure=True,
     )
     reset_foreman_poll(ctx.guild_id)

@@ -338,6 +338,99 @@ async def test_persist_inbound_message_two_top_level_messages_get_separate_conve
 
 
 @pytest.mark.asyncio
+async def test_forward_to_foreman_pins_the_conversation_it_just_persisted_to(client):
+    """Regression: the Foreman's reply must land in the same Conversation the
+    human's message was just persisted under.
+
+    ``_persist_inbound_message`` can resolve a *specific* Conversation via
+    ``Conversation.discord_thread_id`` (issue #1278) — a more precise lookup
+    than the generic "most recently updated Conversation for (guild_id,
+    user_id)" fallback ``foreman.conversation_service.resolve_conversation_id``
+    uses when it's given no other hint. Before this fix, ``_forward_to_foreman``
+    discarded ``_persist_inbound_message``'s resolved id and called
+    ``trigger_foreman`` with ``conversation_id=None``, forcing
+    ``run_foreman_ai`` to re-derive one from scratch. The two disagree exactly
+    when ``reactivate_conversation_thread`` falls back to "no matching Thread
+    row" (its own documented case: the Thread was soft-deleted or never
+    created) while a newer, unrelated Conversation exists for the same user
+    (issue #1296 made multiple Conversations per user the norm) — so the
+    Foreman's reply would silently end up in a Conversation the human never
+    posted in, and never appear when fetching the one they actually replied
+    to.
+    """
+    import database as database_module
+    from auth_deps import get_guild_pk
+    from foreman.thread_service import get_or_create_active_thread
+    from models import Conversation, Message, Thread
+
+    _test_client, db_url = client
+    guild_id = "g-router-pin1"
+    user_id = "user-router-pin1"
+    insert_guild(db_url, guild_id)
+
+    async with database_module.AsyncSessionLocal() as db:
+        guild_pk = await get_guild_pk(db, guild_id)
+
+        # Conversation A: an older Discord-thread-bound conversation.
+        old_thread, _ = await get_or_create_active_thread(db, guild_pk, user_id)
+        conversation_a_id = old_thread.conversation_id
+        conversation_a = await db.get(Conversation, conversation_a_id)
+        conversation_a.discord_thread_id = "discord-thread-pin-a"
+        db.add(conversation_a)
+        await db.commit()
+
+        # Its Thread row is gone (soft-deleted) -- reactivate_conversation_thread's
+        # own documented "falls back" case -- while Conversation.discord_thread_id
+        # (the source of truth, per its docstring) still points at it.
+        thread_row = await db.get(Thread, old_thread.id)
+        thread_row.deleted_at = datetime.now(UTC)
+        db.add(thread_row)
+        await db.commit()
+
+        # Conversation B: a second, newer top-level conversation for the same user.
+        conversation_b = Conversation(
+            guild_id=guild_pk,
+            user_id=user_id,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+            status="active",
+        )
+        db.add(conversation_b)
+        await db.commit()
+
+    triggered = {}
+
+    async def fake_trigger_foreman(guild_id_arg, event, message, **kwargs):
+        triggered["kwargs"] = kwargs
+
+    with (
+        patch("discord.thread_mirror.on_thread_updated", new=AsyncMock()),
+        patch.object(router.triggers, "trigger_foreman", new=fake_trigger_foreman),
+    ):
+        await router._forward_to_foreman(
+            guild_id,
+            "still there? (pin1)",
+            "[Discord] someone: still there? (pin1)",
+            ps_user_id=user_id,
+            task_id=None,
+            reply_channel_id="discord-thread-pin-a",
+            task_name="foreman.discord-chat:test",
+        )
+
+    async with database_module.AsyncSessionLocal() as db:
+        message = (
+            await db.exec(select(Message).where(col(Message.content) == "still there? (pin1)"))
+        ).first()
+
+    assert message is not None
+    assert message.conversation_id == conversation_a_id
+    # The fix: trigger_foreman is pinned to the same Conversation the human's
+    # message was just persisted under, not left to re-derive "the most
+    # recently updated one" (which would have picked Conversation B).
+    assert triggered["kwargs"].get("conversation_id") == conversation_a_id
+
+
+@pytest.mark.asyncio
 async def test_route_inbound_message_guild_channel_top_level_starts_new_conversation(client):
     """End-to-end (#1296): a message typed directly into a wired guild channel
     (never a reply inside any Discord thread) always starts a new
