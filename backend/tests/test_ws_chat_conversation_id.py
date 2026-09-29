@@ -189,3 +189,30 @@ def test_trigger_foreman_receives_the_conversation_id_handle_chat_already_resolv
 
     assert captured["kwargs"].get("conversation_id") is not None
     assert captured["kwargs"]["conversation_id"] == frame["conversationId"]
+
+
+def test_each_top_level_web_message_starts_its_own_conversation(client):
+    """#1323: a top-level WS chat message spawns a new Conversation (like a
+    top-level Discord message, #1296) instead of reusing the user's latest."""
+    test_client, db_url = client
+    guild_id = "g-ws-chat-4"
+    insert_guild(db_url, guild_id)
+    token = make_auth_token(db_url)
+
+    async def fake_trigger_foreman(*args, **kwargs):
+        return None
+
+    conversation_ids = []
+    with patch.object(triggers, "trigger_foreman", new=fake_trigger_foreman):
+        with test_client.websocket_connect(f"/ws/{guild_id}?token={token}") as ws:
+            for text in ("first topic", "second topic"):
+                ws.send_json({"type": "chat", "from": "user", "to": "foreman", "content": text})
+                for _ in range(10):
+                    frame = ws.receive_json()
+                    if frame.get("type") == "chat" and frame.get("from") == "user":
+                        conversation_ids.append(frame["conversationId"])
+                        break
+                else:
+                    raise AssertionError("never saw the human chat echo")
+
+    assert conversation_ids[0] != conversation_ids[1]

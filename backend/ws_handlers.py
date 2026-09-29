@@ -542,7 +542,10 @@ async def handle_chat(ctx: WSContext, msg: ChatMsg) -> None:
         user_id = ctx.ws_user_id
         if user_id is None:
             return
-        thread = await ensure_conversation_thread(ctx.guild_id, user_id, content)
+        # A top-level web message starts its own conversation (#1296), same as
+        # a top-level Discord message; replying inside an existing conversation
+        # goes through POST /conversations/{id}/messages instead (#1297).
+        thread = await ensure_conversation_thread(ctx.guild_id, user_id, content, force_new=True)
         thread_id = thread.id if thread else None
         conversation_id = thread.conversation_id if thread else None
 
