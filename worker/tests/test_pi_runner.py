@@ -9,6 +9,7 @@ import sys
 
 import pytest
 from pioneer_worker.pi_runner import (
+    normalize_pi_selection,
     parse_pi_event,
     parse_pi_model_rows,
     pi_models_glob,
@@ -57,6 +58,22 @@ def test_pi_models_glob_bedrock_with_model_stays_wide():
 def test_pi_models_glob_unmapped_provider_passes_through():
     assert pi_models_glob("anthropic") == "anthropic/*"
     assert pi_models_glob("openai", "gpt-5.5") == "openai/*"
+
+
+def test_normalize_pi_selection_drops_bedrock_claude_selector():
+    assert normalize_pi_selection(None, "amazon-bedrock/claude") == (None, None)
+    assert normalize_pi_selection("bedrock", "amazon-bedrock/claude") == (None, None)
+
+
+def test_normalize_pi_selection_keeps_real_provider_model():
+    assert normalize_pi_selection("openrouter", "anthropic/claude-sonnet-4.5") == (
+        "openrouter",
+        "anthropic/claude-sonnet-4.5",
+    )
+    assert normalize_pi_selection(None, "amazon-bedrock/us.anthropic.claude-haiku") == (
+        "amazon-bedrock",
+        "us.anthropic.claude-haiku",
+    )
 
 
 # ---------------------------------------------------------------------------

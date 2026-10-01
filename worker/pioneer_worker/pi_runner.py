@@ -50,6 +50,21 @@ def pi_models_glob(provider: str, model: str | None = None) -> str:
     return f"{name}/{_PI_PROVIDER_FALLBACK_GLOBS.get(name, '*')}"
 
 
+def normalize_pi_selection(
+    provider: str | None, model: str | None
+) -> tuple[str | None, str | None]:
+    """Accept accidental ``provider/model`` selectors without passing them as models."""
+    if not model or "/" not in model:
+        return provider, model
+    model_provider, model_id = model.split("/", 1)
+    if provider and pi_provider_arg(provider) != pi_provider_arg(model_provider):
+        return provider, model
+    if pi_provider_arg(model_provider) == "amazon-bedrock" and model_id == "claude":
+        return None, None
+    provider = provider or model_provider
+    return provider, model_id
+
+
 EmitFn = Callable[..., Awaitable[None]]  # emit(line: str, detail: dict | None = None)
 UsageFn = Callable[[dict], Awaitable[None]]  # on_usage(record: dict)
 OnProcFn = Callable[["PiProcess"], None]  # on_proc(proc) — worker's live-handle callback
@@ -404,6 +419,7 @@ async def _run_pi_once(
     interactive: bool = False,
 ) -> tuple[bool, str, str, str | None]:
     """Single pi invocation. See run_pi_auto for the retrying wrapper."""
+    provider, model = normalize_pi_selection(provider, model)
     cmd = [pi_path]
     if resume_session_id:
         cmd += ["--session", resume_session_id]
