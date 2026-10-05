@@ -23,9 +23,9 @@ class Config:
     backend_url: str
     guild_id: str
     repos: list[str] = field(default_factory=list)
-    # GitHub org name (e.g. "jmelloy"). When set, the worker is eligible for
-    # any task targeting <org>/* and will clone repos lazily on first use.
-    # Can be used alongside repos (static list) or instead of it.
+    # GitHub org name(s), comma-separated (e.g. "jmelloy" or "org1,org2"). When
+    # set, the worker is eligible for any task targeting <org>/* and will clone
+    # repos lazily on first use. Can be used alongside repos or instead of it.
     org: str | None = None
     # Pre-assigned by the foreman's spawn_worker tool.  When both are set the
     # worker skips self-registration and uses these credentials directly.
@@ -101,6 +101,10 @@ class Config:
     s3_paths: list[str] = field(default_factory=lambda: ["~/.codex", "~/.claude", "~/.pi"])
 
     config_path: Path = field(default_factory=Path)
+
+    @property
+    def orgs(self) -> list[str]:
+        return [org.strip() for org in (self.org or "").split(",") if org.strip()]
 
     @property
     def http_url(self) -> str:

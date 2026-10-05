@@ -181,6 +181,25 @@ async def test_refresh_filters_out_other_org_repos():
 
 
 @pytest.mark.asyncio
+async def test_refresh_filters_multiple_orgs():
+    worker = _make_worker(
+        repos=["myorg/repo1"],
+        org="myorg,otherorg",
+        github_token="ghp_token",
+    )
+
+    api_repos = ["myorg/repo2", "otherorg/repo3", "unrelated/thing"]
+
+    with patch(
+        "pioneer_worker.worker.github_pr.fetch_accessible_repos",
+        new=AsyncMock(return_value=api_repos),
+    ):
+        await worker._refresh_github_repos()
+
+    assert worker._broadcast_repos == ["myorg/repo1", "myorg/repo2", "otherorg/repo3"]
+
+
+@pytest.mark.asyncio
 async def test_refresh_noop_when_no_org():
     """Without cfg.org, no API call is made and broadcast list stays as static config."""
     worker = _make_worker(

@@ -58,8 +58,8 @@ Required keys:
   WebSocket URL automatically.
 - `guild_id` — the 6-char guild id from the Pioneer Square UI.
 - `[github] repos` — list of `owner/repo` strings the worker may operate on.
-- `[github] org` — GitHub organisation name (e.g. `"jmelloy"`). When set, the
-  worker accepts tasks targeting *any* repo under that org and clones repos
+- `[github] org` — GitHub organisation name(s), comma-separated (e.g. `"jmelloy,acme"`). When set, the
+  worker accepts tasks targeting *any* repo under those orgs and clones repos
   lazily the first time a task arrives. Can be used alongside `repos` (union)
   or instead of it.
 

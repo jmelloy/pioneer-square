@@ -255,6 +255,7 @@ def test_load_github_token_empty_pioneer_falls_through(tmp_path, monkeypatch):
 def test_org_defaults_to_none():
     cfg = Config(backend_url="ws://x:1", guild_id="g")
     assert cfg.org is None
+    assert cfg.orgs == []
 
 
 def test_load_org_from_toml(tmp_path):
@@ -262,14 +263,16 @@ def test_load_org_from_toml(tmp_path):
     toml_path.write_text('backend_url = "ws://x:1"\nguild_id = "g"\n[github]\norg = "myorg"\n')
     cfg = load(str(toml_path))
     assert cfg.org == "myorg"
+    assert cfg.orgs == ["myorg"]
 
 
 def test_load_org_from_env(tmp_path, monkeypatch):
     monkeypatch.setenv("PIONEER_BACKEND_URL", "ws://x:1")
     monkeypatch.setenv("PIONEER_GUILD_ID", "g")
-    monkeypatch.setenv("PIONEER_ORG", "envorg")
+    monkeypatch.setenv("PIONEER_ORG", "envorg, other")
     cfg = load(str(tmp_path / "missing.toml"))
-    assert cfg.org == "envorg"
+    assert cfg.org == "envorg, other"
+    assert cfg.orgs == ["envorg", "other"]
 
 
 def test_load_org_override_beats_toml(tmp_path):

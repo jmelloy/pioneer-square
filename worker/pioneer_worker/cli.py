@@ -50,6 +50,11 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="OWNER/REPO",
         help="Repo to operate on (may be repeated).",
     )
+    parser.add_argument(
+        "--org",
+        action="append",
+        help="GitHub org(s) to operate on lazily (comma-separated; may be repeated).",
+    )
 
     # Paths
     parser.add_argument(
@@ -169,6 +174,13 @@ def main(argv: list[str] | None = None) -> int:
             "user": args.user,
             "github_token": args.github_token,
             "repos": args.repos,
+            "org": (
+                ",".join(
+                    org.strip() for value in args.org for org in value.split(",") if org.strip()
+                )
+                if args.org
+                else None
+            ),
             "repos_dir": args.repos_dir,
             "work_dir": args.work_dir,
             "claude_path": args.claude_path,
@@ -211,11 +223,11 @@ def main(argv: list[str] | None = None) -> int:
         cfg.repos = ["mock/mock"]
         log.info("Mock mode: defaulting repos to %s", cfg.repos)
 
-    if not cfg.repos:
+    if not cfg.repos and not cfg.orgs:
         msg = (
-            "Worker cannot start: no repos configured. "
-            "Set [github].repos in pioneer-worker.toml, pass --repo OWNER/REPO, "
-            "or set PIONEER_REPOS."
+            "Worker cannot start: no repos or orgs configured. "
+            "Set [github].repos/[github].org in pioneer-worker.toml, pass --repo/--org, "
+            "or set PIONEER_REPOS/PIONEER_ORG."
         )
         log.error(msg)
         print(f"error: {msg}", file=sys.stderr)

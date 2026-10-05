@@ -22,7 +22,7 @@ def test_cli_exits_when_no_repos_configured(tmp_path, capsys, monkeypatch):
     rc = cli.main(["--config", str(toml_path)])
     assert rc == 2
     err = capsys.readouterr().err
-    assert "no repos configured" in err.lower()
+    assert "no repos or orgs configured" in err.lower()
 
 
 def test_cli_exits_when_repos_list_empty(tmp_path, capsys, monkeypatch):
@@ -35,7 +35,7 @@ def test_cli_exits_when_repos_list_empty(tmp_path, capsys, monkeypatch):
     )
     rc = cli.main(["--config", str(toml_path)])
     assert rc == 2
-    assert "no repos configured" in capsys.readouterr().err.lower()
+    assert "no repos or orgs configured" in capsys.readouterr().err.lower()
 
 
 def test_cli_repos_check_passes_with_cli_override(tmp_path, monkeypatch):
@@ -58,6 +58,28 @@ def test_cli_repos_check_passes_with_cli_override(tmp_path, monkeypatch):
     rc = cli.main(["--config", str(toml_path), "--repo", "owner/repo"])
     assert rc == 0
     assert captured["repos"] == ["owner/repo"]
+
+
+def test_cli_repos_check_passes_with_orgs(tmp_path, monkeypatch):
+    toml_path = _write_toml(
+        tmp_path,
+        'backend_url = "ws://x:1"\nguild_id = "g"\n',
+    )
+
+    captured = {}
+
+    class _FakeWorker:
+        def __init__(self, cfg):
+            captured["org"] = cfg.org
+            captured["orgs"] = cfg.orgs
+
+        async def run(self):
+            return None
+
+    monkeypatch.setattr(cli, "Worker", _FakeWorker)
+    rc = cli.main(["--config", str(toml_path), "--org", "a,b", "--org", "c"])
+    assert rc == 0
+    assert captured == {"org": "a,b,c", "orgs": ["a", "b", "c"]}
 
 
 def test_cli_passes_codex_args(tmp_path, monkeypatch):

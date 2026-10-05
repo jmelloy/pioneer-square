@@ -1513,26 +1513,27 @@ class Worker:
         """
         if not self.cfg.github_token:
             return
-        if not self.cfg.org:
+        orgs = self.cfg.orgs
+        if not orgs:
             # No org configured — nothing to expand; static repos are already broadcast.
             self._last_repo_refresh = asyncio.get_event_loop().time()
             return
         try:
             api_repos = await github_pr.fetch_accessible_repos(self.cfg.github_token)
         except Exception as exc:
-            logger.warning("GitHub repo refresh failed for org %s: %s", self.cfg.org, exc)
+            logger.warning("GitHub repo refresh failed for org(s) %s: %s", ",".join(orgs), exc)
             if self._joined:
-                await self._emit(f"⚠ GitHub repo list refresh failed for {self.cfg.org}: {exc}")
+                await self._emit(f"⚠ GitHub repo list refresh failed for {','.join(orgs)}: {exc}")
             return
         if not api_repos:
             logger.debug("GitHub repo refresh returned empty list; skipping update")
             self._last_repo_refresh = asyncio.get_event_loop().time()
             return
 
-        org_prefix = self.cfg.org.lower() + "/"
+        org_prefixes = tuple(org.lower() + "/" for org in orgs)
         merged = list(self.cfg.repos)
         for r in api_repos:
-            if r not in merged and r.lower().startswith(org_prefix):
+            if r not in merged and r.lower().startswith(org_prefixes):
                 merged.append(r)
 
         prev_count = len(self._broadcast_repos)
@@ -1569,19 +1570,18 @@ class Worker:
     def _known_repos(self) -> list[str]:
         """All repos this worker may have cloned: static list + org repos already on disk."""
         repos = list(self.cfg.repos)
-        if self.cfg.org:
-            org_dir = os.path.join(self.cfg.repos_dir, self.cfg.org)
-            if os.path.isdir(org_dir):
-                try:
-                    entries = os.listdir(org_dir)
-                except OSError:
-                    entries = []
-                for entry in entries:
-                    repo_full = f"{self.cfg.org}/{entry}"
-                    if repo_full not in repos and os.path.isdir(
-                        os.path.join(org_dir, entry, ".git")
-                    ):
-                        repos.append(repo_full)
+        for org in self.cfg.orgs:
+            org_dir = os.path.join(self.cfg.repos_dir, org)
+            if not os.path.isdir(org_dir):
+                continue
+            try:
+                entries = os.listdir(org_dir)
+            except OSError:
+                entries = []
+            for entry in entries:
+                repo_full = f"{org}/{entry}"
+                if repo_full not in repos and os.path.isdir(os.path.join(org_dir, entry, ".git")):
+                    repos.append(repo_full)
         return repos
 
     def _known_repo_paths(self) -> list[tuple[str, str]]:
@@ -1769,17 +1769,17 @@ class Worker:
         token = await self._task_github_token(task_id)
         issue_repo = task.get("issue_repo") or ""
         explicit_repos = task.get("repos") or []
+        org_prefixes = tuple(f"{org}/" for org in self.cfg.orgs)
         if explicit_repos:
-            org_prefix = f"{self.cfg.org}/" if self.cfg.org else None
             repos = [
                 r
                 for r in explicit_repos
-                if r in self.cfg.repos or (org_prefix and r.startswith(org_prefix))
+                if r in self.cfg.repos or (org_prefixes and r.startswith(org_prefixes))
             ] or list(self.cfg.repos)
         else:
             repos = list(self.cfg.repos)
         if issue_repo and issue_repo not in repos:
-            if self.cfg.org and issue_repo.startswith(f"{self.cfg.org}/"):
+            if org_prefixes and issue_repo.startswith(org_prefixes):
                 repos.insert(0, issue_repo)
         logger.info("Task %s: repos=%s", task_id, repos)
         followup_instructions = task.get("followup_instructions") or ""
