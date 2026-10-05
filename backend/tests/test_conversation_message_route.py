@@ -194,6 +194,13 @@ def test_persists_message_and_triggers_foreman(client):
     assert row.source == "api"
     assert row.message_type == "chat"
 
+    list_resp = test_client.get(
+        _url(guild_id, conv_id),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert list_resp.status_code == 200
+    assert list_resp.json()[0]["conversationId"] == conv_id
+
     assert len(triggered) == 1
     guild_id_arg, event, message, kwargs = triggered[0]
     assert guild_id_arg == guild_id
