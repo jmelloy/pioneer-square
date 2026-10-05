@@ -2771,16 +2771,13 @@ async def _handle_search_github_issues(inp: dict, ctx: ToolContext) -> tuple[str
 async def _handle_review_pr_internal(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
     guild_id, token, username = ctx.guild_id, ctx.github_token, ctx.github_username
     # Review action policy (mirrors the worker-driven `gh pr review` path):
-    #   APPROVE           - functionally correct; issues are minor nits
-    #                       (style, naming, formatting). Note nits inline.
-    #   COMMENT           - moderate concerns (performance, clarity) that
-    #                       don't block merging.
-    #   REQUEST_CHANGES   - genuine bugs, security issues, or logic errors
-    #                       only. Be specific and firm about what breaks and
-    #                       why it must be fixed before merge. Never for
-    #                       style preferences.
-    # Tone: polite but firm. Never apologetic about calling out a real bug.
-    # Never blocking a merge over style.
+    #   APPROVE           - necessary, issue/epic-aligned, fits existing
+    #                       architecture, no avoidable duplication/complexity.
+    #   COMMENT           - likely fits, with non-blocking scope or design
+    #                       concerns.
+    #   REQUEST_CHANGES   - unnecessary, over-engineered, duplicate, conflicting
+    #                       with existing patterns, or solving the wrong problem.
+    # This is an architecture/product-fit review, not a compile/test pass.
     #
     # An explicit `action` input overrides the tool's own judgement; when
     # omitted, the verdict comes from the diff analysis below and is biased
@@ -2833,8 +2830,10 @@ async def _handle_review_pr_internal(inp: dict, ctx: ToolContext) -> tuple[str, 
             review_model,
         ) = await resolve_foreman_client(guild_id, guild_cfg)
         review_prompt = (
-            "You are a thorough but fair code reviewer. Review the "
-            "following GitHub pull request and provide structured "
+            "You are an architecture reviewer, not a build verifier. Review whether "
+            "this pull request should exist at all: does it fit the issue/epic, "
+            "reuse existing system patterns, and avoid duplicate or unnecessary code? "
+            "Do not focus on whether it compiles; CI owns that. Provide structured "
             "feedback.\n\n"
             f"PR: {pr_title}\n"
             f"Base: {base_ref} ← Head: {head_ref}\n"
@@ -2846,25 +2845,22 @@ async def _handle_review_pr_internal(inp: dict, ctx: ToolContext) -> tuple[str, 
             '"summary": "3-5 markdown bullet points (use - prefix)", '
             '"comments": [{"path": "file.py", "line": 42, '
             '"side": "RIGHT", "body": "concise comment"}]}\n\n'
-            "Verdict policy — bias toward APPROVE:\n"
-            "- APPROVE: the code is functionally correct and any issues "
-            "are minor nits (style, naming, formatting). Note the nits as "
-            "inline comments but still approve.\n"
-            "- COMMENT: moderate concerns (performance, clarity) that "
-            "don't block merging.\n"
-            "- REQUEST_CHANGES: reserved for genuine bugs, security "
-            "issues, or logic errors that must be fixed before merge. "
-            "Never use this for style preferences alone.\n\n"
+            "Verdict policy — bias toward APPROVE when the design fits:\n"
+            "- APPROVE: the PR is necessary, fits the linked issue/epic, follows "
+            "existing architecture, and does not duplicate an existing implementation.\n"
+            "- COMMENT: the PR likely fits, but has non-blocking scope, naming, "
+            "maintainability, or simplification concerns.\n"
+            "- REQUEST_CHANGES: the PR is unnecessary for the issue/epic, materially "
+            "over-engineered, duplicates code already in the system, introduces a "
+            "conflicting pattern, or solves the wrong problem.\n\n"
             "Rules:\n"
-            "- summary: 3-5 bullet points covering key findings, written "
-            "in a polite, constructive tone. Be firm and specific when "
-            "flagging a real bug (explain what breaks and why it must be "
-            "fixed before merge) — never apologetic about it. Don't be "
-            "pedantic or block merging over style.\n"
+            "- summary: 3-5 bullet points covering architecture/product-fit findings.\n"
             "- comments: 0-5 objects for the most important issues\n"
             "- line: line number in the NEW file version (RIGHT side)\n"
             "- Only comment on lines present in the diff\n"
-            "- Focus on bugs, security issues, and significant design problems\n"
+            "- Prefer findings about necessity, issue/epic fit, duplication, reuse, "
+            "and unnecessary complexity. Ignore style-only complaints and routine "
+            "compile/test failures unless they expose a design problem.\n"
             "- Keep each comment concise (1-3 sentences)"
         )
         llm_result = await _call_llm(

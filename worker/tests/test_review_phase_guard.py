@@ -220,6 +220,9 @@ async def test_review_phase_injects_no_pr_instructions(caplog: pytest.LogCapture
     assert "gh pr review" in desc_sent, (
         "review-phase description must show how to post review comments with gh pr review"
     )
+    assert "should exist at all" in desc_sent
+    assert "linked issue/epic" in desc_sent
+    assert "duplicating code already in the system" in desc_sent
 
 
 async def test_review_phase_checks_out_pr_branch_via_gh(caplog: pytest.LogCaptureFixture):

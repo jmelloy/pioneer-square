@@ -263,6 +263,15 @@ class TestBuildSystemPrompt:
 
         assert "shallow" in FOREMAN_SYSTEM or "fallback" in FOREMAN_SYSTEM
 
+    def test_review_prompt_focuses_on_architecture_not_compile_checks(self):
+        """Review tasks should challenge necessity/fit, not duplicate CI."""
+        from foreman.prompt import FOREMAN_SYSTEM
+
+        assert "Ask whether the code should exist at all" in FOREMAN_SYSTEM
+        assert "fits the linked issue and epic" in FOREMAN_SYSTEM
+        assert "implements behavior already available elsewhere" in FOREMAN_SYSTEM
+        assert "Do not spend the\nreview proving the code compiles" in FOREMAN_SYSTEM
+
     def test_state_preamble_includes_fresh_current_time(self):
         """The dynamic <state> block must carry a per-turn UTC timestamp so the
         Foreman has a reliable "now" anchor for judging task staleness (#748)."""

@@ -2072,8 +2072,11 @@ class Worker:
                         _api_ref = "repos/OWNER/REPO/pulls/NUMBER"
                     current_desc = (
                         f"{desc}\n\n"
-                        "IMPORTANT — this is a review-phase task.\n"
+                        "IMPORTANT — this is a review-phase architecture task, not a build-verification pass.\n"
                         "If you are reviewing a pull request:\n"
+                        "  - Decide whether this code should exist at all: does it fit the linked issue/epic,\n"
+                        "    is it simpler than the existing alternatives, and does it avoid duplicating code already in the system?\n"
+                        "  - Search nearby code before accepting a new helper, route, store, model, prompt, or worker path.\n"
                         "  - Post your findings directly as a GitHub PR review using the gh CLI or API.\n"
                         "  - NEVER create a new branch, commit review findings to files, or open a new PR.\n"
                         "  - The review is complete when you post it, for example:\n"

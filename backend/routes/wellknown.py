@@ -286,10 +286,13 @@ def _build_agent_card(
     )
     pr_review_skill = AgentSkill(
         id="pr-review",
-        name="Pull request review",
-        description="Review a GitHub pull request under the guild's repository policy.",
-        tags=["github", "pull-request", "review"],
-        examples=["Review https://github.com/org/repo/pull/42 for authorization issues"],
+        name="Pull request architecture review",
+        description=(
+            "Review whether a GitHub pull request is necessary, fits its issue/epic, "
+            "and avoids duplicate or over-complicated code."
+        ),
+        tags=["github", "pull-request", "architecture-review"],
+        examples=["Review https://github.com/org/repo/pull/42 for unnecessary complexity"],
         input_modes=["text/plain", "application/vnd.pioneer.github-pr+json"],
         output_modes=["text/markdown", "application/vnd.pioneer.review-report+json"],
     )
