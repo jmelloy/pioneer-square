@@ -1764,10 +1764,14 @@ async def _handle_assign_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
     if not is_error and repos:
         worker_repos: list[str] = json.loads(worker_row.repos or "[]")
         worker_org: str | None = worker_row.org
+        worker_org_prefixes = tuple(
+            f"{org.strip()}/" for org in (worker_org or "").split(",") if org.strip()
+        )
         unreachable = [
             r
             for r in repos
-            if r not in worker_repos and not (worker_org and r.startswith(f"{worker_org}/"))
+            if r not in worker_repos
+            and not (worker_org_prefixes and r.startswith(worker_org_prefixes))
         ]
         if unreachable:
             result_text = (
