@@ -28,6 +28,7 @@ from . import (  # noqa: F401 - test patch compatibility
     tool_installer,
 )
 from . import config as config_mod
+from .bedrock_role import bedrock_role_profile
 from .control_api import ControlServer
 from .runner_registry import build as build_runner_registry  # pyright: ignore[reportMissingImports]
 from .runner_types import (  # pyright: ignore[reportMissingImports]
@@ -39,6 +40,10 @@ from .runner_types import (  # pyright: ignore[reportMissingImports]
 from .ws_client import WSClient
 
 logger = logging.getLogger(__name__)
+
+# Harnesses whose Bedrock calls follow BEDROCK_ROLE_ARN (both read AWS_PROFILE
+# through the AWS SDK's standard credential chain).
+_BEDROCK_ROLE_TOOLS = ("claude", "pi")
 
 
 def _gen_id(prefix: str) -> str:
@@ -469,6 +474,19 @@ class Worker:
         env = dict(os.environ)
         env.update(self.cfg.env)
         env.update(self._tool_env.get(tool, {}))
+        # BEDROCK_ROLE_ARN: point the Bedrock-capable CLIs at the assume-role
+        # profile. Scoped to their subprocess env, so the worker's own AWS calls
+        # (the S3 session-log sync) keep the task role. An explicit AWS_PROFILE,
+        # access keys or bearer token configured for the tool still win.
+        if (
+            tool in _BEDROCK_ROLE_TOOLS
+            and not env.get("AWS_PROFILE")
+            and not env.get("AWS_ACCESS_KEY_ID")
+            and not env.get("AWS_BEARER_TOKEN_BEDROCK")
+        ):
+            profile = bedrock_role_profile(env)
+            if profile:
+                env["AWS_PROFILE"] = profile
         return env
 
     async def _check_gh_auth(self) -> None:

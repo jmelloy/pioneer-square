@@ -274,6 +274,29 @@ class TestPerToolEnvScoping:
         assert "AWS_BEARER_TOKEN_BEDROCK" not in os.environ
         assert "CLAUDE_CODE_OAUTH_TOKEN" not in os.environ
 
+    async def test_bedrock_role_profile_reaches_claude_and_pi_only(self, monkeypatch, tmp_path):
+        for key in ("AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_BEARER_TOKEN_BEDROCK"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "config"))
+        monkeypatch.setenv("BEDROCK_ROLE_ARN", "arn:aws:iam::123456789012:role/bedrock")
+        worker = Worker(_make_cfg())
+        worker._tool_env = {}
+
+        assert worker._env_for_tool("claude")["AWS_PROFILE"] == "pioneer-bedrock"
+        assert worker._env_for_tool("pi")["AWS_PROFILE"] == "pioneer-bedrock"
+        assert "AWS_PROFILE" not in worker._env_for_tool("codex")
+        # The worker's own AWS calls (S3 session-log sync) keep the task role.
+        assert "AWS_PROFILE" not in os.environ
+        assert "role/bedrock" in (tmp_path / "config").read_text()
+
+    async def test_tool_bearer_token_beats_bedrock_role(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("AWS_PROFILE", raising=False)
+        monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "config"))
+        monkeypatch.setenv("BEDROCK_ROLE_ARN", "arn:aws:iam::123456789012:role/bedrock")
+        worker = Worker(_make_cfg())
+        worker._tool_env = {"pi": {"AWS_BEARER_TOKEN_BEDROCK": "pi-bedrock"}}
+        assert "AWS_PROFILE" not in worker._env_for_tool("pi")
+
     async def test_local_tool_env_overrides_fetched_env(self):
         worker = Worker(_make_cfg(tool_env={"pi": {"PI_MODEL": "local-model"}}))
         worker._tool_env = {"pi": {"PI_MODEL": "guild-model"}}

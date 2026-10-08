@@ -232,6 +232,24 @@ expects). **This is necessary but not sufficient**: each model family (Anthropic
 Nova, etc.) also requires access to be enabled per-account in the Bedrock console under
 **Model access** before `InvokeModel` calls to that family succeed.
 
+### Bedrock in another AWS account (assume a role, no API key)
+
+Set `bedrock_role_arn` to an IAM role in the account that owns the Bedrock models. Its trust
+policy must allow this deployment's ECS task role (`terraform output ecs_task_role_arn`) to
+`sts:AssumeRole`. Terraform then grants the task role `sts:AssumeRole` on it and passes
+`BEDROCK_ROLE_ARN` to the backend, foreman and worker. Each process writes an AWS profile
+`pioneer-bedrock` (`credential_source = EcsContainer`) and uses it for Bedrock calls only:
+the foreman, the model catalog, and the `claude` and `pi` CLIs in workers. The SDK refreshes
+the assumed-role session itself, so there is no key to rotate.
+
+Switching from an API key:
+
+1. Set `bedrock_role_arn`, and point `foreman_bedrock_model` at a model or inference profile
+   in the role's account.
+2. `terraform apply`. The foreman task stops receiving `AWS_BEARER_TOKEN_BEDROCK`.
+3. Remove any `AWS_BEARER_TOKEN_BEDROCK` or `AWS_PROFILE` from the guild's env vars and
+   per-tool env vars: an explicit token, keys or profile still outrank the role.
+
 ## CI/CD
 
 ### `deploy.yml`

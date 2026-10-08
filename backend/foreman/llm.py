@@ -345,6 +345,10 @@ def _make_bedrock_client(
             is_native_bedrock_model,
             is_responses_api_model,
         )
+    try:
+        from foreman.bedrock_role import bedrock_role_profile
+    except ImportError:  # pragma: no cover - exercised under the proxy's import layout
+        from backend.foreman.bedrock_role import bedrock_role_profile
 
     resolved_model = model or env.get("FOREMAN_BEDROCK_MODEL")
     if not resolved_model:
@@ -362,7 +366,9 @@ def _make_bedrock_client(
     resolved_region = (
         region or env.get("AWS_DEFAULT_REGION") or env.get("AWS_REGION") or _BEDROCK_REGION
     )
-    resolved_profile = aws_profile or env.get("AWS_PROFILE") or None
+    # BEDROCK_ROLE_ARN (see foreman/bedrock_role.py) is the fallback: an explicit
+    # profile still wins, and the bearer token / explicit keys below win over both.
+    resolved_profile = aws_profile or env.get("AWS_PROFILE") or bedrock_role_profile(env)
 
     if is_responses_api_model(resolved_model):
         logger.info(

@@ -137,6 +137,26 @@ resource "aws_iam_role_policy" "ecs_task_bedrock" {
   policy = data.aws_iam_policy_document.ecs_task_bedrock.json
 }
 
+# --- Bedrock in another account: assume var.bedrock_role_arn (see backend/foreman/bedrock_role.py) ---
+data "aws_iam_policy_document" "ecs_task_bedrock_role" {
+  count = var.bedrock_role_arn == "" ? 0 : 1
+
+  statement {
+    sid       = "AssumeBedrockRole"
+    effect    = "Allow"
+    actions   = ["sts:AssumeRole"]
+    resources = [var.bedrock_role_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "ecs_task_bedrock_role" {
+  count = var.bedrock_role_arn == "" ? 0 : 1
+
+  name   = "${local.name_prefix}-ecs-task-bedrock-role"
+  role   = aws_iam_role.ecs_task.id
+  policy = data.aws_iam_policy_document.ecs_task_bedrock_role[0].json
+}
+
 # --- Worker dispatch: lets the backend task launch on-demand worker tasks
 # via ECS RunTask instead of the Docker socket it uses in docker-compose
 # (see the worker_cpu/worker_memory comment in variables.tf). ---

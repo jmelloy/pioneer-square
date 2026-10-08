@@ -97,6 +97,7 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "FOREMAN_MODEL", value = var.foreman_model },
         { name = "FOREMAN_PROVIDER", value = var.foreman_provider },
         { name = "FOREMAN_BEDROCK_MODEL", value = var.foreman_bedrock_model },
+        { name = "BEDROCK_ROLE_ARN", value = var.bedrock_role_arn },
         # Discord integration — mirrors the docker-compose backend service.
         # DISCORD_BOT_TOKEN rides in `secrets` below.
         { name = "DISCORD_CHANNEL_ID", value = var.discord_channel_id },
@@ -279,15 +280,23 @@ resource "aws_ecs_task_definition" "foreman" {
         { name = "FOREMAN_MODEL", value = var.foreman_model },
         { name = "FOREMAN_PROVIDER", value = var.foreman_provider },
         { name = "FOREMAN_BEDROCK_MODEL", value = var.foreman_bedrock_model },
+        { name = "BEDROCK_ROLE_ARN", value = var.bedrock_role_arn },
         { name = "AWS_DEFAULT_REGION", value = local.region },
       ]
 
+      # With bedrock_role_arn set the Bedrock API key is not injected at all: a
+      # bearer token outranks the role, and the SSM parameter is seeded with a
+      # placeholder when unset, so leaving it in would shadow the role.
       secrets = [
-        for key, param in {
-          ANTHROPIC_API_KEY        = aws_ssm_parameter.secret["anthropic_api_key"]
-          OPENAI_API_KEY           = aws_ssm_parameter.secret["openai_api_key"]
-          AWS_BEARER_TOKEN_BEDROCK = aws_ssm_parameter.secret["aws_bearer_token_bedrock"]
-        } : { name = key, valueFrom = param.arn }
+        for key, param in merge(
+          {
+            ANTHROPIC_API_KEY = aws_ssm_parameter.secret["anthropic_api_key"]
+            OPENAI_API_KEY    = aws_ssm_parameter.secret["openai_api_key"]
+          },
+          var.bedrock_role_arn == "" ? {
+            AWS_BEARER_TOKEN_BEDROCK = aws_ssm_parameter.secret["aws_bearer_token_bedrock"]
+          } : {},
+        ) : { name = key, valueFrom = param.arn }
       ]
 
       logConfiguration = {
@@ -375,6 +384,7 @@ resource "aws_ecs_task_definition" "worker" {
         { name = "PIONEER_S3_BUCKET", value = aws_s3_bucket.assets.bucket },
         { name = "PIONEER_S3_PREFIX", value = "worker-sessions" },
         { name = "AWS_DEFAULT_REGION", value = local.region },
+        { name = "BEDROCK_ROLE_ARN", value = var.bedrock_role_arn },
       ]
 
       # No `secrets` block here on purpose. Worker credentials (GitHub token,

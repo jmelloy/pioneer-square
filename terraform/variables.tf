@@ -201,6 +201,24 @@ variable "foreman_bedrock_model" {
   default     = ""
 }
 
+variable "bedrock_role_arn" {
+  description = <<-DESC
+    IAM role in another AWS account to call Bedrock through, instead of an API key. The ECS
+    task role assumes it (credential_source = EcsContainer) for Bedrock calls only, and the
+    session refreshes on its own, so nothing needs rotating. The role's trust policy must allow
+    this deployment's ECS task role (output ecs_task_role_arn). When set, the
+    aws_bearer_token_bedrock secret is no longer passed to the foreman, and
+    foreman_bedrock_model must be a model or inference profile in the role's account.
+  DESC
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.bedrock_role_arn == "" || can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:role/", var.bedrock_role_arn))
+    error_message = "bedrock_role_arn must be an IAM role ARN, or empty."
+  }
+}
+
 # -----------------------------------------------------------------------------
 # ECS — worker task definition
 # -----------------------------------------------------------------------------
