@@ -193,9 +193,8 @@ async def finalize_closed_issue(
     ``phase='issue'`` root rows are finalized through :func:`finalize_task`. Every
     already-terminal task linked to the issue gets its soft-delete stamped;
     non-terminal linked tasks are never force-closed (a human decides whether to
-    cancel in-flight work) and only logged. Posts one pre-close verification comment
-    summarising linked-PR merge status when anything was finalized. Returns the ids
-    of the tasks that were finalized or swept.
+    cancel in-flight work) and only logged. Returns the ids of the tasks that were
+    finalized or swept.
     """
     issue_filter = (
         col(Task.guild_id) == guild_pk,
@@ -236,10 +235,4 @@ async def finalize_closed_issue(
             ", ".join(open_tasks),
         )
 
-    if finalized:
-        # Imported here: the GitHub helpers live in foreman.tools, which imports
-        # this module.
-        from foreman.tools import post_issue_close_summary_comment  # noqa: PLC0415
-
-        await post_issue_close_summary_comment(guild_id, issue_repo, issue_number, linked)
     return finalized

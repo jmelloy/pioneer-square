@@ -36,7 +36,7 @@ from helpers import (  # noqa: E402
 from models import Lock, Task, TaskEvent  # noqa: E402
 from sqlalchemy import insert, select  # noqa: E402
 from sqlmodel import col  # noqa: E402
-from task_lifecycle import TERMINAL_STATES, finalize_task  # noqa: E402
+from task_lifecycle import TERMINAL_STATES, finalize_closed_issue, finalize_task  # noqa: E402
 
 
 @pytest.fixture()
@@ -309,6 +309,37 @@ class TestFinalizeTask:
         assert res.finalized
         assert res.descendants == []
         assert _read(db_url, "t-kid")[1] is None
+
+
+async def test_closed_issue_sweep_does_not_comment(db_url, monkeypatch):
+    """A GitHub-closed issue only validates/cleans Pioneer tasks; don't add noise."""
+    import foreman.tools as foreman_tools
+
+    async def fail_if_called(*args, **kwargs):
+        raise AssertionError("closed issue sweep should not post a GitHub comment")
+
+    monkeypatch.setattr(foreman_tools, "post_issue_close_summary_comment", fail_if_called)
+    insert_guild(db_url, "g-tl-closed-quiet")
+    insert_worker(db_url, "g-tl-closed-quiet", "w-1", state="idle")
+    insert_task(
+        db_url,
+        "g-tl-closed-quiet",
+        "t-root",
+        worker_id="w-1",
+        state="working",
+        phase="issue",
+        issue_repo="o/r",
+        issue_number=1,
+    )
+
+    db = await get_db()
+    try:
+        guild_pk = await get_guild_pk(db, "g-tl-closed-quiet")
+        finalized = await finalize_closed_issue(db, guild_pk, "g-tl-closed-quiet", "o/r", 1)
+    finally:
+        await db.close()
+
+    assert finalized == ["t-root"]
 
 
 # ---------------------------------------------------------------------------
