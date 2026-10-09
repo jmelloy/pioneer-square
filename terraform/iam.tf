@@ -137,20 +137,27 @@ resource "aws_iam_role_policy" "ecs_task_bedrock" {
   policy = data.aws_iam_policy_document.ecs_task_bedrock.json
 }
 
-# --- Bedrock in another account: assume var.bedrock_role_arn (see backend/foreman/bedrock_role.py) ---
+# --- Bedrock in another account: allow assuming configured Bedrock roles. ---
+locals {
+  bedrock_assume_role_arns = distinct(concat(
+    var.bedrock_role_arn == "" ? [] : [var.bedrock_role_arn],
+    var.bedrock_assume_role_arns,
+  ))
+}
+
 data "aws_iam_policy_document" "ecs_task_bedrock_role" {
-  count = var.bedrock_role_arn == "" ? 0 : 1
+  count = length(local.bedrock_assume_role_arns) == 0 ? 0 : 1
 
   statement {
     sid       = "AssumeBedrockRole"
     effect    = "Allow"
     actions   = ["sts:AssumeRole"]
-    resources = [var.bedrock_role_arn]
+    resources = local.bedrock_assume_role_arns
   }
 }
 
 resource "aws_iam_role_policy" "ecs_task_bedrock_role" {
-  count = var.bedrock_role_arn == "" ? 0 : 1
+  count = length(local.bedrock_assume_role_arns) == 0 ? 0 : 1
 
   name   = "${local.name_prefix}-ecs-task-bedrock-role"
   role   = aws_iam_role.ecs_task.id
