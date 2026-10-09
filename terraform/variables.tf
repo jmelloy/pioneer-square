@@ -219,6 +219,17 @@ variable "bedrock_role_arn" {
   }
 }
 
+variable "bedrock_assume_role_arns" {
+  description = "Extra Bedrock role ARNs the ECS task role may assume, without setting BEDROCK_ROLE_ARN on ECS tasks."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for arn in var.bedrock_assume_role_arns : can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:role/", arn))])
+    error_message = "bedrock_assume_role_arns entries must be IAM role ARNs."
+  }
+}
+
 # -----------------------------------------------------------------------------
 # ECS — worker task definition
 # -----------------------------------------------------------------------------

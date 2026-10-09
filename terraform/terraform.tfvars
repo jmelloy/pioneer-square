@@ -1,9 +1,10 @@
 domain_name  = "pioneer-square.melloy.life"
 frontend_url = "https://pioneer-square.melloy.life"
 
-guild_id              = "dnsid"
-foreman_provider      = "bedrock"
-foreman_bedrock_model = "moonshotai.kimi-k2.5"
+guild_id                 = "dnsid"
+foreman_provider         = "bedrock"
+foreman_bedrock_model    = "moonshotai.kimi-k2.5"
+bedrock_assume_role_arns = ["arn:aws:iam::376914807842:role/bedrock/pioneer-square-bedrock"]
 
 # Discord (bot token lives in SSM). channel_id / allowed_role_ids are not in
 # .env — defaults ("") leave those features off.
