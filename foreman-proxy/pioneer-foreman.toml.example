@@ -20,3 +20,6 @@ api_key = "" # anthropic/openai key; can also come from ANTHROPIC_API_KEY or OPE
 # bedrock_model = "us.anthropic.claude-sonnet-4-6-20250514-v1:0"
 # aws_region = "us-east-1"
 # aws_profile = ""
+# To call Bedrock in another AWS account without an API key, set BEDROCK_ROLE_ARN in the
+# proxy's environment instead: the role is assumed in memory from the proxy's own AWS
+# credentials (instance or task role). See terraform/README.md, "Bedrock in another AWS account".

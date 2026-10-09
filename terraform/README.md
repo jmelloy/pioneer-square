@@ -237,10 +237,24 @@ Nova, etc.) also requires access to be enabled per-account in the Bedrock consol
 Set `bedrock_role_arn` to an IAM role in the account that owns the Bedrock models. Its trust
 policy must allow this deployment's ECS task role (`terraform output ecs_task_role_arn`) to
 `sts:AssumeRole`. Terraform then grants the task role `sts:AssumeRole` on it and passes
-`BEDROCK_ROLE_ARN` to the backend, foreman and worker. Each process writes an AWS profile
-`pioneer-bedrock` (`credential_source = EcsContainer`) and uses it for Bedrock calls only:
-the foreman, the model catalog, and the `claude` and `pi` CLIs in workers. The SDK refreshes
-the assumed-role session itself, so there is no key to rotate.
+`BEDROCK_ROLE_ARN` to the backend, foreman and worker. Bedrock calls only (S3 and ECS keep
+the task role) then sign with the role's temporary credentials, refreshed before they expire,
+so there is no key to rotate:
+
+- **Backend and foreman** (`backend/foreman/bedrock_role.py`): assumed in memory, nothing
+  written to disk, one session per role and region. Covers the foreman's Converse, Messages
+  and Responses paths and the model catalog.
+- **Worker CLIs** (`worker/pioneer_worker/bedrock_role.py`): `claude` and `pi` only speak the
+  AWS SDK credential chain, so each role gets a private, worker-owned config file
+  (`credential_source = EcsContainer`), passed to that tool's subprocess only.
+
+**Per guild.** A guild can set its own `BEDROCK_ROLE_ARN` in its env vars, exactly like
+`AWS_BEARER_TOKEN_BEDROCK`. Sessions and clients are keyed on the role ARN, so two guilds on
+two roles never share credentials. The task role can only assume what its IAM policy names:
+`bedrock_role_arn` here, so add any other guild's role to that policy too.
+
+**Standalone foreman proxy.** It reads `BEDROCK_ROLE_ARN` from its own process environment,
+and needs base AWS credentials the SDK can find (an instance or task role) to assume it from.
 
 Switching from an API key:
 

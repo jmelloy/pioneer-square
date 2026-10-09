@@ -75,3 +75,39 @@ async def test_run_api_request_unsupported_provider_raises():
         assert "unsupported" in str(exc).lower()
     else:
         raise AssertionError("expected ValueError for an unsupported provider")
+
+
+async def test_bedrock_proxy_assumes_its_role_and_keys_the_cache_on_it(monkeypatch):
+    import backend.foreman.bedrock_role as bedrock_role
+
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    runner._anthropic_clients.clear()
+    made = []
+
+    def fake_make(*, role_arn, region):
+        made.append((role_arn, region))
+        return object()
+
+    monkeypatch.setattr(bedrock_role, "make_role_anthropic_bedrock", fake_make)
+    cfg = Config(
+        backend_url="ws://x:1",
+        guild_id="g",
+        provider="bedrock",
+        bedrock_model="us.anthropic.claude-sonnet-4-6",
+        aws_region="us-west-2",
+    )
+
+    monkeypatch.setenv("BEDROCK_ROLE_ARN", "arn:aws:iam::123456789012:role/a")
+    first = runner._get_anthropic_client(cfg)
+    assert runner._get_anthropic_client(cfg) is first
+    monkeypatch.setenv("BEDROCK_ROLE_ARN", "arn:aws:iam::210987654321:role/b")
+    second = runner._get_anthropic_client(cfg)
+
+    assert second is not first
+    assert made == [
+        ("arn:aws:iam::123456789012:role/a", "us-west-2"),
+        ("arn:aws:iam::210987654321:role/b", "us-west-2"),
+    ]
+    runner._anthropic_clients.clear()

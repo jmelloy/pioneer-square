@@ -118,7 +118,15 @@ def is_responses_api_model(model: str) -> bool:
 # boto3 client cache
 # ---------------------------------------------------------------------------
 
-_clients: dict[tuple[str, str | None, str | None, str | None, str | None], Any] = {}
+_clients: dict[tuple[str, str | None, str | None, str | None, str | None, str | None], Any] = {}
+
+
+def _role_imports():
+    try:
+        from foreman.bedrock_role import role_session, uses_role
+    except ImportError:  # pragma: no cover - exercised under the proxy's import layout
+        from backend.foreman.bedrock_role import role_session, uses_role
+    return role_session, uses_role
 
 
 def _get_client(region: str, profile: str | None, extra_env: Mapping[str, str] | None):
@@ -138,8 +146,12 @@ def _get_client(region: str, profile: str | None, extra_env: Mapping[str, str] |
     # it the token directly, keeping the token per-guild rather than leaking it
     # into the shared process environment.
     bearer_token = env.get("AWS_BEARER_TOKEN_BEDROCK")
+    # BEDROCK_ROLE_ARN, lowest precedence; part of the cache key so two guilds on
+    # two roles never share a client.
+    role_session, uses_role = _role_imports()
+    role_arn = uses_role(env, profile)
 
-    cache_key = (region, profile, access_key, secret_key, bearer_token)
+    cache_key = (region, profile, access_key, secret_key, bearer_token, role_arn)
     if cache_key not in _clients:
         if bearer_token:
             from botocore.config import Config
@@ -159,7 +171,7 @@ def _get_client(region: str, profile: str | None, extra_env: Mapping[str, str] |
                 session_kwargs["aws_session_token"] = session_token
         elif profile:
             session_kwargs["profile_name"] = profile
-        session = boto3.Session(**session_kwargs)
+        session = role_session(role_arn, region) if role_arn else boto3.Session(**session_kwargs)
         _clients[cache_key] = session.client("bedrock-runtime")
     return _clients[cache_key]
 
@@ -661,7 +673,9 @@ def _responses_api_auth_headers(
             session_kwargs["aws_session_token"] = session_token
     elif aws_profile:
         session_kwargs["profile_name"] = aws_profile
-    session = boto3.Session(**session_kwargs)
+    role_session, uses_role = _role_imports()
+    role_arn = uses_role(env, aws_profile)
+    session = role_session(role_arn, region) if role_arn else boto3.Session(**session_kwargs)
     credentials = session.get_credentials()
     if credentials is None:
         raise ValueError(

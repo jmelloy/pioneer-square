@@ -12,6 +12,7 @@ holds none of its own. It does not read or mutate Pioneer Square state.
 from __future__ import annotations
 
 import logging
+import os
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -39,7 +40,10 @@ def _get_anthropic_client(config: Config):
     profile = getattr(config, "aws_profile", None)
     api_key = getattr(config, "api_key", None) or ""
     anthropic_auth_token = getattr(config, "anthropic_auth_token", None) or ""
-    cache_key = (provider.lower(), region, profile, api_key, anthropic_auth_token)
+    # BEDROCK_ROLE_ARN comes from the proxy's own environment; keep it in the key
+    # so a changed role never reuses a client signed for the previous one.
+    role_arn = os.environ.get("BEDROCK_ROLE_ARN") or ""
+    cache_key = (provider.lower(), region, profile, api_key, anthropic_auth_token, role_arn)
     if cache_key not in _anthropic_clients:
         extra_env: dict[str, str] = {}
         if anthropic_auth_token:

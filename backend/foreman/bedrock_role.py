@@ -1,103 +1,121 @@
 """Cross-account Bedrock access by assuming an IAM role instead of an API key.
 
-When ``BEDROCK_ROLE_ARN`` is set, Bedrock calls authenticate as that role: this
-module writes a named profile into the AWS shared config file::
+``BEDROCK_ROLE_ARN`` (deployment env, or a guild's env vars) names a role in the
+account that owns the Bedrock models. Bedrock clients then sign with that role's
+temporary credentials, assumed from this process's own credentials (the ECS task
+role) and refreshed in memory before they expire. Nothing is written to disk and
+there is no long-lived key to rotate.
 
-    [profile pioneer-bedrock]
-    role_arn = <BEDROCK_ROLE_ARN>
-    credential_source = EcsContainer
-    role_session_name = pioneer-square
+Everything is keyed on the role ARN: two guilds on two roles get two sessions
+and two clients, never each other's. Only Bedrock clients use these sessions;
+S3, ECS and everything else keep the default credential chain.
 
-and every Bedrock caller passes that profile name to its SDK. The SDK then
-assumes the role from the container's own credentials (the ECS task role) and
-refreshes the session before it expires, so there is no long-lived key to
-rotate. Only Bedrock clients use the profile; S3, ECS and everything else keep
-the default credential chain.
+Precedence, highest first, matching boto3's own: ``AWS_BEARER_TOKEN_BEDROCK``,
+explicit access keys, an explicit ``AWS_PROFILE``, then ``BEDROCK_ROLE_ARN``.
 
-Precedence is unchanged: an explicit ``AWS_PROFILE``, explicit access keys, or
-``AWS_BEARER_TOKEN_BEDROCK`` still win, so remove the bearer token to switch.
-
-``BEDROCK_ROLE_CREDENTIAL_SOURCE`` overrides where the base credentials come
-from: ``EcsContainer`` (default) or ``Ec2InstanceMetadata``. Static access keys
-are not a source on purpose: AWS_ACCESS_KEY_ID in the environment outranks any
-profile, both in the AWS SDKs and in this app, so with keys set there is
-nothing for the role to do.
-
-Kept in sync with ``worker/pioneer_worker/bedrock_role.py``.
+The worker's CLIs (claude, pi) are separate programs and cannot take in-memory
+credentials; see ``worker/pioneer_worker/bedrock_role.py`` for their side.
 """
 
 from __future__ import annotations
 
-import configparser
-import os
 import re
-import tempfile
+import threading
 from collections.abc import Mapping
-from pathlib import Path
+from typing import Any
 
-PROFILE_NAME = "pioneer-bedrock"
 _SESSION_NAME = "pioneer-square"
-_CREDENTIAL_SOURCES = ("EcsContainer", "Ec2InstanceMetadata")
-# The value is written into an INI file, so it must not be able to smuggle in
-# a newline or another key: accept only a well-formed role ARN.
 _ROLE_ARN_RE = re.compile(r"^arn:aws[a-z-]*:iam::\d{12}:role/[\w+=,.@/-]{1,512}$")
+
+_sessions: dict[tuple[str, str], Any] = {}
+_sessions_lock = threading.Lock()
 
 
 class BedrockRoleConfigError(ValueError):
-    """BEDROCK_ROLE_ARN or BEDROCK_ROLE_CREDENTIAL_SOURCE is malformed."""
+    """BEDROCK_ROLE_ARN is set but is not an IAM role ARN."""
 
 
-def _config_path(env: Mapping[str, str]) -> Path:
-    configured = env.get("AWS_CONFIG_FILE") or os.environ.get("AWS_CONFIG_FILE")
-    return Path(configured).expanduser() if configured else Path.home() / ".aws" / "config"
-
-
-def ensure_profile(role_arn: str, credential_source: str, path: Path) -> None:
-    """Create or update the ``pioneer-bedrock`` profile in *path*; other profiles are kept."""
-    if not _ROLE_ARN_RE.match(role_arn):
-        raise BedrockRoleConfigError(f"BEDROCK_ROLE_ARN is not an IAM role ARN: {role_arn!r}")
-    if credential_source not in _CREDENTIAL_SOURCES:
-        raise BedrockRoleConfigError(
-            f"BEDROCK_ROLE_CREDENTIAL_SOURCE must be one of {', '.join(_CREDENTIAL_SOURCES)}"
-        )
-
-    wanted = {
-        "role_arn": role_arn,
-        "credential_source": credential_source,
-        "role_session_name": _SESSION_NAME,
-    }
-    section = f"profile {PROFILE_NAME}"
-    parser = configparser.ConfigParser(interpolation=None)
-    parser.read(path)
-    if parser.has_section(section) and dict(parser.items(section)) == wanted:
-        return
-    if parser.has_section(section):
-        parser.remove_section(section)
-    parser.add_section(section)
-    for key, value in wanted.items():
-        parser.set(section, key, value)
-
-    # Write-then-rename so a concurrent reader never sees a half-written file.
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".config-")
-    try:
-        with os.fdopen(fd, "w") as fh:
-            parser.write(fh)
-        os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
-
-
-def bedrock_role_profile(env: Mapping[str, str] | None = None) -> str | None:
-    """Return the profile name Bedrock clients should use, or None when no role is configured.
-
-    *env* is the effective environment (guild env vars overlaid on os.environ).
-    """
-    env = env if env is not None else os.environ
+def bedrock_role_arn(env: Mapping[str, str]) -> str | None:
+    """Return the validated role ARN from *env*, or None when no role is configured."""
     role_arn = (env.get("BEDROCK_ROLE_ARN") or "").strip()
     if not role_arn:
         return None
-    source = (env.get("BEDROCK_ROLE_CREDENTIAL_SOURCE") or "EcsContainer").strip()
-    ensure_profile(role_arn, source, _config_path(env))
-    return PROFILE_NAME
+    if not _ROLE_ARN_RE.match(role_arn):
+        raise BedrockRoleConfigError(f"BEDROCK_ROLE_ARN is not an IAM role ARN: {role_arn!r}")
+    return role_arn
+
+
+def uses_role(env: Mapping[str, str], profile: str | None) -> str | None:
+    """Return the role ARN to use for *env*, or None when a higher-precedence credential is set."""
+    if env.get("AWS_BEARER_TOKEN_BEDROCK"):
+        return None
+    if env.get("AWS_ACCESS_KEY_ID") and env.get("AWS_SECRET_ACCESS_KEY"):
+        return None
+    if profile:
+        return None
+    return bedrock_role_arn(env)
+
+
+def role_session(role_arn: str, region: str):
+    """Return a boto3 Session whose credentials assume *role_arn* and refresh themselves.
+
+    Cached per (role, region). The source credentials are this process's default
+    chain, never a guild's env vars.
+    """
+    key = (role_arn, region)
+    with _sessions_lock:
+        session = _sessions.get(key)
+        if session is None:
+            session = _new_role_session(role_arn, region)
+            _sessions[key] = session
+        return session
+
+
+def _new_role_session(role_arn: str, region: str):
+    import boto3
+    import botocore.session
+    from botocore.credentials import AssumeRoleCredentialFetcher, DeferredRefreshableCredentials
+
+    source = botocore.session.get_session()
+    source.set_config_variable("region", region)
+    source_credentials = source.get_credentials()
+    if source_credentials is None:
+        raise BedrockRoleConfigError(
+            "BEDROCK_ROLE_ARN is set but this process has no AWS credentials to assume it from"
+        )
+    fetcher = AssumeRoleCredentialFetcher(
+        client_creator=source.create_client,
+        source_credentials=source_credentials,
+        role_arn=role_arn,
+        extra_args={"RoleSessionName": _SESSION_NAME},
+    )
+    target = botocore.session.get_session()
+    target.set_config_variable("region", region)
+    target._credentials = DeferredRefreshableCredentials(
+        method="assume-role", refresh_using=fetcher.fetch_credentials
+    )
+    return boto3.Session(botocore_session=target, region_name=region)
+
+
+def make_role_anthropic_bedrock(*, role_arn: str, region: str):
+    """Return an AsyncAnthropicBedrock that signs every request with the role's current credentials.
+
+    The SDK only accepts static keys or a profile name, so the subclass copies the
+    session's current (refreshed when due) credentials onto itself before the SDK
+    signs each request.
+    """
+    from anthropic import AsyncAnthropicBedrock
+
+    session = role_session(role_arn, region)
+
+    class _RoleAsyncAnthropicBedrock(AsyncAnthropicBedrock):
+        async def _prepare_request(self, request):  # type: ignore[override]
+            creds = session.get_credentials().get_frozen_credentials()
+            self.aws_access_key = creds.access_key
+            self.aws_secret_key = creds.secret_key
+            self.aws_session_token = creds.token
+            await super()._prepare_request(request)
+
+    # No credentials at construction: the first request fetches them, so building
+    # the client never blocks the event loop on an STS call.
+    return _RoleAsyncAnthropicBedrock(aws_region=region)

@@ -1,103 +1,93 @@
-"""Cross-account Bedrock access by assuming an IAM role instead of an API key.
+"""BEDROCK_ROLE_ARN for the Bedrock-capable CLIs (claude, pi) a worker launches.
 
-When ``BEDROCK_ROLE_ARN`` is set, Bedrock calls authenticate as that role: this
-module writes a named profile into the AWS shared config file::
+The backend assumes the role in memory (``backend/foreman/bedrock_role.py``), but
+the CLIs are separate programs that only understand the AWS SDK's standard
+credential chain. So each role gets its own AWS config file, private to the
+worker::
 
     [profile pioneer-bedrock]
     role_arn = <BEDROCK_ROLE_ARN>
     credential_source = EcsContainer
     role_session_name = pioneer-square
 
-and every Bedrock caller passes that profile name to its SDK. The SDK then
-assumes the role from the container's own credentials (the ECS task role) and
-refreshes the session before it expires, so there is no long-lived key to
-rotate. Only Bedrock clients use the profile; S3, ECS and everything else keep
-the default credential chain.
+and the tool's subprocess env gets ``AWS_CONFIG_FILE`` (that file) and
+``AWS_PROFILE=pioneer-bedrock``. The CLI's SDK assumes the role from the task
+role and refreshes it itself.
 
-Precedence is unchanged: an explicit ``AWS_PROFILE``, explicit access keys, or
-``AWS_BEARER_TOKEN_BEDROCK`` still win, so remove the bearer token to switch.
+- One file per role ARN (named by its hash), so two roles never share or
+  overwrite a profile.
+- The directory is chosen by the worker, never by guild env vars, and the file
+  is written 0600 with an atomic rename.
+- Nothing is set in the worker's own environment: its S3 session-log sync keeps
+  the task role.
 
-``BEDROCK_ROLE_CREDENTIAL_SOURCE`` overrides where the base credentials come
-from: ``EcsContainer`` (default) or ``Ec2InstanceMetadata``. Static access keys
-are not a source on purpose: AWS_ACCESS_KEY_ID in the environment outranks any
-profile, both in the AWS SDKs and in this app, so with keys set there is
-nothing for the role to do.
-
-Kept in sync with ``backend/foreman/bedrock_role.py``.
+Precedence matches the backend: a bearer token, access keys or an explicit
+AWS_PROFILE for the tool win over the role.
 """
 
 from __future__ import annotations
 
-import configparser
+import hashlib
 import os
 import re
 import tempfile
-from collections.abc import Mapping
 from pathlib import Path
 
 PROFILE_NAME = "pioneer-bedrock"
 _SESSION_NAME = "pioneer-square"
-_CREDENTIAL_SOURCES = ("EcsContainer", "Ec2InstanceMetadata")
-# The value is written into an INI file, so it must not be able to smuggle in
-# a newline or another key: accept only a well-formed role ARN.
 _ROLE_ARN_RE = re.compile(r"^arn:aws[a-z-]*:iam::\d{12}:role/[\w+=,.@/-]{1,512}$")
 
 
 class BedrockRoleConfigError(ValueError):
-    """BEDROCK_ROLE_ARN or BEDROCK_ROLE_CREDENTIAL_SOURCE is malformed."""
+    """BEDROCK_ROLE_ARN is set but is not an IAM role ARN."""
 
 
-def _config_path(env: Mapping[str, str]) -> Path:
-    configured = env.get("AWS_CONFIG_FILE") or os.environ.get("AWS_CONFIG_FILE")
-    return Path(configured).expanduser() if configured else Path.home() / ".aws" / "config"
+def _config_dir() -> Path:
+    return Path(tempfile.gettempdir()) / "pioneer-bedrock-roles"
 
 
-def ensure_profile(role_arn: str, credential_source: str, path: Path) -> None:
-    """Create or update the ``pioneer-bedrock`` profile in *path*; other profiles are kept."""
+def _profile_text(role_arn: str) -> str:
+    return (
+        f"[profile {PROFILE_NAME}]\n"
+        f"role_arn = {role_arn}\n"
+        "credential_source = EcsContainer\n"
+        f"role_session_name = {_SESSION_NAME}\n"
+    )
+
+
+def role_config_file(role_arn: str, directory: Path | None = None) -> Path:
+    """Return the private config file for *role_arn*, creating it if needed."""
     if not _ROLE_ARN_RE.match(role_arn):
         raise BedrockRoleConfigError(f"BEDROCK_ROLE_ARN is not an IAM role ARN: {role_arn!r}")
-    if credential_source not in _CREDENTIAL_SOURCES:
-        raise BedrockRoleConfigError(
-            f"BEDROCK_ROLE_CREDENTIAL_SOURCE must be one of {', '.join(_CREDENTIAL_SOURCES)}"
-        )
+    directory = directory or _config_dir()
+    path = directory / f"{hashlib.sha256(role_arn.encode()).hexdigest()[:16]}.config"
+    text = _profile_text(role_arn)
+    if path.exists() and path.read_text() == text:
+        return path
 
-    wanted = {
-        "role_arn": role_arn,
-        "credential_source": credential_source,
-        "role_session_name": _SESSION_NAME,
-    }
-    section = f"profile {PROFILE_NAME}"
-    parser = configparser.ConfigParser(interpolation=None)
-    parser.read(path)
-    if parser.has_section(section) and dict(parser.items(section)) == wanted:
-        return
-    if parser.has_section(section):
-        parser.remove_section(section)
-    parser.add_section(section)
-    for key, value in wanted.items():
-        parser.set(section, key, value)
-
-    # Write-then-rename so a concurrent reader never sees a half-written file.
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".config-")
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".role-")
     try:
         with os.fdopen(fd, "w") as fh:
-            parser.write(fh)
+            fh.write(text)
+        os.chmod(tmp, 0o600)
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+    return path
 
 
-def bedrock_role_profile(env: Mapping[str, str] | None = None) -> str | None:
-    """Return the profile name Bedrock clients should use, or None when no role is configured.
-
-    *env* is the effective environment (guild env vars overlaid on os.environ).
-    """
-    env = env if env is not None else os.environ
+def apply_bedrock_role(env: dict[str, str], directory: Path | None = None) -> None:
+    """Point a tool's subprocess *env* at its role's profile, unless a stronger credential is set."""
     role_arn = (env.get("BEDROCK_ROLE_ARN") or "").strip()
     if not role_arn:
-        return None
-    source = (env.get("BEDROCK_ROLE_CREDENTIAL_SOURCE") or "EcsContainer").strip()
-    ensure_profile(role_arn, source, _config_path(env))
-    return PROFILE_NAME
+        return
+    if (
+        env.get("AWS_BEARER_TOKEN_BEDROCK")
+        or (env.get("AWS_ACCESS_KEY_ID") and env.get("AWS_SECRET_ACCESS_KEY"))
+        or env.get("AWS_PROFILE")
+    ):
+        return
+    env["AWS_CONFIG_FILE"] = str(role_config_file(role_arn, directory))
+    env["AWS_PROFILE"] = PROFILE_NAME
