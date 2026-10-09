@@ -345,6 +345,10 @@ def _make_bedrock_client(
             is_native_bedrock_model,
             is_responses_api_model,
         )
+    try:
+        from foreman.bedrock_role import make_role_anthropic_bedrock, uses_role
+    except ImportError:  # pragma: no cover - exercised under the proxy's import layout
+        from backend.foreman.bedrock_role import make_role_anthropic_bedrock, uses_role
 
     resolved_model = model or env.get("FOREMAN_BEDROCK_MODEL")
     if not resolved_model:
@@ -437,6 +441,12 @@ def _make_bedrock_client(
                 bedrock_kwargs["aws_session_token"] = session_token
         elif resolved_profile:
             bedrock_kwargs["aws_profile"] = resolved_profile
+        else:
+            # BEDROCK_ROLE_ARN (foreman/bedrock_role.py): lowest precedence, per guild.
+            role_arn = uses_role(env, resolved_profile)
+            if role_arn:
+                logger.info("Bedrock credentials: assuming %s", role_arn)
+                return make_role_anthropic_bedrock(role_arn=role_arn, region=resolved_region)
     return _anthropic_mod.AsyncAnthropicBedrock(**bedrock_kwargs)
 
 

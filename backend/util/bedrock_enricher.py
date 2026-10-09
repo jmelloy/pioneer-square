@@ -50,7 +50,8 @@ def _extract_short_id(model_id: str) -> str | None:
 def _make_bedrock_client(boto3_mod):
     """Build the boto3 ``bedrock`` (control-plane) client used to list models.
 
-    Mirrors ``foreman.providers.bedrock._get_client``'s bearer-token handling:
+    Mirrors ``foreman.providers.bedrock._get_client``'s bearer-token handling, and
+    assumes the deployment's BEDROCK_ROLE_ARN (``foreman.bedrock_role``) when there is no token:
     a plain ``boto3.client("bedrock")`` does not auto-negotiate the
     ``httpBearerAuth`` scheme just because ``AWS_BEARER_TOKEN_BEDROCK`` is set
     in the environment — it still resolves SigV4 credentials and fails with
@@ -59,6 +60,15 @@ def _make_bedrock_client(boto3_mod):
     """
     bearer_token = os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
     if not bearer_token:
+        # List the models of the account the foreman will call: with the
+        # deployment's BEDROCK_ROLE_ARN set, that is the role's account. The
+        # catalog is deployment-wide, so a guild's own role does not apply here.
+        from foreman.bedrock_role import role_session, uses_role
+
+        role_arn = uses_role(os.environ, os.environ.get("AWS_PROFILE"))
+        if role_arn:
+            region = os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION")
+            return role_session(role_arn, region or "us-east-1").client("bedrock")
         return boto3_mod.client("bedrock")
 
     from botocore.config import Config
