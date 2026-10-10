@@ -89,6 +89,13 @@ FOREMAN_MODEL=llama3.1 \
 FOREMAN_BASE_URL=http://localhost:11434/v1 \
 pioneer foreman
 
+# OpenRouter (OpenAI-compatible aggregator; default base URL https://openrouter.ai/api/v1,
+# override with OPENROUTER_BASE_URL). Model ids use OpenRouter's "vendor/model" form.
+FOREMAN_PROVIDER=openrouter \
+OPENROUTER_API_KEY=<key> \
+FOREMAN_MODEL=anthropic/claude-sonnet-4.6 \
+pioneer foreman --backend-url ws://localhost:8000 --guild-id <id>
+
 # Or via docker compose (profile "foreman"):
 GUILD_ID=abc123 docker compose --profile foreman up --build foreman
 ```

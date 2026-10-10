@@ -20,6 +20,7 @@ import httpx
 from backend.foreman.llm import (
     ANTHROPIC_SDK_PROVIDERS,
     HAS_ANTHROPIC,
+    OPENAI_COMPATIBLE_PROVIDERS,
     call_anthropic,
     call_openai_compatible,
     make_anthropic_client,
@@ -113,8 +114,14 @@ async def _call_openai_compatible(request: dict[str, Any], config: Config) -> di
         tool_choice=request.get("toolChoice"),
         base_url=config.openai_base_url,
         api_key=config.api_key,
+        provider=config.provider,
     )
-    return {"response": response, "apiRequestId": request_id, "provider": "openai", "model": model}
+    return {
+        "response": response,
+        "apiRequestId": request_id,
+        "provider": config.provider,
+        "model": model,
+    }
 
 
 async def run_api_request(request: dict[str, Any], config: Config) -> dict[str, Any]:
@@ -122,7 +129,7 @@ async def run_api_request(request: dict[str, Any], config: Config) -> dict[str, 
     provider = (config.provider or "anthropic").lower()
     if provider in ANTHROPIC_SDK_PROVIDERS:
         return await _call_anthropic(request, config)
-    if provider == "openai":
+    if provider in OPENAI_COMPATIBLE_PROVIDERS:
         return await _call_openai_compatible(request, config)
     raise ValueError(f"Unsupported foreman proxy provider: {provider!r}")
 

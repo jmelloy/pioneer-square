@@ -12,7 +12,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
-from backend.foreman.llm import BedrockModelNotConfiguredError, get_foreman_model
+from backend.foreman.llm import (
+    OPENROUTER_DEFAULT_BASE_URL,
+    BedrockModelNotConfiguredError,
+    get_foreman_model,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +162,8 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         or (
             os.environ.get("OPENAI_API_KEY")
             if provider == "openai"
+            else os.environ.get("OPENROUTER_API_KEY")
+            if provider == "openrouter"
             else os.environ.get("ANTHROPIC_API_KEY")
         )
     ) or None
@@ -172,7 +178,13 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         overrides.get("model")
         or llm_block.get("model")
         or os.environ.get("FOREMAN_MODEL")
-        or ("llama3.1" if provider == "openai" else "claude-sonnet-4-6")
+        or (
+            "llama3.1"
+            if provider == "openai"
+            else "anthropic/claude-sonnet-4.6"
+            if provider == "openrouter"
+            else "claude-sonnet-4-6"
+        )
     )
 
     # Trailing `or None` normalises an empty string (e.g. an unset TOML/env
@@ -191,8 +203,11 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         or llm_block.get("base_url")
         or llm_block.get("openai_base_url")
         or os.environ.get("FOREMAN_BASE_URL")
+        or (os.environ.get("OPENROUTER_BASE_URL") if provider == "openrouter" else None)
         or os.environ.get("OPENAI_BASE_URL")
-        or "http://localhost:11434/v1"
+        or (
+            OPENROUTER_DEFAULT_BASE_URL if provider == "openrouter" else "http://localhost:11434/v1"
+        )
     )
 
     aws_region = (
