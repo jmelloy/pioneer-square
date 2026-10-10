@@ -21,7 +21,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--guild-id", metavar="ID", help="Override guild ID.")
     p.add_argument(
         "--provider",
-        choices=("anthropic", "bedrock", "openai"),
+        choices=("anthropic", "bedrock", "openai", "openrouter"),
         help="LLM provider for proxied API calls.",
     )
     p.add_argument("--model", metavar="MODEL", help="Override model ID.")

@@ -111,3 +111,39 @@ async def test_bedrock_proxy_assumes_its_role_and_keys_the_cache_on_it(monkeypat
         ("arn:aws:iam::210987654321:role/b", "us-west-2"),
     ]
     runner._anthropic_clients.clear()
+
+
+async def test_run_api_request_openrouter_uses_openai_wire_format(monkeypatch):
+    captured = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["auth"] = request.headers.get("authorization")
+        return httpx.Response(
+            200,
+            json={
+                "id": "gen-1",
+                "model": "anthropic/claude-sonnet-4.6",
+                "choices": [{"finish_reason": "stop", "message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    base = "https://openrouter.ai/api/v1"
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setitem(runner._http_clients, (base, "or-key"), client)
+    cfg = Config(
+        backend_url="ws://x:1",
+        guild_id="g",
+        provider="openrouter",
+        model="anthropic/claude-sonnet-4.6",
+        api_key="or-key",
+        openai_base_url=base,
+    )
+    result = await runner.run_api_request(
+        {"model": "m", "maxTokens": 10, "messages": [{"role": "user", "content": "hi"}]}, cfg
+    )
+    assert captured["url"] == f"{base}/chat/completions"
+    assert captured["auth"] == "Bearer or-key"
+    assert result["provider"] == "openrouter"
+    assert result["model"] == "anthropic/claude-sonnet-4.6"

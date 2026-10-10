@@ -56,6 +56,11 @@ logger = logging.getLogger(__name__)
 # operator points at their own OpenAI-compatible endpoint.
 ANTHROPIC_SDK_PROVIDERS = frozenset({"anthropic", "bedrock"})
 
+# Providers served by call_openai_compatible (OpenAI chat-completions wire format).
+# "openrouter" is an OpenAI-compatible aggregator with a fixed default endpoint.
+OPENAI_COMPATIBLE_PROVIDERS = frozenset({"openai", "openrouter"})
+OPENROUTER_DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+
 
 class BedrockModelNotConfiguredError(ValueError):
     """Raised when provider=bedrock is selected but no model/inference-profile is configured.
@@ -700,6 +705,7 @@ async def call_openai_compatible(
     tools: list[dict[str, Any]] | None = None,
     tool_choice: dict[str, Any] | None = None,
     api_key: str | None = None,
+    provider: str = "openai",
 ) -> tuple[dict[str, Any], str | None]:
     """Execute one OpenAI-compatible POST /chat/completions call.
 
@@ -730,7 +736,7 @@ async def call_openai_compatible(
         headers["Authorization"] = f"Bearer {api_key}"
 
     url = f"{base_url.rstrip('/')}/chat/completions"
-    with track_api_call("openai", url, method="POST") as call:
+    with track_api_call(provider, url, method="POST") as call:
         response = await client.post(url, json=body, headers=headers)
         call.status_code = response.status_code
         response.raise_for_status()

@@ -195,3 +195,11 @@ If the script doesn't end with `complete` / `fail`, the slot parks on the
 future and finishes once the HTTP API resolves it. Mixed mode (script then
 HTTP) lets you script the noisy bits and have the test assert the terminal
 state.
+
+## OpenRouter
+
+Set `provider = "openrouter"` (or `PIONEER_PROVIDER=openrouter`) so the backend filters the model
+catalog to OpenRouter models. The `pi` tool supports OpenRouter natively: export
+`OPENROUTER_API_KEY` (or set it under `[env]` / the pi `tool_env` in the worker TOML) and use
+`[pi] provider = "openrouter"` with an OpenRouter model id such as `anthropic/claude-sonnet-4.6`.
+For the standalone foreman, see `FOREMAN_PROVIDER=openrouter` in `AGENTS.md`.

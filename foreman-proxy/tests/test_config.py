@@ -284,3 +284,27 @@ def test_load_anthropic_auth_token_defaults_to_none(tmp_path):
     toml_path.write_text('backend_url = "ws://x:1"\nguild_id = "g"\n')
     cfg = load(str(toml_path))
     assert cfg.anthropic_auth_token is None
+
+
+# ── OpenRouter provider ───────────────────────────────────────────────────
+
+
+def test_load_openrouter_defaults_from_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("FOREMAN_BASE_URL", raising=False)
+    monkeypatch.delenv("FOREMAN_MODEL", raising=False)
+    monkeypatch.setenv("FOREMAN_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    cfg = load(str(tmp_path / "missing.toml"), {"backend_url": "ws://x:1", "guild_id": "g"})
+    assert cfg.provider == "openrouter"
+    assert cfg.api_key == "or-key"
+    assert cfg.openai_base_url == "https://openrouter.ai/api/v1"
+    assert cfg.model == "anthropic/claude-sonnet-4.6"
+
+
+def test_load_openrouter_base_url_override(tmp_path, monkeypatch):
+    monkeypatch.delenv("FOREMAN_BASE_URL", raising=False)
+    monkeypatch.setenv("FOREMAN_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://proxy.example/v1/")
+    cfg = load(str(tmp_path / "missing.toml"), {"backend_url": "ws://x:1", "guild_id": "g"})
+    assert cfg.openai_base_url == "https://proxy.example/v1"
