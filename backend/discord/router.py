@@ -1013,6 +1013,7 @@ async def _persist_inbound_message(
             userId=user_id,
             taskId=task_id,
             threadId=thread_id,
+            conversationId=conversation_id,
             source="discord",
         ),
     )
