@@ -297,6 +297,38 @@ async def test_persist_inbound_message_top_level_starts_new_conversation(client)
 
 
 @pytest.mark.asyncio
+async def test_persist_inbound_message_broadcast_carries_conversation_id(client):
+    """The live ``ChatMsg`` broadcast for a conversation's very first message
+    must carry the same ``conversationId`` stamped on the persisted row —
+    the frontend attaches messages to a Conversation by that field, so
+    omitting it left the first message orphaned until a reload."""
+    import database as database_module
+    from models import Message
+    from sqlmodel import col, select
+
+    _test_client, db_url = client
+    insert_guild(db_url, "g-bcast-conv")
+
+    broadcast = AsyncMock()
+    with (
+        patch("discord.thread_mirror.on_thread_created", new=AsyncMock()),
+        patch("events.broadcast_msg", new=broadcast),
+    ):
+        returned = await router._persist_inbound_message(
+            "g-bcast-conv", "first message", user_id="user-bc-1", task_id=None
+        )
+
+    async with database_module.AsyncSessionLocal() as db:
+        result = await db.exec(select(Message).where(col(Message.content) == "first message"))
+        message = result.first()
+
+    assert message is not None and message.conversation_id is not None
+    assert returned == message.conversation_id
+    sent = broadcast.await_args.args[1]
+    assert sent.conversationId == message.conversation_id
+
+
+@pytest.mark.asyncio
 async def test_persist_inbound_message_two_top_level_messages_get_separate_conversations(client):
     """Two distinct top-level messages from the same user each spawn their own
     Conversation (#1296) — "conversations are the durable unit of work,"
