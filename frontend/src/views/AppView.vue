@@ -1,6 +1,11 @@
 <template>
   <div class="app-layout" :data-tab="activeTab">
-    <TopBar :debug-active="showDebug" @toggle-debug="showDebug = !showDebug" />
+    <TopBar
+      :debug-active="showDebug"
+      :api-debug-active="showApiDebug"
+      @toggle-debug="showDebug = !showDebug"
+      @toggle-api-debug="showApiDebug = !showApiDebug"
+    />
     <div class="app-body">
       <GuildSidebar />
       <MainView />
@@ -8,6 +13,7 @@
     </div>
     <teleport to="body">
       <DebugSidebar v-if="showDebug" @close="showDebug = false" />
+      <ApiDebugSidebar v-if="showApiDebug" @close="showApiDebug = false" />
     </teleport>
     <nav class="mobile-tab-bar">
       <button
@@ -46,6 +52,7 @@ import MainView from '../components/MainView.vue'
 import ChatPane from '../components/ChatPane.vue'
 import TopBar from '../components/TopBar.vue'
 import DebugSidebar from '../components/DebugSidebar.vue'
+import ApiDebugSidebar from '../components/ApiDebugSidebar.vue'
 
 const props = defineProps<{ guildId?: string }>()
 
@@ -57,6 +64,7 @@ provide('switchMobileTab', (tab: 'tasks' | 'work' | 'chat') => {
 const chatPaneRef = ref<InstanceType<typeof ChatPane> | null>(null)
 
 const showDebug = ref(false)
+const showApiDebug = ref(false)
 
 const router = useRouter()
 const guildStore = useGuildStore()

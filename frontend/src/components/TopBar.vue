@@ -44,6 +44,16 @@
 
     <button
       v-if="currentGuild"
+      class="debug-btn"
+      :class="{ active: apiDebugActive }"
+      @click="emit('toggle-api-debug')"
+      title="Debug: REST requests"
+    >
+      <span class="debug-icon">⇄</span>
+    </button>
+
+    <button
+      v-if="currentGuild"
       class="settings-btn"
       :class="{ active: showSettings }"
       @click="showSettings = !showSettings"
@@ -65,8 +75,8 @@ import { useAuthStore } from '../stores/auth'
 import UserPreferencesModal from './UserPreferencesModal.vue'
 import GuildSettingsPanel from './GuildSettingsPanel.vue'
 
-defineProps<{ debugActive?: boolean }>()
-const emit = defineEmits<{ 'toggle-debug': [] }>()
+defineProps<{ debugActive?: boolean; apiDebugActive?: boolean }>()
+const emit = defineEmits<{ 'toggle-debug': []; 'toggle-api-debug': [] }>()
 
 const router = useRouter()
 const guildStore = useGuildStore()
