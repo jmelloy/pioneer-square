@@ -1895,7 +1895,7 @@ class Worker:
             # doing so would silently review the wrong code. Always re-resolve
             # live via the GitHub API rather than trusting task.get("pr_head_ref"):
             # the PR may have been force-pushed since the webhook fired.
-            branch = await git_ops.get_pr_head_branch(pr_repo, pr_number)
+            branch = await git_ops.get_pr_head_branch(pr_repo, pr_number, token)
             if not branch:
                 logger.error(
                     "Task %s: could not resolve PR branch for review via GitHub API "
@@ -2121,6 +2121,9 @@ class Worker:
             # Scoped environment for this tool: shared vars + this tool's own set,
             # with the other tools' credentials deliberately excluded.
             tool_env = self._env_for_tool(tool)
+            # Pin gh (and anything reading GITHUB_TOKEN) in the agent subprocess
+            # to this task's token, not the process-wide ambient one.
+            tool_env.update(git_ops.gh_token_env(token))
 
             async def _run_current_desc() -> RunResult:
                 return await runner.run(
