@@ -274,7 +274,7 @@ async def test_review_phase_checks_out_pr_branch_via_gh(caplog: pytest.LogCaptur
         await worker._execute_task(task, slot)
 
     expected_wt_path = os.path.join(tmp, "test-guild", "w-test01", "t-revcheckout", "repo")
-    mock_get_branch.assert_awaited_once_with("owner/repo", 42)
+    mock_get_branch.assert_awaited_once_with("owner/repo", 42, None)
     mock_checkout.assert_awaited_once_with(
         "/tmp/fake-repo", expected_wt_path, 42, "owner/repo", None
     )
@@ -338,7 +338,7 @@ async def test_review_prefers_pr_number_over_issue_number():
         await worker._execute_task(task, slot)
 
     expected_wt_path = os.path.join(tmp, "test-guild", "w-test01", "t-revpr", "repo")
-    mock_get_branch.assert_awaited_once_with("owner/repo", 99)
+    mock_get_branch.assert_awaited_once_with("owner/repo", 99, None)
     mock_co.assert_awaited_once_with("/tmp/fake-repo", expected_wt_path, 99, "owner/repo", None)
     mock_create_worktree.assert_not_called()
     completion_msgs = [
@@ -449,6 +449,6 @@ async def test_review_task_1758_regression_resolves_branch_from_metadata():
         worker.cfg.repos_dir = tmp
         await worker._execute_task(task, slot)
 
-    mock_get_branch.assert_awaited_once_with("Identity-Digital/dnsid", 1758)
+    mock_get_branch.assert_awaited_once_with("Identity-Digital/dnsid", 1758, None)
     mock_create_worktree.assert_not_called()
     mock_push.assert_not_called()

@@ -237,14 +237,28 @@ async def set_git_identity(name: str, email: str) -> None:
     await run_git(["config", "--global", "user.email", email])
 
 
-async def run_gh(args: list[str], cwd: str | None = None) -> tuple[int, str, str]:
+def gh_token_env(token: str | None) -> dict[str, str]:
+    """Env overrides that make ``gh`` authenticate as *token* for one process.
+
+    ``gh`` prefers GH_TOKEN over GITHUB_TOKEN, so both are set; this overrides
+    whatever ambient token the worker process happens to carry.
+    """
+    return {"GH_TOKEN": token, "GITHUB_TOKEN": token} if token else {}
+
+
+async def run_gh(
+    args: list[str], cwd: str | None = None, token: str | None = None
+) -> tuple[int, str, str]:
+    """Run a gh command. *token*, when given, authenticates this call only."""
     logger.debug("gh %s (cwd=%s)", " ".join(args), cwd or os.getcwd())
+    auth = gh_token_env(token)
     proc = await asyncio.create_subprocess_exec(
         "gh",
         *args,
         cwd=cwd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env={**os.environ, **auth} if auth else None,
     )
     stdout, stderr = await proc.communicate()
     rc = proc.returncode if proc.returncode is not None else -1
@@ -259,7 +273,9 @@ async def run_gh(args: list[str], cwd: str | None = None) -> tuple[int, str, str
     return rc, stdout.decode(errors="replace"), stderr.decode(errors="replace")
 
 
-async def get_pr_head_branch(repo_full: str, pr_number: int | str) -> str | None:
+async def get_pr_head_branch(
+    repo_full: str, pr_number: int | str, token: str | None = None
+) -> str | None:
     """Look up a PR's head branch name via the ``gh`` CLI. Returns None on failure."""
     rc, out, _ = await run_gh(
         [
@@ -272,7 +288,8 @@ async def get_pr_head_branch(repo_full: str, pr_number: int | str) -> str | None
             "headRefName",
             "-q",
             ".headRefName",
-        ]
+        ],
+        token=token,
     )
     if rc != 0:
         return None
@@ -299,7 +316,9 @@ async def checkout_pr_worktree(
     if rc != 0:
         logger.error("Detached worktree add failed at %s (rc=%d)", wt_path, rc)
         return False
-    rc, _, _ = await run_gh(["pr", "checkout", str(pr_number), "--repo", repo_full], cwd=wt_path)
+    rc, _, _ = await run_gh(
+        ["pr", "checkout", str(pr_number), "--repo", repo_full], cwd=wt_path, token=token
+    )
     if rc != 0:
         logger.error("gh pr checkout failed for PR #%s (%s) in %s", pr_number, repo_full, wt_path)
         # Detached worktree add succeeded but the checkout didn't — remove the
