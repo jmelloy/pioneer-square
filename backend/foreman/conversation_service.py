@@ -230,7 +230,9 @@ async def reactivate_conversation(db: AsyncSession, conversation: Conversation) 
         await _mirror_status_to_discord(conversation)
 
 
-async def set_conversation_status(db: AsyncSession, conversation: Conversation, status: str) -> None:
+async def set_conversation_status(
+    db: AsyncSession, conversation: Conversation, status: str
+) -> None:
     """Set *conversation*'s lifecycle status, then broadcast and mirror to Discord.
 
     Commits *db*. Used by the idle sweep (archive/close).

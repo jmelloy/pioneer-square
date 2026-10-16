@@ -463,9 +463,7 @@ async def test_route_inbound_message_guild_channel_top_level_starts_new_conversa
 
     async with database_module.AsyncSessionLocal() as db:
         guild_pk = await get_guild_pk(db, "g-e2e1")
-        old_conversation, _ = await get_or_create_active_conversation(
-            db, guild_pk, "ps-user-e2e1"
-        )
+        old_conversation, _ = await get_or_create_active_conversation(db, guild_pk, "ps-user-e2e1")
         old_conversation_id = old_conversation.id
 
     with (
@@ -512,9 +510,7 @@ async def test_route_inbound_message_dm_mention_top_level_starts_new_conversatio
 
     async with database_module.AsyncSessionLocal() as db:
         guild_pk = await get_guild_pk(db, "g-dm1")
-        old_conversation, _ = await get_or_create_active_conversation(
-            db, guild_pk, "ps-user-dm1"
-        )
+        old_conversation, _ = await get_or_create_active_conversation(db, guild_pk, "ps-user-dm1")
         old_conversation_id = old_conversation.id
 
     with (

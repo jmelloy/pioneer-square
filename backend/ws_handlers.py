@@ -30,10 +30,10 @@ from events import (
 )
 from fastapi import WebSocket
 from foreman import triggers
+from foreman.conversation_service import ensure_conversation
 from foreman.github_url_parser import parse_github_urls
 from foreman.proxy import fail_pending_for_websocket, resolve_foreman_api_response
 from foreman.runner import ensure_poll_loop, reset_foreman_poll
-from foreman.conversation_service import ensure_conversation
 from foreman.tools import maybe_post_plan_comment
 from lock_service import LockService
 from models import Agent, Message, Task, TaskEvent, TaskLog, User, Worker

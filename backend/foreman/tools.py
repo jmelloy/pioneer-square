@@ -30,9 +30,9 @@ from events import (
     broadcast_msg,
     emit_terminal_line,  # noqa: F401 — looked up as foreman.tools.emit_terminal_line by ports.RealEvents
 )
+from foreman.conversation_service import get_or_create_active_conversation
 from foreman.message_utils import _json_default, truncate_tool_result
 from foreman.ports import RealEvents, RealGithub, RealScheduler, SystemClock
-from foreman.conversation_service import get_or_create_active_conversation
 from foreman.tool_context import ToolContext
 from foreman.tools_schema import (
     FOREMAN_TOOLS,  # noqa: F401 — re-exported for test compatibility
@@ -1870,9 +1870,7 @@ async def _handle_assign_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
                 )
                 await db.commit()
                 name_result = await db.exec(
-                    select(col(Task.name)).where(
-                        col(Task.id) == existing_task_id
-                    )
+                    select(col(Task.name)).where(col(Task.id) == existing_task_id)
                 )
                 name_row = name_result.first()
                 task_name = (name_row[0] if name_row else None) or desc[:60]
@@ -2004,7 +2002,7 @@ async def _handle_assign_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
                         prUrl=effective_pr_url,
                         headSha=effective_head_sha,
                         repos=repos,
-                                ).model_dump(by_alias=True, exclude_none=True),
+                    ).model_dump(by_alias=True, exclude_none=True),
                 )
                 _spawn_discord_task_assigned(
                     guild_id,

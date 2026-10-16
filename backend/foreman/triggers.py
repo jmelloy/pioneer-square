@@ -30,8 +30,8 @@ cycle this module exists to break.
 from __future__ import annotations
 
 from foreman.classify import is_human_event
-from foreman.runner import run_foreman_ai
 from foreman.conversation_service import ensure_conversation
+from foreman.runner import run_foreman_ai
 from util.tasks import spawn
 
 # ---------------------------------------------------------------------------

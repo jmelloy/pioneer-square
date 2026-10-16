@@ -15,9 +15,9 @@ from __future__ import annotations
 import foreman.triggers as triggers
 
 
-async def test_trigger_foreman_with_conversation_id_skips_thread_ensure(monkeypatch):
+async def test_trigger_foreman_with_conversation_id_skips_conversation_ensure(monkeypatch):
     """An explicit conversation_id must not trigger the (guild, user)
-    get-or-create-thread lookup — that could resolve a *different*
+    get-or-create-conversation lookup — that could resolve a *different*
     conversation than the one the caller already picked."""
     ensure_called = {"value": False}
 
@@ -28,7 +28,7 @@ async def test_trigger_foreman_with_conversation_id_skips_thread_ensure(monkeypa
     async def fake_run_foreman_ai(*a, **k):
         return None
 
-    monkeypatch.setattr(triggers, "ensure_conversation_thread", fake_ensure)
+    monkeypatch.setattr(triggers, "ensure_conversation", fake_ensure)
     monkeypatch.setattr(triggers, "run_foreman_ai", fake_run_foreman_ai)
 
     await triggers.trigger_foreman(
@@ -38,7 +38,7 @@ async def test_trigger_foreman_with_conversation_id_skips_thread_ensure(monkeypa
     assert ensure_called["value"] is False
 
 
-async def test_trigger_foreman_without_conversation_id_still_ensures_thread(monkeypatch):
+async def test_trigger_foreman_without_conversation_id_still_ensures_conversation(monkeypatch):
     """Sanity check: existing chat behaviour (no task_id, no conversation_id)
     is unchanged by the new parameter."""
     ensure_called = {"value": False}
@@ -50,7 +50,7 @@ async def test_trigger_foreman_without_conversation_id_still_ensures_thread(monk
     async def fake_run_foreman_ai(*a, **k):
         return None
 
-    monkeypatch.setattr(triggers, "ensure_conversation_thread", fake_ensure)
+    monkeypatch.setattr(triggers, "ensure_conversation", fake_ensure)
     monkeypatch.setattr(triggers, "run_foreman_ai", fake_run_foreman_ai)
 
     await triggers.trigger_foreman("g1", "chat", "hi", user_id="u-1")

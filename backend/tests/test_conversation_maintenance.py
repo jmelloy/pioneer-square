@@ -39,8 +39,12 @@ def db_session(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", TEST_DATABASE_URL)
     # Keep the sweep from actually archiving/closing anything unless a test
     # explicitly lowers these below zero — real defaults are days-long.
-    monkeypatch.setattr(conversation_maintenance, "CONVERSATION_AUTO_ARCHIVE_AFTER_SECONDS", 3 * 24 * 3600.0)
-    monkeypatch.setattr(conversation_maintenance, "CONVERSATION_AUTO_CLOSE_AFTER_SECONDS", 14 * 24 * 3600.0)
+    monkeypatch.setattr(
+        conversation_maintenance, "CONVERSATION_AUTO_ARCHIVE_AFTER_SECONDS", 3 * 24 * 3600.0
+    )
+    monkeypatch.setattr(
+        conversation_maintenance, "CONVERSATION_AUTO_CLOSE_AFTER_SECONDS", 14 * 24 * 3600.0
+    )
 
     engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
     session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
@@ -125,9 +129,7 @@ class TestSweepConversations:
 
         with (
             patch("discord_notifier.is_configured", return_value=False),
-            patch(
-                "discord.thread_mirror.on_thread_updated", new_callable=AsyncMock
-            ) as mock_mirror,
+            patch("discord.thread_mirror.on_thread_updated", new_callable=AsyncMock) as mock_mirror,
             patch(
                 "foreman.conversation_service.broadcast", new_callable=AsyncMock
             ) as mock_broadcast,

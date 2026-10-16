@@ -24,8 +24,7 @@ import database as database_module
 from _test_config import TEST_DATABASE_URL
 from auth_deps import get_guild_pk
 from foreman import triggers
-from foreman.conversation_service import close_conversation
-from foreman.conversation_service import get_or_create_active_conversation
+from foreman.conversation_service import close_conversation, get_or_create_active_conversation
 from helpers import create_db, insert_conversation, insert_guild, truncate_all
 from models import Conversation
 from routes.conversations import (
@@ -116,9 +115,7 @@ class TestCloseConversationRoute:
             "discord.thread_mirror.archive_conversation_thread_by_id", new_callable=AsyncMock
         ) as mock_archive:
             async with database_module.AsyncSessionLocal() as db:
-                out = await close_conversation_route(
-                    "g-conv-close", conv.id, "user-1", db
-                )
+                out = await close_conversation_route("g-conv-close", conv.id, "user-1", db)
 
         assert out.status == "closed"
         mock_archive.assert_called_once_with("discord-thread-route-cc")
