@@ -161,33 +161,20 @@ class Message(SQLModel, table=True):
     conversation_id: int | None = Field(default=None, foreign_key="conversations.id", index=True)
 
 
-# Valid Conversation.status / Thread.status values. "active" threads accept
-# new messages, "archived" threads are read-only in Discord but still
-# resolvable by the backend, "closed" threads are done and eligible for
-# eventual soft-delete cleanup.
+# Valid Conversation.status values. "active" conversations accept new
+# messages, "archived" ones are read-only in Discord but still resolvable by
+# the backend, "closed" ones are done.
 THREAD_STATUSES = ("active", "archived", "closed")
 
 
 class Conversation(SQLModel, table=True):
     """A logical conversation between a user and the Foreman within a guild.
 
-    Anchor row a :class:`Thread` points at via ``conversation_id``. Part of
-    the thread-per-conversation architecture (epic #1160): today the
-    per-(guild, user) Foreman turn history (``ForemanTurn``) is looked up
-    directly by guild+user with no anchor row of its own; ``Conversation``
-    gives the Discord-thread integration a stable id to bind to instead of
-    keying threads on the raw (guild, user) pair.
-
-    ``name``/``status``/``discord_thread_id`` (#1274, part of epic #1271's
-    "make Conversation the core Foreman thread model") mirror the
-    conversation's *currently active* :class:`Thread` — kept in sync by
-    ``foreman.thread_service`` and friends — so callers that only care about
-    "this conversation's current thread state" (e.g.
-    ``discord_notifier._lookup_foreman_thread_for_user``) can query
-    ``Conversation`` directly instead of joining to ``Thread``. The
-    per-instance, historical record of each thread a conversation has ever
-    had (including archived/closed ones) still lives on ``Thread`` itself —
-    see its docstring below.
+    The core Foreman thread model (epic #1271, #1299): messages, tasks,
+    foreman turns and GitHub events all hang off ``conversation_id``, and
+    ``name``/``status``/``discord_thread_id`` are the conversation's
+    product lifecycle state. The Discord thread is only a mirror/transport
+    detail, bound via ``discord_thread_id`` (see ``discord/thread_mirror.py``).
     """
 
     __tablename__ = "conversations"  # type: ignore[assignment]
@@ -209,46 +196,22 @@ class Conversation(SQLModel, table=True):
     user_id: str | None = None
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
-    # Mirror of the currently active Thread's name/status/discord_thread_id.
-    # See the class docstring — these track the conversation's current
-    # thread, not its full history.
+    # Lifecycle state: display name, status (see THREAD_STATUSES) and the
+    # Discord thread mirroring this conversation, if any.
     name: str | None = None
     status: str = Field(default="active", sa_column_kwargs={"server_default": "'active'"})
     discord_thread_id: str | None = None
 
 
 class Thread(SoftDeleteMixin, SQLModel, table=True):
-    """A Discord thread bound to one :class:`Conversation`.
+    """Deprecated legacy mirror-history table (#1299).
 
-    Part of the thread-per-conversation architecture (epic #1160): each
-    conversation gets its own dedicated Discord thread instead of sharing a
-    flat channel, so follow-ups stay isolated and the main channel stays
-    clean. Distinct from ``DiscordThreadBinding`` (a static
-    subject-type/subject-key -> thread-id lookup with no lifecycle of its
-    own) — a ``Thread`` here carries an explicit ``status`` that the
-    periodic foreman sweep advances over time (see
-    ``foreman/thread_maintenance.py``).
-
-    A conversation can have many ``Thread`` rows over its lifetime (one per
-    Discord-thread "session" — archived/closed threads are superseded by a
-    fresh one, see ``thread_service.get_or_create_active_thread``), so
-    ``name``/``status``/``discord_thread_id`` remain each thread's own,
-    independently mutable record — e.g. ``routes/threads.py``'s
-    archive/close endpoints and thread-history listing operate per-instance.
-    They are also mirrored onto the owning :class:`Conversation` (#1274)
-    whenever they change so callers that only need "the conversation's
-    current thread" don't have to join through here — see ``Conversation``'s
-    docstring.
-
-    Deprecated (#1274, epic #1271): ``name``/``status``/``discord_thread_id``
-    now live on ``Conversation`` as the canonical fields for UI display and
-    Discord binding. This model is kept only for the per-instance history
-    that ``routes/threads.py``'s archive/close/list-by-status endpoints and
-    the maintenance sweep still read and write directly — new code should
-    read/write those three fields through ``Conversation`` instead of
-    ``Thread``. Removing ``Thread`` entirely requires first moving those
-    per-instance call sites onto a ``Conversation``-scoped history mechanism;
-    that migration is tracked under epic #1271 and hasn't happened yet.
+    Superseded by :class:`Conversation`, which now owns ``name``/``status``/
+    ``discord_thread_id``. Core code no longer reads or writes this model;
+    it is retained only so historical rows survive, so alembic migrations
+    keep working, and so ``discord/router.py`` can still resolve Discord
+    bindings created under the old ``"th-..."`` thread ids. Safe to drop in a
+    follow-up once no deployed database depends on those bindings.
     """
 
     __tablename__ = "threads"  # type: ignore[assignment]
@@ -502,14 +465,11 @@ class Task(SoftDeleteMixin, SQLModel, table=True):
     # (Claude, codex, or pi). Lets send_followup resume the same session when
     # redispatched to the original worker. NULL if the agent didn't report one.
     claude_session_id: str | None = None
-    # Conversation thread this task was created from (thread-per-conversation
-    # integration, epic #1160). When set, Discord notifications for this task
-    # route into the thread's discord_thread_id instead of resolving/creating
-    # a separate task-stream thread. NULL for tasks not tied to a specific
-    # conversation thread (e.g. issue pickups, webhook-triggered work).
+    # Deprecated (#1299): no longer written — use ``conversation_id``. Kept
+    # only for rows created before the Thread -> Conversation migration.
     thread_id: str | None = Field(default=None, foreign_key="threads.id", index=True)
-    # Owning Conversation (#1271). Stamped alongside thread_id wherever a task
-    # is created from a conversation; see Message.conversation_id.
+    # Owning Conversation (#1271). Stamped wherever a task is created from a
+    # conversation; see Message.conversation_id.
     conversation_id: int | None = Field(default=None, foreign_key="conversations.id", index=True)
 
 

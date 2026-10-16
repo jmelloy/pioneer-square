@@ -722,11 +722,8 @@ async def test_canonical_coords_issue_subject_passes_through(client):
 @pytest.mark.asyncio
 async def test_lookup_foreman_thread_for_user_reads_conversation_directly(client):
     """#1274: the lookup now reads Conversation.discord_thread_id/status
-    directly (no Thread join) — kept in sync by foreman.thread_service."""
-    from foreman.thread_service import (
-        get_or_create_active_thread,
-        sync_conversation_after_thread_update,
-    )
+    directly."""
+    from foreman.conversation_service import get_or_create_active_conversation
 
     _test_client, db_url = client
     insert_guild(db_url, "g-foreman-thread1")
@@ -735,10 +732,9 @@ async def test_lookup_foreman_thread_for_user_reads_conversation_directly(client
         from auth_deps import get_guild_pk
 
         guild_pk = await get_guild_pk(db, "g-foreman-thread1")
-        thread, _ = await get_or_create_active_thread(db, guild_pk, "user-1")
-        thread.discord_thread_id = "discord-lookup-1"
-        db.add(thread)
-        await sync_conversation_after_thread_update(db, thread, previous_status=thread.status)
+        conv, _ = await get_or_create_active_conversation(db, guild_pk, "user-1")
+        conv.discord_thread_id = "discord-lookup-1"
+        db.add(conv)
         await db.commit()
 
     result = await discord_notifier._lookup_foreman_thread_for_user("g-foreman-thread1", "user-1")

@@ -107,10 +107,9 @@ export interface TaskTreeData {
 }
 
 // Mirrors backend/routes/conversations.py ConversationOut (#1298 — the
-// Conversations UI/API surface, replacing the Thread-scoped one). name/status/
-// discord_thread_id mirror the conversation's currently active Thread — see
-// the Conversation docstring in backend/models.py — but the UI only ever
-// deals with Conversation now; Thread stays a backend implementation detail.
+// Conversations UI/API surface). name/status/discord_thread_id are the
+// conversation's own lifecycle state — see the Conversation docstring in
+// backend/models.py.
 export type ConversationStatus = 'active' | 'archived' | 'closed'
 
 export interface Conversation {
@@ -163,10 +162,6 @@ export interface ChatMessage {
   // task_id is metadata on the run's conversation, not a separate Foreman
   // context). When present, the chat pane badges the line with that task.
   taskId?: string | null
-  // Foreman-owned conversation thread (#1167) this message belongs to, when
-  // resolvable (#1175). Superseded by conversationId (#1298) for UI purposes;
-  // kept on the wire as a backend implementation detail.
-  threadId?: string | null
   // The Conversation (#1298) this message belongs to, when resolvable. Lets
   // ConversationDetailPanel filter the shared message stream down to one
   // conversation's own history.
@@ -426,7 +421,6 @@ export const WS_INBOUND_FIELDS: { [K in WSInbound['type']]: readonly string[] } 
     'isError',
     'source',
     'taskId',
-    'threadId',
     'conversationId',
   ],
   'guild-updated': ['id', 'name'],
