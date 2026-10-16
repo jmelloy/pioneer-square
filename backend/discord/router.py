@@ -40,7 +40,7 @@ table, keyed on ``(subject_type, subject_key)``; made Conversation-first by
       ``task_id=None``, so the reply is posted directly to the guild's main
       configured channel. ``notify_foreman_chat`` never creates a Discord
       thread itself — one only exists here once the Foreman's own thread
-      lifecycle (``foreman.thread_service``) creates it and mirrors it via
+      lifecycle (``foreman.conversation_service``) creates it and mirrors it via
       ``discord/thread_mirror.on_thread_created``.
     - one exception to the above: a message that @-mentions the bot user
       (``discord.auth.mentions_bot_user``) or the foreman role
@@ -265,9 +265,7 @@ async def _resolve_conversation_by_discord_thread(channel_id: str) -> tuple[str,
     The primary, Conversation-first inbound resolution path:
     ``Conversation.discord_thread_id`` is the single source of truth for a
     conversation's Discord binding (unique index — see the model's
-    docstring), set by ``discord/thread_mirror.on_thread_created`` and kept
-    current by ``foreman.thread_service`` as the conversation's active
-    ``Thread`` changes. No ``Thread`` join, and no dependency on
+    docstring), set by ``discord/thread_mirror.on_conversation_created``. No ``Thread`` join, and no dependency on
     ``discord_thread_bindings`` at all — a reply in *any* Discord thread a
     conversation currently owns resolves here before ``resolve_session``
     ever consults the binding table's ``"conversation"`` rows (which only
@@ -796,9 +794,8 @@ async def _forward_to_foreman(
     disagree with the specific Conversation this message was just persisted
     under — e.g. a reply reactivating an older Discord-thread-bound
     Conversation while a newer, unrelated one exists for the same user (see
-    ``foreman.thread_service.reactivate_conversation_thread``'s "no matching
-    Thread row" fallback). Without pinning it here, the Foreman's reply would
-    silently land in the wrong Conversation, unlike
+    ``foreman.conversation_service.ensure_conversation``). Without pinning it
+    here, the Foreman's reply would silently land in the wrong Conversation, unlike
     ``routes/conversations.py``'s ``post_conversation_message``, which already
     pins its own already-known ``conversation_id`` for exactly this reason.
     """
@@ -929,19 +926,15 @@ async def _persist_inbound_message(
     from database import AsyncSessionLocal  # noqa: PLC0415
     from events import broadcast_msg  # noqa: PLC0415
     from foreman.conversation_service import (  # noqa: PLC0415
+        ensure_conversation,
         get_conversation_by_discord_thread_id,
+        reactivate_conversation,
         resolve_conversation_id,
-    )
-    from foreman.thread_service import (  # noqa: PLC0415
-        ensure_conversation_thread,
-        reactivate_conversation_thread,
-        resolve_thread_id,
     )
     from models import Message  # noqa: PLC0415
     from ws_types import ChatMsg  # noqa: PLC0415
 
     created_at = datetime.now(UTC)
-    thread_id: str | None = None
     conversation_id: int | None = None
     async with AsyncSessionLocal() as db:
         guild_pk = await get_guild_pk(db, guild_slug)
@@ -950,7 +943,6 @@ async def _persist_inbound_message(
 
         try:
             if task_id:
-                thread_id = await resolve_thread_id(db, guild_pk, task_id=task_id, user_id=user_id)
                 conversation_id = await resolve_conversation_id(
                     db, guild_pk, task_id=task_id, user_id=user_id
                 )
@@ -961,11 +953,8 @@ async def _persist_inbound_message(
                     else None
                 )
                 if conversation is not None:
-                    thread = await reactivate_conversation_thread(
-                        db, conversation, discord_thread_id
-                    )
+                    await reactivate_conversation(db, conversation)
                     conversation_id = conversation.id
-                    thread_id = thread.id if thread else None
                 else:
                     # Issue #1296: this message isn't a reply within an
                     # existing Discord thread bound to a Conversation — it's
@@ -974,14 +963,13 @@ async def _persist_inbound_message(
                     # it always starts a brand-new Conversation rather than
                     # silently continuing whatever conversation happens to be
                     # active for this user.
-                    thread = await ensure_conversation_thread(
+                    new_conversation = await ensure_conversation(
                         guild_slug, user_id, content, force_new=True
                     )
-                    thread_id = thread.id if thread else None
-                    conversation_id = thread.conversation_id if thread else None
+                    conversation_id = new_conversation.id if new_conversation else None
         except Exception:
             logger.warning(
-                "discord router: failed to resolve conversation thread guild=%s task=%s",
+                "discord router: failed to resolve conversation guild=%s task=%s",
                 guild_slug,
                 task_id,
                 exc_info=True,
@@ -1012,7 +1000,6 @@ async def _persist_inbound_message(
             createdAt=created_at.isoformat(),
             userId=user_id,
             taskId=task_id,
-            threadId=thread_id,
             conversationId=conversation_id,
             source="discord",
         ),

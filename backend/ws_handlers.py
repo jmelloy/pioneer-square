@@ -33,7 +33,7 @@ from foreman import triggers
 from foreman.github_url_parser import parse_github_urls
 from foreman.proxy import fail_pending_for_websocket, resolve_foreman_api_response
 from foreman.runner import ensure_poll_loop, reset_foreman_poll
-from foreman.thread_service import ensure_conversation_thread
+from foreman.conversation_service import ensure_conversation
 from foreman.tools import maybe_post_plan_comment
 from lock_service import LockService
 from models import Agent, Message, Task, TaskEvent, TaskLog, User, Worker
@@ -536,7 +536,6 @@ async def handle_chat(ctx: WSContext, msg: ChatMsg) -> None:
         )
         return
 
-    thread_id: str | None = None
     conversation_id: int | None = None
     if is_foreman_chat:
         user_id = ctx.ws_user_id
@@ -545,9 +544,8 @@ async def handle_chat(ctx: WSContext, msg: ChatMsg) -> None:
         # A top-level web message starts its own conversation (#1296), same as
         # a top-level Discord message; replying inside an existing conversation
         # goes through POST /conversations/{id}/messages instead (#1297).
-        thread = await ensure_conversation_thread(ctx.guild_id, user_id, content, force_new=True)
-        thread_id = thread.id if thread else None
-        conversation_id = thread.conversation_id if thread else None
+        conversation = await ensure_conversation(ctx.guild_id, user_id, content, force_new=True)
+        conversation_id = conversation.id if conversation else None
 
     ctx.db.add(
         Message(
@@ -571,7 +569,6 @@ async def handle_chat(ctx: WSContext, msg: ChatMsg) -> None:
                 "content": content,
                 "createdAt": created_at.isoformat(),
                 "userId": ctx.ws_user_id if from_agent == "user" else None,
-                "threadId": thread_id,
                 "conversationId": conversation_id,
             }
         ),
@@ -586,15 +583,15 @@ async def handle_chat(ctx: WSContext, msg: ChatMsg) -> None:
         user_id=ctx.ws_user_id,
         conversation_id=conversation_id,
         task_name=f"foreman.chat:{ctx.guild_id}",
-        # thread_id/conversation_id were already resolved (and created if
+        # conversation_id was already resolved (and created if
         # needed) above so they could be stamped onto the Message row — skip
-        # the dispatcher's own ensure_conversation_thread to avoid doing it
+        # the dispatcher's own ensure_conversation to avoid doing it
         # twice, and pin the run to this exact conversation rather than
         # letting run_foreman_ai re-derive "the" conversation for
         # (guild_id, user_id) from scratch (see foreman.triggers.trigger_foreman's
         # docstring on why an explicit conversation_id matters once a user can
         # have more than one open Conversation, issue #1296).
-        skip_thread_ensure=True,
+        skip_conversation_ensure=True,
     )
     reset_foreman_poll(ctx.guild_id)
 
