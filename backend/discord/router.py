@@ -942,31 +942,38 @@ async def _persist_inbound_message(
             return None
 
         try:
-            if task_id:
+            # The Discord thread binding is authoritative and needs no
+            # author: a reply inside a Conversation's own thread belongs to
+            # that Conversation whether the author is a linked human, an
+            # auto-provisioned bot, or (if provisioning failed) nobody.
+            conversation = (
+                await get_conversation_by_discord_thread_id(db, guild_pk, discord_thread_id)
+                if discord_thread_id
+                else None
+            )
+            if conversation is not None:
+                await reactivate_conversation(db, conversation)
+                conversation_id = conversation.id
+            elif task_id:
                 conversation_id = await resolve_conversation_id(
                     db, guild_pk, task_id=task_id, user_id=user_id
                 )
             elif user_id:
-                conversation = (
-                    await get_conversation_by_discord_thread_id(db, guild_pk, discord_thread_id)
-                    if discord_thread_id
-                    else None
+                # Issue #1296: a top-level message (posted directly in a
+                # wired channel/DM, or an @-mention in an unbound channel)
+                # always starts a brand-new Conversation rather than
+                # silently continuing whatever is active for this user.
+                new_conversation = await ensure_conversation(
+                    guild_slug, user_id, content, force_new=True
                 )
-                if conversation is not None:
-                    await reactivate_conversation(db, conversation)
-                    conversation_id = conversation.id
-                else:
-                    # Issue #1296: this message isn't a reply within an
-                    # existing Discord thread bound to a Conversation — it's
-                    # a top-level message (posted directly in a wired
-                    # channel/DM, or an @-mention in an unbound channel) — so
-                    # it always starts a brand-new Conversation rather than
-                    # silently continuing whatever conversation happens to be
-                    # active for this user.
-                    new_conversation = await ensure_conversation(
-                        guild_slug, user_id, content, force_new=True
-                    )
-                    conversation_id = new_conversation.id if new_conversation else None
+                conversation_id = new_conversation.id if new_conversation else None
+            else:
+                logger.warning(
+                    "discord router: message in channel=%s has no conversation binding and "
+                    "no resolved author — persisting without a conversation guild=%s",
+                    discord_thread_id,
+                    guild_slug,
+                )
         except Exception:
             logger.warning(
                 "discord router: failed to resolve conversation guild=%s task=%s",

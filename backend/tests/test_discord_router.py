@@ -245,6 +245,43 @@ async def test_persist_inbound_message_finds_conversation_by_discord_thread_id(c
 
 
 @pytest.mark.asyncio
+async def test_persist_inbound_message_reply_in_bound_thread_without_author(client):
+    """A reply in a Conversation-bound Discord thread is attributed to that
+    Conversation even when the author didn't resolve to a Pioneer Square user
+    (``user_id=None``) — previously such replies were persisted with no
+    ``conversation_id`` and never showed up in the thread."""
+    import database as database_module
+    from auth_deps import get_guild_pk
+    from discord.thread_mirror import _stamp_discord_thread_id
+    from foreman.thread_service import get_or_create_active_thread
+    from models import Message
+    from sqlmodel import col, select
+
+    _test_client, db_url = client
+    insert_guild(db_url, "g-persist-bot")
+    async with database_module.AsyncSessionLocal() as db:
+        guild_pk = await get_guild_pk(db, "g-persist-bot")
+        thread, _ = await get_or_create_active_thread(db, guild_pk, "user-persist-bot")
+    await _stamp_discord_thread_id(thread.id, "discord-thread-persist-bot")
+
+    with patch("discord.thread_mirror.on_thread_updated", new=AsyncMock()):
+        returned = await router._persist_inbound_message(
+            "g-persist-bot",
+            "bot reply",
+            user_id=None,
+            task_id=None,
+            discord_thread_id="discord-thread-persist-bot",
+        )
+
+    async with database_module.AsyncSessionLocal() as db:
+        result = await db.exec(select(Message).where(col(Message.content) == "bot reply"))
+        message = result.first()
+
+    assert message is not None
+    assert message.conversation_id == thread.conversation_id == returned
+
+
+@pytest.mark.asyncio
 async def test_persist_inbound_message_top_level_starts_new_conversation(client):
     """Issue #1296: a top-level message — one that doesn't land in a Discord
     thread already bound to a Conversation — always starts a brand-new
