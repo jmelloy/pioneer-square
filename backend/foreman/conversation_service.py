@@ -309,14 +309,13 @@ async def resolve_conversation_id(
     binding set at task-creation time) over *user_id*'s conversation, creating
     one when only *user_id* is given.
 
-    Commits *db* itself when it creates a new conversation — most callers
-    resolve this from a short-lived, read-only session (see
-    ``foreman.runner._run_foreman_ai``) that gets ``close()``'d, not
-    ``commit()``'d, once history lookups are done; without an explicit
-    commit here, ``get_or_create_conversation``'s flush-only insert would be
-    silently rolled back on close, leaving every row this run stamps with a
-    ``conversation_id`` that was never actually persisted (a dangling FK that
-    fails at the *next* session's commit, not this one — easy to miss).
+    Does **not** commit *db*. When it creates a new conversation the insert
+    is only flushed, so the caller owns the transaction and must
+    ``await db.commit()`` before the session is ``close()``'d — otherwise the
+    row is silently rolled back and every row stamped with the returned
+    ``conversation_id`` becomes a dangling FK that fails at a *later*
+    session's commit. Callers that go on to write and commit in the same
+    session (e.g. creating a ``Task``) get that for free.
     """
     if task_id:
         result = await db.exec(select(col(Task.conversation_id)).where(col(Task.id) == task_id))
@@ -325,7 +324,6 @@ async def resolve_conversation_id(
             return conversation_id
     if user_id:
         conversation = await get_or_create_conversation(db, guild_pk, user_id)
-        await db.commit()
         return conversation.id
     return None
 

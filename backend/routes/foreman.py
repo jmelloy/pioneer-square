@@ -53,6 +53,7 @@ async def get_foreman_context(
     if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")
     conversation_id = await resolve_conversation_id(db, guild_pk, user_id=github_user_id)
+    await db.commit()  # resolve_conversation_id may have created the conversation
     history = await get_foreman_history(guild_id, github_user_id, conversation_id)
     return {
         "system": history["system"],
