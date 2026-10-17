@@ -253,7 +253,7 @@ async def test_persist_inbound_message_reply_in_bound_thread_without_author(clie
     import database as database_module
     from auth_deps import get_guild_pk
     from discord.thread_mirror import _stamp_discord_thread_id
-    from foreman.thread_service import get_or_create_active_thread
+    from foreman.conversation_service import get_or_create_active_conversation
     from models import Message
     from sqlmodel import col, select
 
@@ -261,8 +261,9 @@ async def test_persist_inbound_message_reply_in_bound_thread_without_author(clie
     insert_guild(db_url, "g-persist-bot")
     async with database_module.AsyncSessionLocal() as db:
         guild_pk = await get_guild_pk(db, "g-persist-bot")
-        thread, _ = await get_or_create_active_thread(db, guild_pk, "user-persist-bot")
-    await _stamp_discord_thread_id(thread.id, "discord-thread-persist-bot")
+        conversation, _ = await get_or_create_active_conversation(db, guild_pk, "user-persist-bot")
+        conversation_id = conversation.id
+    await _stamp_discord_thread_id(conversation_id, "discord-thread-persist-bot")
 
     with patch("discord.thread_mirror.on_thread_updated", new=AsyncMock()):
         returned = await router._persist_inbound_message(
@@ -278,7 +279,7 @@ async def test_persist_inbound_message_reply_in_bound_thread_without_author(clie
         message = result.first()
 
     assert message is not None
-    assert message.conversation_id == thread.conversation_id == returned
+    assert message.conversation_id == conversation_id == returned
 
 
 @pytest.mark.asyncio
