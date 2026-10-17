@@ -1058,6 +1058,46 @@ def test_welcome_dm_text_env_override_without_placeholder(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("thread_id", ["conversation-thread", None])
+async def test_notify_foreman_chat_stays_in_its_conversation(client, monkeypatch, thread_id):
+    from auth_deps import get_guild_pk
+    from foreman.conversation_service import get_or_create_active_conversation
+
+    _, db_url = client
+    slug = f"g-chat-scoped-{thread_id}"
+    insert_guild(db_url, slug)
+    async with database_module.AsyncSessionLocal() as db:
+        guild_pk = await get_guild_pk(db, slug)
+        other, _ = await get_or_create_active_conversation(db, guild_pk, "user-1")
+        other.discord_thread_id = f"wrong-conversation-thread-{thread_id}"
+        db.add(other)
+        conversation, _ = await get_or_create_active_conversation(
+            db, guild_pk, "user-1", force_new=True
+        )
+        conversation.discord_thread_id = thread_id
+        db.add(conversation)
+        await db.commit()
+        conversation_id = conversation.id
+
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    post = AsyncMock()
+    with patch.object(discord_notifier, "_post_foreman_chat_line", post):
+        await discord_notifier.notify_foreman_chat(
+            slug,
+            "Scoped answer",
+            conversation_id=conversation_id,
+            user_id="user-1",
+            task_id="t-with-another-thread",
+            channel_id=CHANNEL_ID,
+        )
+
+    if thread_id:
+        post.assert_awaited_once_with(thread_id, "Scoped answer")
+    else:
+        post.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_notify_foreman_chat_no_task_id_posts_directly_to_channel(monkeypatch):
     """With no task_id, notify_foreman_chat posts straight to the main channel."""
     monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)

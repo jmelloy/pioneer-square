@@ -170,7 +170,12 @@ def test_persists_message_and_triggers_foreman(client):
     async def fake_trigger(guild_id_arg, event, message, **kwargs):
         triggered.append((guild_id_arg, event, message, kwargs))
 
-    with patch.object(triggers, "trigger_foreman", new=fake_trigger):
+    with (
+        patch.object(triggers, "trigger_foreman", new=fake_trigger),
+        patch.object(
+            conversations_route.discord_notifier, "notify_foreman_chat", new=AsyncMock()
+        ) as mirror,
+    ):
         resp = test_client.post(
             _url(guild_id, conv_id),
             json={"content": "please continue the task"},
@@ -182,6 +187,9 @@ def test_persists_message_and_triggers_foreman(client):
     assert body["conversationId"] == conv_id
     assert body["content"] == "please continue the task"
     assert body["id"] is not None
+    mirror.assert_awaited_once_with(
+        guild_id, "**User:** please continue the task", conversation_id=conv_id
+    )
 
     with _sync_session(db_url) as session:
         row = session.execute(
