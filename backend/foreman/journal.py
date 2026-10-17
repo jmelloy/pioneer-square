@@ -51,11 +51,10 @@ class ForemanReply:
     guild_id: str
     user_id: str | None
     task_id: str | None
-    thread_id: str | None
     discord_task_id: str | None
     discord_channel_id: str | None
     # Owning Conversation (#1271). Stamped on every Message/ForemanTurn row
-    # this run's journal writes, alongside thread_id — see
+    # this run's journal writes — see
     # foreman.conversation_service for the resolution logic.
     conversation_id: int | None = None
 
@@ -65,14 +64,12 @@ class ForemanReply:
         guild_id: str,
         user_id: str | None,
         task_id: str | None,
-        thread_id: str | None,
         conversation_id: int | None = None,
     ) -> ForemanReply:
         return cls(
             guild_id=guild_id,
             user_id=user_id,
             task_id=task_id,
-            thread_id=thread_id,
             discord_task_id=task_id,
             discord_channel_id=None,
             conversation_id=conversation_id,
@@ -84,14 +81,12 @@ class ForemanReply:
         guild_id: str,
         user_id: str | None,
         channel_id: str | None,
-        thread_id: str | None,
         conversation_id: int | None = None,
     ) -> ForemanReply:
         return cls(
             guild_id=guild_id,
             user_id=user_id,
             task_id=None,
-            thread_id=thread_id,
             discord_task_id=None,
             discord_channel_id=channel_id,
             conversation_id=conversation_id,
@@ -206,7 +201,6 @@ class TurnJournal:
                 content=content,
                 createdAt=now.isoformat(),
                 taskId=self._reply.task_id,
-                threadId=self._reply.thread_id,
                 conversationId=self._reply.conversation_id,
             ),
         )
@@ -243,7 +237,6 @@ class TurnJournal:
                 toolId=tool_use.id,
                 createdAt=now.isoformat(),
                 taskId=self._reply.task_id,
-                threadId=self._reply.thread_id,
                 conversationId=self._reply.conversation_id,
             ),
         )
@@ -273,7 +266,6 @@ class TurnJournal:
                 isError=is_error,
                 createdAt=now.isoformat(),
                 taskId=self._reply.task_id,
-                threadId=self._reply.thread_id,
                 conversationId=self._reply.conversation_id,
             ),
         )

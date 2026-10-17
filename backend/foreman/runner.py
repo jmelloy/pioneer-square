@@ -46,7 +46,6 @@ from foreman.prompt import (
 )
 from foreman.proxy import call_foreman_api_proxy, has_foreman_proxy
 from foreman.run import ForemanRun, RealToolExecutor, RunConfig
-from foreman.thread_service import resolve_thread_id
 from models import (
     Agent,
     ApiRequestLog,
@@ -1062,12 +1061,11 @@ async def _poll_loop_once(guild_id: str, interval: float) -> float:
     # shows indefinitely-stale status just because its tasks finished.
     await _refresh_stale_github_links(guild_id)
 
-    # Thread-per-conversation health sweep (#1160/#1163): auto-archive
-    # idle threads, auto-close idle-archived threads, and unlink dead
-    # threads from non-terminal tasks. Best effort — never raises.
-    from foreman.thread_maintenance import sweep_threads
+    # Conversation health sweep (#1160/#1163): auto-archive idle
+    # conversations and auto-close idle-archived ones. Best effort — never raises.
+    from foreman.conversation_maintenance import sweep_conversations
 
-    await sweep_threads(guild_id)
+    await sweep_conversations(guild_id)
 
     if active_tasks:
         task_summary = "; ".join(f"{t['id']} ({t['state']})" for t in active_tasks)
@@ -1446,7 +1444,6 @@ async def _notify_queued_turn_failure(
                 guild_id=turn.guild_id,
                 user_id=turn.user_id,
                 task_id=turn.task_id,
-                thread_id=None,
                 discord_task_id=turn.task_id,
                 discord_channel_id=turn.reply_channel_id,
                 conversation_id=conversation_id,
@@ -1551,19 +1548,9 @@ async def _run_foreman_ai(
             for r in task_result.all()
         ]
 
-        # Foreman-owned conversation thread (#1167) this run's messages belong
-        # to — resolved early and reused for every Message/ForemanTurn row and
-        # ChatMsg broadcast this run makes. Prefers *task_id*'s thread when one
-        # is present (issue #1200: the referenced task's conversation is the
-        # context), else falls back to the user's current active thread.
-        # Read-only: never creates a thread — see ``resolve_thread_id``.
-        thread_id: str | None = await resolve_thread_id(
-            db, guild_pk_val, task_id=task_id, user_id=user_id, conversation_id=conversation_id
-        )
         # Owning Conversation (#1271) for every Message/ForemanTurn row this
-        # run writes — resolved the same way as thread_id above (task_id's
-        # conversation takes precedence, else the user's), but additive:
-        # Conversation is written alongside Thread, never replacing it here.
+        # run writes — task_id's conversation takes precedence (issue #1200:
+        # the referenced task's conversation is the context), else the user's.
         if conversation_id is None:
             conversation_id = await resolve_conversation_id(
                 db, guild_pk_val, task_id=task_id, user_id=user_id
@@ -1663,7 +1650,6 @@ async def _run_foreman_ai(
                     guild_id=guild_id,
                     user_id=user_id,
                     task_id=task_id,
-                    thread_id=thread_id,
                     discord_task_id=task_id,
                     discord_channel_id=reply_channel_id,
                     conversation_id=conversation_id,

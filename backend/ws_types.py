@@ -100,15 +100,8 @@ class ChatMsg(_WS):
     # Foreman context). None when the run isn't about any particular task.
     # The frontend badges these so it's clear which task a line concerns.
     taskId: str | None = None
-    # Foreman-owned conversation thread (#1167) this message belongs to, when
-    # resolvable — lets the frontend route a live message into the right
-    # thread pane in addition to the guild-wide comms pane. None for messages
-    # sent before any thread exists yet, or not scoped to a conversation.
-    threadId: str | None = None
-    # The Conversation (#1298) this message belongs to — same resolution as
-    # threadId (both come from the same ForemanReply), but keyed by the
-    # stable Conversation id rather than its current Thread's id so the
-    # Conversations UI can filter live messages without depending on Thread.
+    # The Conversation (#1298) this message belongs to, so the Conversations
+    # UI can filter live messages. None for messages not scoped to one.
     conversationId: int | None = None
 
 
@@ -147,9 +140,6 @@ class TaskAssignedMsg(_WS):
     prUrl: str | None = None
     headSha: str | None = None
     repos: list[str] | None = None
-    # Conversation thread this task was created from (#1167). None for tasks
-    # not tied to a Foreman-owned thread (issue pickups, webhook-triggered work).
-    threadId: str | None = None
 
 
 class TaskCreatedMsg(_WS):
@@ -161,9 +151,6 @@ class TaskCreatedMsg(_WS):
     taskType: str | None = None
     state: str
     createdAt: str
-    # Conversation thread this task was created from (#1167). None for tasks
-    # not tied to a Foreman-owned thread (issue pickups, webhook-triggered work).
-    threadId: str | None = None
 
 
 class TaskUpdateMsg(_WS):
@@ -375,40 +362,11 @@ class GuildUpdatedMsg(_WS):
     version: str | None = None
 
 
-class ThreadCreatedMsg(_WS):
-    """A Foreman-owned conversation thread was created (#1167).
-
-    Broadcast the first time the Foreman handles a message for a
-    conversation with no active thread yet — thread creation is always a
-    side effect of the Foreman handling a message, never something a
-    downstream mirror (Discord, frontend) originates itself.
-    """
-
-    type: Literal["thread-created"] = "thread-created"
-    threadId: str
-    conversationId: int
-    userId: str | None = None
-    name: str | None = None
-    status: str
-    createdAt: str
-
-
-class ThreadUpdatedMsg(_WS):
-    """A thread's lifecycle state changed — patch-style, like ``TaskUpdateMsg``."""
-
-    type: Literal["thread-updated"] = "thread-updated"
-    threadId: str
-    status: str | None = None
-    discordThreadId: str | None = None
-    deletedAt: str | None = None
-
-
 class ConversationCreatedMsg(_WS):
     """A :class:`models.Conversation` was created (#1298 — Conversations UI/API surface).
 
     Broadcast by ``foreman.conversation_service.create_conversation``, the
-    sole Conversation-creation path, mirroring how ``ThreadCreatedMsg`` is
-    broadcast the moment a Thread is created.
+    sole Conversation-creation path.
     """
 
     type: Literal["conversation-created"] = "conversation-created"
@@ -563,8 +521,6 @@ OutboundWSMessage = Annotated[
     | GuildUpdatedMsg
     | GithubEventMsg
     | ClaudeUsageMsg
-    | ThreadCreatedMsg
-    | ThreadUpdatedMsg
     | ConversationCreatedMsg
     | ConversationUpdatedMsg
     | OfferMsg

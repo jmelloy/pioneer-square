@@ -1,8 +1,7 @@
 """Tests for routes/conversations.py — Conversation rename/close (#1278).
 
 Covered directly rather than through the HTTP layer — the auth/HTTP wiring
-is exercised elsewhere (see ``test_threads_routes_conversation_sync.py`` for
-the equivalent Thread-scoped precedent); this focuses on the route handlers'
+is exercised elsewhere; this focuses on the route handlers'
 Conversation<->Discord mirroring side effect.
 """
 
@@ -25,10 +24,9 @@ import database as database_module
 from _test_config import TEST_DATABASE_URL
 from auth_deps import get_guild_pk
 from foreman import triggers
-from foreman.conversation_service import close_conversation
-from foreman.thread_service import get_or_create_active_thread
+from foreman.conversation_service import close_conversation, get_or_create_active_conversation
 from helpers import create_db, insert_conversation, insert_guild, truncate_all
-from models import Conversation, Thread
+from models import Conversation
 from routes.conversations import (
     ConversationMessageCreate,
     ConversationRename,
@@ -69,11 +67,11 @@ class TestRenameConversationRoute:
         guild_pk = await _guild_pk("g-conv-rename")
 
         async with database_module.AsyncSessionLocal() as db:
-            thread, _ = await get_or_create_active_thread(db, guild_pk, "user-1")
+            conv, _ = await get_or_create_active_conversation(db, guild_pk, "user-1")
 
         from discord.thread_mirror import _stamp_discord_thread_id
 
-        await _stamp_discord_thread_id(thread.id, "discord-thread-route-rn")
+        await _stamp_discord_thread_id(conv.id, "discord-thread-route-rn")
 
         with patch(
             "discord.thread_mirror.rename_conversation_thread", new_callable=AsyncMock
@@ -81,7 +79,7 @@ class TestRenameConversationRoute:
             async with database_module.AsyncSessionLocal() as db:
                 out = await rename_conversation_route(
                     "g-conv-rename",
-                    thread.conversation_id,
+                    conv.id,
                     ConversationRename(name="Renamed"),
                     "user-1",
                     db,
@@ -102,31 +100,25 @@ class TestRenameConversationRoute:
 
 
 class TestCloseConversationRoute:
-    async def test_closes_conversation_and_thread(self, db_session):
+    async def test_closes_conversation(self, db_session):
         insert_guild(db_session, "g-conv-close")
         guild_pk = await _guild_pk("g-conv-close")
 
         async with database_module.AsyncSessionLocal() as db:
-            thread, _ = await get_or_create_active_thread(db, guild_pk, "user-1")
+            conv, _ = await get_or_create_active_conversation(db, guild_pk, "user-1")
 
         from discord.thread_mirror import _stamp_discord_thread_id
 
-        await _stamp_discord_thread_id(thread.id, "discord-thread-route-cc")
+        await _stamp_discord_thread_id(conv.id, "discord-thread-route-cc")
 
         with patch(
             "discord.thread_mirror.archive_conversation_thread_by_id", new_callable=AsyncMock
         ) as mock_archive:
             async with database_module.AsyncSessionLocal() as db:
-                out = await close_conversation_route(
-                    "g-conv-close", thread.conversation_id, "user-1", db
-                )
+                out = await close_conversation_route("g-conv-close", conv.id, "user-1", db)
 
         assert out.status == "closed"
         mock_archive.assert_called_once_with("discord-thread-route-cc")
-
-        async with database_module.AsyncSessionLocal() as db:
-            refreshed_thread = await db.get(Thread, thread.id)
-        assert refreshed_thread.status == "closed"
 
 
 class TestGetConversationRoute:
@@ -135,12 +127,12 @@ class TestGetConversationRoute:
         guild_pk = await _guild_pk("g-conv-get")
 
         async with database_module.AsyncSessionLocal() as db:
-            thread, _ = await get_or_create_active_thread(db, guild_pk, "user-1")
+            conv, _ = await get_or_create_active_conversation(db, guild_pk, "user-1")
 
         async with database_module.AsyncSessionLocal() as db:
-            out = await get_conversation("g-conv-get", thread.conversation_id, "user-1", db)
+            out = await get_conversation("g-conv-get", conv.id, "user-1", db)
 
-        assert out.id == thread.conversation_id
+        assert out.id == conv.id
         assert out.status == "active"
 
 

@@ -22,7 +22,7 @@ the reverse). ``foreman/runner.py``'s own periodic-check trigger (inside
 ``_poll_loop``) calls ``run_foreman_ai`` directly instead of going through
 ``trigger_foreman`` for this reason — periodic-check is never a
 human-originated event (see ``foreman.classify.is_human_event``), so it never
-needs the thread-ensure side effect ``trigger_foreman`` provides, and
+needs the conversation-ensure side effect ``trigger_foreman`` provides, and
 importing this module back into ``foreman.runner`` would recreate the very
 cycle this module exists to break.
 """
@@ -30,8 +30,8 @@ cycle this module exists to break.
 from __future__ import annotations
 
 from foreman.classify import is_human_event
+from foreman.conversation_service import ensure_conversation
 from foreman.runner import run_foreman_ai
-from foreman.thread_service import ensure_conversation_thread
 from util.tasks import spawn
 
 # ---------------------------------------------------------------------------
@@ -49,7 +49,7 @@ async def trigger_foreman(
     conversation_id: int | None = None,
     task_name: str = "foreman.unknown",
     reply_channel_id: str | None = None,
-    skip_thread_ensure: bool = False,
+    skip_conversation_ensure: bool = False,
 ) -> None:
     """Dispatch a trigger into the embedded Foreman runner.
 
@@ -61,17 +61,17 @@ async def trigger_foreman(
     @-mention lands back where it was asked. None (every other caller) keeps
     the default routing in ``discord_notifier.notify_foreman_chat``.
 
-    ``skip_thread_ensure`` lets a caller that already resolved/created the
-    conversation thread for this message skip the redundant
-    ``ensure_conversation_thread`` round-trip below — ``ws_handlers.handle_chat``
-    does this, since it already ensures the thread (and stamps
-    ``Message.thread_id``) before this dispatcher ever runs.
+    ``skip_conversation_ensure`` lets a caller that already resolved/created the
+    conversation for this message skip the redundant
+    ``ensure_conversation`` round-trip below — ``ws_handlers.handle_chat``
+    does this, since it already ensures the conversation (and stamps
+    ``Message.conversation_id``) before this dispatcher ever runs.
 
     ``conversation_id`` pins the run to a specific, already-known
     :class:`Conversation` (#1297's conversation-scoped message endpoint,
     where the caller resolved the conversation from the URL, not from
-    ``(guild_id, user_id)``). It implies ``skip_thread_ensure`` — the
-    caller's conversation already exists, so ``ensure_conversation_thread``'s
+    ``(guild_id, user_id)``). It implies ``skip_conversation_ensure`` — the
+    caller's conversation already exists, so ``ensure_conversation``'s
     get-or-create-by-user lookup would be redundant at best and could
     resolve a *different* conversation for a user with more than one
     (#1296) at worst.
@@ -80,21 +80,21 @@ async def trigger_foreman(
     # with routes.tasks.create_task_followup's REST follow-up path.
     is_human = is_human_event(event)
 
-    # Foreman-owned thread lifecycle (#1167): a brand-new human message with
+    # Foreman-owned conversation lifecycle (#1167): a brand-new human message with
     # no task_id yet is the start (or continuation) of a conversation — the
-    # Foreman creates/reuses that conversation's Thread here, as a side
+    # Foreman creates/reuses that conversation here, as a side
     # effect of handling the message, never something Discord or the
     # frontend originates. Worker-driven events (task-complete, etc.) already
-    # carry an existing task_id whose Thread was stamped at task-creation
+    # carry an existing task_id whose conversation was stamped at task-creation
     # time (see foreman.tools' create_task/assign_task), so nothing to do here.
     if (
         is_human
         and task_id is None
         and conversation_id is None
         and user_id
-        and not skip_thread_ensure
+        and not skip_conversation_ensure
     ):
-        await ensure_conversation_thread(guild_id, user_id, human_message)
+        await ensure_conversation(guild_id, user_id, human_message)
 
     spawn(
         run_foreman_ai(

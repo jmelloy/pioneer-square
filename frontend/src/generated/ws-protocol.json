@@ -10,7 +10,6 @@
       "role",
       "source",
       "taskId",
-      "threadId",
       "to",
       "toolId",
       "toolInput",
@@ -103,7 +102,6 @@
       "role",
       "source",
       "taskId",
-      "threadId",
       "to",
       "toolId",
       "toolInput",
@@ -159,7 +157,6 @@
       "targetAgentId",
       "taskId",
       "taskType",
-      "threadId",
       "tool",
       "workerId"
     ],
@@ -183,8 +180,7 @@
       "phase",
       "state",
       "taskId",
-      "taskType",
-      "threadId"
+      "taskType"
     ],
     "task-finalize": ["taskId", "workerId"],
     "task-followup": [
@@ -230,8 +226,6 @@
       "worktreePath"
     ],
     "terminal-output": ["agentId", "detail", "level", "line", "taskId", "timestamp", "workerId"],
-    "thread-created": ["conversationId", "createdAt", "name", "status", "threadId", "userId"],
-    "thread-updated": ["deletedAt", "discordThreadId", "status", "threadId"],
     "worker-message": ["message", "taskId", "workerId"],
     "worker-outdated": ["reason", "workerId"],
     "worker-ping": ["from", "timestamp", "workerId"],
