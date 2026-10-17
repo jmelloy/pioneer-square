@@ -25,7 +25,7 @@ from helpers import (  # noqa: E402
     insert_member,
     make_auth_token,
 )
-from models import Message  # noqa: E402
+from models import Conversation, Message  # noqa: E402
 from routes import conversations as conversations_route  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 from sqlmodel import col  # noqa: E402
@@ -293,3 +293,52 @@ def test_broadcasts_to_websocket(client):
     assert data["from"] == "user"
     assert data["to"] == "foreman"
     assert data["userId"] == "gh-user-test"
+
+
+# ---------------------------------------------------------------------------
+# Reactivation (audit B1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("status", ["archived", "closed"])
+def test_post_reactivates_inactive_conversation(client, status):
+    test_client, db_url = client
+    guild_id = f"g-cm-react-{status}"
+    insert_guild(db_url, guild_id)
+    conv_id = insert_conversation(db_url, guild_id, user_id="gh-user-test")
+    with _sync_session(db_url) as session:
+        conv = session.get(Conversation, conv_id)
+        conv.status = status
+        session.add(conv)
+        session.commit()
+    token = make_auth_token(db_url)
+
+    with patch.object(triggers, "trigger_foreman", new=AsyncMock()):
+        resp = test_client.post(
+            _url(guild_id, conv_id),
+            json={"content": "back again"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert resp.status_code == 200
+    with _sync_session(db_url) as session:
+        assert session.get(Conversation, conv_id).status == "active"
+
+
+def test_post_leaves_active_conversation_active(client):
+    test_client, db_url = client
+    guild_id = "g-cm-react-active"
+    insert_guild(db_url, guild_id)
+    conv_id = insert_conversation(db_url, guild_id, user_id="gh-user-test")
+    token = make_auth_token(db_url)
+
+    with patch.object(triggers, "trigger_foreman", new=AsyncMock()):
+        resp = test_client.post(
+            _url(guild_id, conv_id),
+            json={"content": "hello"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert resp.status_code == 200
+    with _sync_session(db_url) as session:
+        assert session.get(Conversation, conv_id).status == "active"

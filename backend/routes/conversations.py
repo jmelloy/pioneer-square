@@ -23,7 +23,12 @@ from database import get_db_dep
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException
 from foreman import triggers
-from foreman.conversation_service import close_conversation, rename_conversation, touch_conversation
+from foreman.conversation_service import (
+    close_conversation,
+    reactivate_conversation,
+    rename_conversation,
+    touch_conversation,
+)
 from foreman.runner import reset_foreman_poll
 from models import THREAD_STATUSES, Conversation, Message
 from pydantic import BaseModel
@@ -205,7 +210,11 @@ async def post_conversation_message(
     await db.commit()
     await db.refresh(message)
 
-    await touch_conversation(db, conversation)
+    # A new message revives an archived/closed conversation (also bumps updated_at).
+    if conversation.status != "active":
+        await reactivate_conversation(db, conversation)
+    else:
+        await touch_conversation(db, conversation)
 
     await broadcast_msg(
         guild_id,
