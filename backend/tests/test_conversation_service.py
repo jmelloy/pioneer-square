@@ -122,6 +122,7 @@ class TestResolveConversationId:
             resolved = await resolve_conversation_id(
                 db, guild_pk, task_id="t-rc4", user_id="user-1"
             )
+            await db.commit()
 
         async with database_module.AsyncSessionLocal() as db:
             expected = await get_or_create_conversation(db, guild_pk, "user-1")

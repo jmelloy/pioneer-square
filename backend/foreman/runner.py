@@ -1434,6 +1434,7 @@ async def _notify_queued_turn_failure(
                 conversation_id = await resolve_conversation_id(
                     db, guild_pk_val, task_id=turn.task_id, user_id=turn.user_id
                 )
+                await db.commit()
         finally:
             await db.close()
         journal = TurnJournal(
@@ -1555,6 +1556,9 @@ async def _run_foreman_ai(
             conversation_id = await resolve_conversation_id(
                 db, guild_pk_val, task_id=task_id, user_id=user_id
             )
+            # Persist a newly created conversation before this read-only
+            # session is closed (otherwise it is rolled back).
+            await db.commit()
         # Everything else this conversation owns — its tasks and GitHub
         # events — so the run sees the whole work item, not just its turns.
         conversation_block = await _load_conversation_context(db, conversation_id)
