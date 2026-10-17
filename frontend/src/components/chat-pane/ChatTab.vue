@@ -91,7 +91,7 @@ const guildStore = useGuildStore()
 const inputText = ref('')
 const messagesEl = ref<HTMLElement | null>(null)
 
-const messages = computed(() => guildStore.messages)
+const messages = computed(() => guildStore.messages.filter((msg) => msg.conversationId == null))
 const groupedMessages = useChatGrouping(messages)
 
 function msgSender(msg: ChatMessage): string {

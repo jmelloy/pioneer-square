@@ -41,11 +41,10 @@ from ws_types import ChatMsg
 class ForemanReply:
     """Resolved destination for one ForemanRun's narration.
 
-    ``discord_task_id`` routes the Discord mirror to that task's thread
-    (``None`` skips the task-thread mirror). ``discord_channel_id`` pins the
-    mirror to one channel outright, overriding the task-thread lookup — set
-    only for a run triggered by an @-mention, so the answer goes back to the
-    channel or DM the mention came from (see ``discord_notifier.notify_foreman_chat``).
+    ``conversation_id`` pins the Discord mirror to that conversation's thread.
+    For unscoped runs, ``discord_task_id`` routes to the task's thread and
+    ``discord_channel_id`` overrides that lookup for an @-mention reply
+    (see ``discord_notifier.notify_foreman_chat``).
     """
 
     guild_id: str
@@ -211,6 +210,7 @@ class TurnJournal:
                 task_id=self._reply.discord_task_id,
                 channel_id=self._reply.discord_channel_id,
                 user_id=self._reply.user_id,
+                conversation_id=self._reply.conversation_id,
             ),
             name=f"discord.foreman-chat:{self._guild_id}",
         )

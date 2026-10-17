@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import sys
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -124,6 +125,34 @@ async def _fetch_turns(guild_pk: int) -> list[ForemanTurn]:
         return list(result.all())
     finally:
         await db.close()
+
+
+async def test_text_passes_its_exact_conversation_to_discord(monkeypatch):
+    import discord_notifier
+
+    mirror = AsyncMock()
+    monkeypatch.setattr(discord_notifier, "notify_foreman_chat", mirror)
+    journal = TurnJournal(
+        guild_id="g-scoped-journal",
+        guild_pk=1,
+        user_id="u-1",
+        reply=ForemanReply.for_task("g-scoped-journal", "u-1", "t-1", conversation_id=42),
+        events=_RecordingEvents(),
+        scheduler=_InlineScheduler(),
+        clock=SystemClock(),
+    )
+    monkeypatch.setattr(journal, "_add_message", AsyncMock())
+
+    await journal.text("Scoped answer")
+
+    mirror.assert_called_once_with(
+        "g-scoped-journal",
+        "Scoped answer",
+        task_id="t-1",
+        channel_id=None,
+        user_id="u-1",
+        conversation_id=42,
+    )
 
 
 async def test_text_does_one_broadcast_and_one_message_insert(db_session):

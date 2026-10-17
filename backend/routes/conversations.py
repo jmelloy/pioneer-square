@@ -18,6 +18,7 @@ import time
 from collections import defaultdict
 from datetime import UTC, datetime
 
+import discord_notifier
 from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
 from events import broadcast_msg
@@ -230,6 +231,9 @@ async def post_conversation_message(
         ),
     )
 
+    await discord_notifier.notify_foreman_chat(
+        guild_id, f"**User:** {content}", conversation_id=conversation.id
+    )
     await triggers.trigger_foreman(
         guild_id,
         "conversation-message",

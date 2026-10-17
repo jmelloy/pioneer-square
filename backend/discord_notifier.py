@@ -770,10 +770,15 @@ async def notify_foreman_chat(
     task_id: str | None = None,
     channel_id: str | None = None,
     user_id: str | None = None,
+    conversation_id: int | None = None,
 ) -> None:
     """Mirror a Foreman → user chat line into Discord.
 
-    When *channel_id* is given it wins outright: the line goes there and
+    An explicit *conversation_id* routes only to that conversation's Discord
+    thread, never another conversation or the main channel. If its mirror is
+    unavailable, skip delivery rather than leaking the message elsewhere.
+
+    Otherwise, when *channel_id* is given it wins outright: the line goes there and
     nothing else is consulted. That is the @-mention reply path (see
     ``discord/router.py``), where the answer belongs in the channel or DM the
     mention arrived in — which may not be wired to *guild_id* at all, so the
@@ -807,6 +812,14 @@ async def notify_foreman_chat(
     if not bot_token():
         return
 
+    if conversation_id is not None:
+        thread_id = await _lookup_foreman_thread_for_user(
+            guild_id, user_id, conversation_id=conversation_id
+        )
+        if thread_id:
+            await _post_foreman_chat_line(thread_id, content)
+        return
+
     if channel_id:
         await _post_foreman_chat_line(channel_id, content)
         return
@@ -836,8 +849,12 @@ async def notify_foreman_chat(
     await _post_foreman_chat_line(channel, content)
 
 
-async def _lookup_foreman_thread_for_user(guild_slug: str, user_id: str) -> str | None:
-    """Return the Discord thread ID from the Foreman's active Thread for this user.
+async def _lookup_foreman_thread_for_user(
+    guild_slug: str, user_id: str | None, *, conversation_id: int | None = None
+) -> str | None:
+    """Return the exact conversation's Discord thread, or the user's active one.
+
+    An explicit conversation binding takes precedence over user/status heuristics.
 
     Queries the Foreman's Conversation model (#1167/#1168/#1274) to find
     the current active thread's ``discord_thread_id`` — set by
@@ -857,8 +874,12 @@ async def _lookup_foreman_thread_for_user(guild_slug: str, user_id: str) -> str 
                 .join(Guild, col(Guild.id) == col(Conversation.guild_id))
                 .where(
                     col(Guild.slug) == guild_slug,
-                    col(Conversation.user_id) == user_id,
-                    col(Conversation.status) == "active",
+                    col(Conversation.id) == conversation_id
+                    if conversation_id is not None
+                    else (
+                        (col(Conversation.user_id) == user_id)
+                        & (col(Conversation.status) == "active")
+                    ),
                     col(Conversation.discord_thread_id).is_not(None),
                 )
             )

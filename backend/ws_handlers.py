@@ -576,6 +576,10 @@ async def handle_chat(ctx: WSContext, msg: ChatMsg) -> None:
     if not is_foreman_chat:
         return
 
+    if conversation_id is not None:
+        await discord_notifier.notify_foreman_chat(
+            ctx.guild_id, f"**User:** {content}", conversation_id=conversation_id
+        )
     await triggers.trigger_foreman(
         ctx.guild_id,
         "chat",

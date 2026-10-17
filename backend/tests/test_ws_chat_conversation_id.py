@@ -77,7 +77,10 @@ def test_chat_broadcast_carries_conversation_id(client):
     insert_guild(db_url, guild_id)
     token = make_auth_token(db_url)
 
-    with patch.object(triggers, "trigger_foreman", new=AsyncMock()):
+    with (
+        patch.object(triggers, "trigger_foreman", new=AsyncMock()),
+        patch("discord_notifier.notify_foreman_chat", new=AsyncMock()) as mirror,
+    ):
         with test_client.websocket_connect(f"/ws/{guild_id}?token={token}") as ws:
             ws.send_json(
                 {"type": "chat", "from": "user", "to": "foreman", "content": "hello there"}
@@ -90,6 +93,9 @@ def test_chat_broadcast_carries_conversation_id(client):
                 raise AssertionError("never saw the human chat echo")
 
     assert frame["conversationId"] is not None
+    mirror.assert_awaited_once_with(
+        guild_id, "**User:** hello there", conversation_id=frame["conversationId"]
+    )
 
 
 def test_first_ai_response_appears_when_fetching_the_conversation(client, monkeypatch):
