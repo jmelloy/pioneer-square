@@ -1558,7 +1558,7 @@ async def _run_foreman_ai(
         # context), else falls back to the user's current active thread.
         # Read-only: never creates a thread — see ``resolve_thread_id``.
         thread_id: str | None = await resolve_thread_id(
-            db, guild_pk_val, task_id=task_id, user_id=user_id
+            db, guild_pk_val, task_id=task_id, user_id=user_id, conversation_id=conversation_id
         )
         # Owning Conversation (#1271) for every Message/ForemanTurn row this
         # run writes — resolved the same way as thread_id above (task_id's

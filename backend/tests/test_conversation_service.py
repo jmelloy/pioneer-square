@@ -34,7 +34,7 @@ from foreman.conversation_service import (
     resolve_conversation_id,
     touch_conversation,
 )
-from foreman.thread_service import get_or_create_active_thread
+from foreman.thread_service import get_or_create_active_thread, resolve_thread_id
 from helpers import create_db, insert_guild, insert_task, truncate_all
 from models import Task, Thread
 from sqlalchemy import update
@@ -409,3 +409,27 @@ class TestCloseConversation:
         assert payload["type"] == "conversation-updated"
         assert payload["conversationId"] == conversation.id
         assert payload["status"] == "closed"
+
+
+class TestResolveThreadIdPinnedConversation:
+    async def test_pinned_conversation_wins_over_latest_user_thread(self, db_session):
+        """A run pinned to a new conversation must stamp that conversation's
+        thread, not the user's most recently updated one."""
+        insert_guild(db_session, "g-rt1")
+        guild_pk = await _guild_pk("g-rt1")
+
+        async with database_module.AsyncSessionLocal() as db:
+            first, _ = await get_or_create_active_thread(db, guild_pk, "u1", name_hint="a")
+            second, _ = await get_or_create_active_thread(
+                db, guild_pk, "u1", name_hint="b", force_new=True
+            )
+            await db.commit()
+            first_id, first_conv, second_id = first.id, first.conversation_id, second.id
+            assert first_conv != second.conversation_id
+
+        async with database_module.AsyncSessionLocal() as db:
+            resolved = await resolve_thread_id(
+                db, guild_pk, user_id="u1", conversation_id=first_conv
+            )
+        assert resolved == first_id
+        assert resolved != second_id

@@ -202,7 +202,12 @@ async def sync_conversation_after_thread_update(
 
 
 async def resolve_thread_id(
-    db: AsyncSession, guild_pk: int, *, task_id: str | None = None, user_id: str | None = None
+    db: AsyncSession,
+    guild_pk: int,
+    *,
+    task_id: str | None = None,
+    user_id: str | None = None,
+    conversation_id: int | None = None,
 ) -> str | None:
     """Best-effort, read-only lookup of the Thread a new message belongs to.
 
@@ -221,6 +226,13 @@ async def resolve_thread_id(
         thread_id = result.first()
         if thread_id:
             return thread_id
+    if conversation_id is not None:
+        # A pinned conversation (new web conversation, #1296/#1297) owns its
+        # thread; falling through to "the user's latest thread" would stamp
+        # replies with a different conversation's thread.
+        pinned = await _active_thread_for_conversation(db, conversation_id)
+        if pinned:
+            return pinned.id
     if user_id:
         result = await db.exec(
             select(col(Thread.id))
