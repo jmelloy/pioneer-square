@@ -10,10 +10,10 @@ describe('ChatTab conversation isolation', () => {
   it('only renders unscoped messages while retaining conversation messages in the store', async () => {
     const guild = useGuildStore()
     guild.messages = [
-      { from: 'system', content: 'Guild announcement' },
-      { from: 'user', content: 'Conversation question', conversationId: 42 },
-      { from: 'foreman', content: 'Conversation answer', conversationId: 42 },
-      { from: 'foreman', content: 'Another conversation', conversationId: 43 },
+      { type: 'chat', from: 'system', content: 'Guild announcement' },
+      { type: 'chat', from: 'user', content: 'Conversation question', conversationId: 42 },
+      { type: 'chat', from: 'foreman', content: 'Conversation answer', conversationId: 42 },
+      { type: 'chat', from: 'foreman', content: 'Another conversation', conversationId: 43 },
     ]
     const wrapper = mount(ChatTab)
     expect(wrapper.text()).toContain('Guild announcement')
@@ -22,7 +22,12 @@ describe('ChatTab conversation isolation', () => {
     expect(wrapper.text()).not.toContain('Another conversation')
     expect(guild.messages).toHaveLength(4)
 
-    guild.messages.push({ from: 'foreman', content: 'Live reply', conversationId: 42 })
+    guild.messages.push({
+      type: 'chat',
+      from: 'foreman',
+      content: 'Live reply',
+      conversationId: 42,
+    })
     await wrapper.vm.$nextTick()
     expect(wrapper.text()).not.toContain('Live reply')
     wrapper.unmount()

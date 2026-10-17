@@ -236,7 +236,9 @@ def _build_journal(monkeypatch, *, task_id, discord_task_id, discord_channel_id=
 
     discord_calls: list = []
 
-    async def fake_notify(guild_id, content, task_id=None, channel_id=None, user_id=None):
+    async def fake_notify(
+        guild_id, content, task_id=None, channel_id=None, user_id=None, conversation_id=None
+    ):
         discord_calls.append((content, task_id))
 
     async def fake_get_db():
