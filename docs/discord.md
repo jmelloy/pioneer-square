@@ -174,22 +174,21 @@ Ad-hoc Foreman chat — not scoped to any task — gets its own Discord thread p
 `Conversation` instead of cluttering the main channel, keeping each conversation isolated the
 same way a PR/issue or task-stream thread does. Conversation-first (issue #1288): Discord never
 creates or owns this thread itself — it mirrors the Foreman's own conversation lifecycle
-(`foreman.thread_service`/`foreman.conversation_service`).
+(`foreman.conversation_service`).
 
-- **Lazy creation** — the first time the Foreman creates a thread for a conversation
-  (`foreman.thread_service.ensure_conversation_thread`), `discord/thread_mirror.on_thread_created`
+- **Lazy creation** — the first time the Foreman creates a conversation
+  (`foreman.conversation_service.ensure_conversation`), `discord/thread_mirror.on_conversation_created`
   mirrors it: posts a starter message in the resolved channel, then creates a thread named from
   that reply's content (truncated to 100 chars, prefixed `💬`).
 - **Persistence** — the binding lives on `Conversation.discord_thread_id` (unique), the source of
-  truth for a conversation's Discord thread; a `discord_thread_bindings` row (subject
-  `"conversation"`) is also kept as a routing fallback for a thread a newer one has since
-  superseded.
+  truth for a conversation's Discord thread. Legacy `discord_thread_bindings` rows (subject
+  `"conversation"`) are only read as a routing fallback; new conversations don't write one.
 - **Reuse & routing** — every later reply in that conversation reuses the same thread
   (`discord_notifier.notify_foreman_chat` reads `Conversation.discord_thread_id` directly), and a
   reply typed *in* the thread routes back to that same Foreman conversation (`discord/router.py`,
   resolved straight from `Conversation.discord_thread_id`) — exactly like an issue or task-stream
   thread, minus the lookup table.
-- **Auto-archive** — the Foreman's own idle sweep (`foreman/thread_maintenance.py`) archives a
+- **Auto-archive** — the Foreman's own idle sweep (`foreman/conversation_maintenance.py`) archives a
   quiet conversation's thread; Discord's own inactivity timer is a backstop, not the primary path.
 - **Explicit cleanup** — clearing a user's Foreman history (`POST
   /guilds/{guild_id}/foreman/clear-context`) closes their active `Conversation`

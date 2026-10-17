@@ -95,7 +95,7 @@ async def _run_one_poll_cycle(guild_id: str, spawned: list) -> float:
     with (
         patch("foreman.runner.spawn", side_effect=_fake_spawn),
         patch("util.models_dev.refresh_model_catalog_if_stale", AsyncMock(return_value=False)),
-        patch("foreman.thread_maintenance.sweep_threads", AsyncMock(return_value={})),
+        patch("foreman.conversation_maintenance.sweep_conversations", AsyncMock(return_value={})),
         patch("foreman.runner.broadcast_msg", AsyncMock()),
     ):
         return await runner._poll_loop_once(guild_id, runner.POLL_MIN_SECS)

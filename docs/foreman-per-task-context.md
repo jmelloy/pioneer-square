@@ -50,18 +50,16 @@ await run_foreman_ai(guild_id, message, user_id=user_id, task_id=task_id, ...)
 
 ---
 
-## History And Thread Resolution
+## History And Conversation Resolution
 
 - `_load_history(guild_id, user_id)` always loads the whole (guild, user) conversation —
   there is no `task_id`-filtered slice. `ForemanTurn.task_id` is still stamped on each row
   (mirrors `ApiRequestLog.task_id`) purely as metadata, e.g. for the debug view; it is never
   used to filter reads.
-- `resolve_thread_id(db, guild_pk, task_id=task_id, user_id=user_id)`
-  (`foreman/thread_service.py`) is called early in `_run_foreman_ai`, before history is
-  loaded. It prefers the referenced task's thread (`Task.thread_id`, stamped once at
-  task-creation time) and falls back to the user's current active thread. It never creates
-  a thread — an automated task event for a task with no thread degrades gracefully (the
-  turn just isn't attached to a thread) rather than spinning up an unrelated conversation.
+- `resolve_conversation_id(db, guild_pk, task_id=task_id, user_id=user_id)`
+  (`foreman/conversation_service.py`) is called early in `_run_foreman_ai`, before history is
+  loaded. It prefers the referenced task's conversation (`Task.conversation_id`, stamped once
+  at task-creation time) and falls back to the user's current conversation.
 - Prompt context (system prompt, tool set, state preamble) is always the full whole-guild
   view (`FOREMAN_TOOLS`, `build_system_blocks`, `build_state_preamble`) — task-specific
   detail (description, state, branch/PR, worker) is already included via the

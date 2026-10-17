@@ -476,7 +476,6 @@ from routes import issues as _issues_routes  # noqa: E402
 from routes import models as _models_routes  # noqa: E402
 from routes import push as _push_routes  # noqa: E402
 from routes import tasks as _tasks_routes  # noqa: E402
-from routes import threads as _threads_routes  # noqa: E402
 from routes import usage as _usage_routes  # noqa: E402
 from routes import webhooks as _webhooks_routes  # noqa: E402
 from routes import websocket as _ws_routes  # noqa: E402
@@ -491,7 +490,6 @@ app.include_router(_guilds_routes.router)
 app.include_router(_agents_routes.router)
 app.include_router(_workers_routes.router)
 app.include_router(_tasks_routes.router)
-app.include_router(_threads_routes.router)
 app.include_router(_conversations_routes.router)
 app.include_router(_usage_routes.router)
 app.include_router(_foreman_routes.router)

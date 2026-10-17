@@ -75,7 +75,7 @@ class _InlineScheduler:
         return None
 
 
-async def _make_journal(db_session, guild_id: str, *, task_id=None, thread_id=None):
+async def _make_journal(db_session, guild_id: str, *, task_id=None):
     insert_guild(db_session, guild_id)
     db = await get_db()
     try:
@@ -92,7 +92,6 @@ async def _make_journal(db_session, guild_id: str, *, task_id=None, thread_id=No
             guild_id=guild_id,
             user_id="u-1",
             task_id=task_id,
-            thread_id=thread_id,
             discord_task_id=task_id,
             discord_channel_id=None,
         ),

@@ -10,7 +10,7 @@ import pytest
 from discord.thread_mirror import (
     _stamp_discord_thread_id,
     archive_conversation_thread_by_id,
-    on_thread_created,
+    on_conversation_created,
     on_thread_updated,
     relay_discord_thread_event,
     rename_conversation_thread,
@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import database as database_module
 from _test_config import TEST_DATABASE_URL
 from auth_deps import get_guild_pk
-from foreman.thread_service import get_or_create_active_thread
+from foreman.conversation_service import get_or_create_active_conversation
 from helpers import create_db, insert_guild, truncate_all
 from models import Conversation
 
@@ -57,12 +57,6 @@ def mock_create_thread():
 
 
 @pytest.fixture
-def mock_save_thread():
-    with patch("discord_notifier._save_thread", new_callable=AsyncMock) as m:
-        yield m
-
-
-@pytest.fixture
 def mock_stamp():
     with patch("discord.thread_mirror._stamp_discord_thread_id", new_callable=AsyncMock) as m:
         yield m
@@ -74,14 +68,13 @@ def mock_bot_request():
         yield m
 
 
-class TestOnThreadCreated:
-    """Test on_thread_created creates Discord threads in response to Foreman."""
+class TestOnConversationCreated:
+    """Test on_conversation_created creates Discord threads in response to Foreman."""
 
-    async def test_creates_discord_thread_on_foreman_thread_created(
-        self, mock_bot_token, mock_channel, mock_create_thread, mock_save_thread, mock_stamp
+    async def test_creates_discord_thread_on_conversation_created(
+        self, mock_bot_token, mock_channel, mock_create_thread, mock_stamp
     ):
-        result = await on_thread_created(
-            thread_id="th-abc123",
+        result = await on_conversation_created(
             conversation_id=1,
             guild_slug="my-guild",
             name="Fix the auth bug",
@@ -92,13 +85,11 @@ class TestOnThreadCreated:
         # Thread name should have the 💬 prefix
         call_args = mock_create_thread.call_args
         assert "💬" in call_args[0][1]
-        mock_stamp.assert_called_once_with("th-abc123", "discord-thread-999")
-        mock_save_thread.assert_called_once_with("conversation", "th-abc123", "discord-thread-999")
+        mock_stamp.assert_called_once_with(1, "discord-thread-999")
 
     async def test_noop_when_not_configured(self):
         with patch("discord_notifier.is_configured", return_value=False):
-            result = await on_thread_created(
-                thread_id="th-abc",
+            result = await on_conversation_created(
                 conversation_id=1,
                 guild_slug="g",
             )
@@ -110,8 +101,7 @@ class TestOnThreadCreated:
             new_callable=AsyncMock,
             return_value=None,
         ):
-            result = await on_thread_created(
-                thread_id="th-abc",
+            result = await on_conversation_created(
                 conversation_id=1,
                 guild_slug="g",
             )
@@ -122,7 +112,7 @@ class TestOnThreadUpdated:
     """Test on_thread_updated mirrors Foreman status to Discord.
 
     Issue #1288: on_thread_updated is keyed by the Discord thread id the
-    caller already has in hand (``Thread.discord_thread_id``) — it does no
+    caller already has in hand (``Conversation.discord_thread_id``) — it does no
     lookup of its own, so these tests pass it directly instead of mocking a
     lookup helper.
     """
@@ -156,14 +146,14 @@ class TestOnThreadUpdated:
 class TestRelayDiscordThreadEvent:
     """Test relay_discord_thread_event does NOT change Foreman state."""
 
-    async def test_does_not_modify_foreman_thread_status(self):
-        """Relay logs the event but leaves Thread.status unchanged.
+    async def test_does_not_modify_conversation_status(self):
+        """Relay logs the event but leaves Conversation.status unchanged.
 
         We mock the DB layer and verify that relay_discord_thread_event never
-        writes back to the Thread row — it only reads and logs.
+        writes back to the Conversation row — it only reads and logs.
         """
         mock_thread = AsyncMock()
-        mock_thread.id = "th-relay-test"
+        mock_thread.id = 7
         mock_thread.status = "active"
         mock_thread.discord_thread_id = "discord-999"
 
@@ -184,7 +174,7 @@ class TestRelayDiscordThreadEvent:
 
         # Verify: no commit was called (no state mutation)
         mock_db.commit.assert_not_called()
-        # Thread status was never reassigned
+        # Conversation status was never reassigned
         assert mock_thread.status == "active"
 
 
@@ -211,28 +201,26 @@ async def _guild_pk(guild_id: str) -> int:
 
 
 class TestStampDiscordThreadIdMirrorsConversation:
-    """Issue #1274: stamping a thread's discord_thread_id also mirrors it
-    onto the owning Conversation, so lookups like
-    ``discord_notifier._lookup_foreman_thread_for_user`` don't need to join
-    through Thread."""
+    """Stamping writes ``discord_thread_id`` straight onto the Conversation,
+    which ``discord_notifier._lookup_foreman_thread_for_user`` reads."""
 
-    async def test_stamp_mirrors_discord_thread_id_onto_conversation(self, db_session):
+    async def test_stamp_sets_discord_thread_id_on_conversation(self, db_session):
         insert_guild(db_session, "g-stamp-mirror")
         guild_pk = await _guild_pk("g-stamp-mirror")
 
         async with database_module.AsyncSessionLocal() as db:
-            thread, _ = await get_or_create_active_thread(db, guild_pk, "user-1")
+            created, _ = await get_or_create_active_conversation(db, guild_pk, "user-1")
 
-        await _stamp_discord_thread_id(thread.id, "discord-thread-mirrored")
+        await _stamp_discord_thread_id(created.id, "discord-thread-mirrored")
 
         async with database_module.AsyncSessionLocal() as db:
-            conversation = await db.get(Conversation, thread.conversation_id)
+            conversation = await db.get(Conversation, created.id)
         assert conversation.discord_thread_id == "discord-thread-mirrored"
 
 
 class TestRenameConversationThread:
     """Issue #1278: renaming/archiving a Conversation's Discord thread directly
-    from Conversation.discord_thread_id, with no Thread id lookup involved."""
+    from Conversation.discord_thread_id, ."""
 
     async def test_renames_via_discord_thread_id(self, mock_bot_token, mock_bot_request):
         await rename_conversation_thread("discord-thread-999", "New Name")

@@ -1,25 +1,11 @@
-"""Conversation resolution (issue #1271: make Conversation the core Foreman
-thread model).
+"""Conversation lifecycle and resolution (issues #1271, #1299).
 
-The previous attempt at this issue (#1272) went the wrong direction: it added
-a *new* ``thread_id`` FK to ``ForemanTurn`` and switched history loading to be
-``Thread``-scoped — the opposite of #1271's stated goal, which makes
-``Thread`` more load-bearing rather than less. Review flagged that as an
-architectural mismatch (see #1272's review comment).
-
-This module is the small, additive first step #1271 actually asks for
-("Suggested first PR"): a ``conversation_service`` wrapper that resolves/
-creates :class:`models.Conversation` rows, so call sites can start stamping
-``conversation_id`` on ``messages``/``tasks``/``foreman_turns``/
-``github_events`` *alongside* the existing ``thread_id`` — additive, not a
-replacement. It deliberately does not touch history loading (still windowed
-by ``(guild_id, user_id)``, see ``foreman.history``) or delete/rename
-anything ``Thread``-related; that's later-phase work per the issue.
-
-Discord mirroring stays exactly where it already lives
-(``foreman.thread_service`` / ``discord.thread_mirror``) — this module only
-resolves/creates the ``Conversation`` anchor row, it does not own any
-Discord side effects.
+:class:`models.Conversation` is the core Foreman thread model: this module
+resolves/creates conversations, owns their lifecycle (create / reactivate /
+rename / close) and fans each change out to the frontend (``conversation-*``
+WS events). The legacy ``Thread`` model is no longer involved — Discord
+threads are a pure mirror, bound via ``Conversation.discord_thread_id`` and
+driven by ``discord.thread_mirror``.
 """
 
 from __future__ import annotations
@@ -44,9 +30,8 @@ async def _guild_slug(db: AsyncSession, guild_pk: int) -> str | None:
 async def _broadcast_conversation_created(db: AsyncSession, conversation: Conversation) -> None:
     """Broadcast a ``conversation-created`` WS event (#1298). Best-effort.
 
-    Mirrors ``foreman.thread_service.ensure_conversation_thread``'s
-    ``thread-created`` broadcast: swallows and logs failures so a WS hiccup
-    never blocks conversation creation.
+    Swallows and logs failures so a WS hiccup never blocks conversation
+    creation.
     """
     try:
         guild_slug = await _guild_slug(db, conversation.guild_id)
@@ -73,14 +58,10 @@ async def _broadcast_conversation_created(db: AsyncSession, conversation: Conver
 async def broadcast_conversation_updated(db: AsyncSession, conversation: Conversation) -> None:
     """Broadcast a ``conversation-updated`` WS event (#1298). Best-effort.
 
-    Public (not ``_``-prefixed) because ``foreman.thread_service`` also calls
-    this — every path that mutates a ``Thread`` and mirrors the change onto
-    its ``Conversation`` (``sync_conversation_after_thread_update``, the
-    idle-sweep archive/close, the archive/close REST endpoints,
-    ``reactivate_conversation_thread``) needs the frontend's ``conversations``
-    store to actually learn about it; before #1314 those paths only wrote the
-    DB row, so the conversation list/detail panel showed a stale status until
-    the user manually reloaded.
+    Public (not ``_``-prefixed) because the idle sweep
+    (``foreman.conversation_maintenance``) and ``discord.thread_mirror`` also
+    call it — every path that mutates a conversation needs the frontend's
+    ``conversations`` store to learn about it.
     """
     try:
         guild_slug = await _guild_slug(db, conversation.guild_id)
@@ -113,8 +94,7 @@ async def get_or_create_conversation(db: AsyncSession, guild_pk: int, user_id: s
     ``Conversation`` rows over time. This helper keeps its original
     get-or-create semantics for existing callers that still want "the"
     conversation for a pair (picking the most recently updated one when more
-    than one exists) — ``foreman.thread_service`` imports it from here rather
-    than duplicating it.
+    than one exists).
     """
     result = await db.exec(
         select(Conversation)
@@ -128,23 +108,195 @@ async def get_or_create_conversation(db: AsyncSession, guild_pk: int, user_id: s
     return await create_conversation(db, guild_pk, user_id)
 
 
-async def create_conversation(db: AsyncSession, guild_pk: int, user_id: str | None) -> Conversation:
+async def create_conversation(
+    db: AsyncSession, guild_pk: int, user_id: str | None, *, name: str | None = None
+) -> Conversation:
     """Unconditionally insert a brand-new :class:`Conversation` row (#1296).
 
     Unlike :func:`get_or_create_conversation`, never reuses an existing row —
     used to start a fresh conversation for a new top-level human Foreman
     message (one that isn't a reply within an existing Discord thread/
     conversation; see ``discord.router._persist_inbound_message`` and
-    ``foreman.thread_service.get_or_create_active_thread``'s ``force_new``
-    parameter), so that conversation stays independent of whatever other
+    :func:`get_or_create_active_conversation`'s ``force_new`` parameter), so that conversation stays independent of whatever other
     conversation(s) this (guild, user) pair already has open. Flushes but does
     not commit — same contract as ``get_or_create_conversation``.
     """
     now = datetime.now(UTC)
-    conversation = Conversation(guild_id=guild_pk, user_id=user_id, created_at=now, updated_at=now)
+    conversation = Conversation(
+        guild_id=guild_pk, user_id=user_id, name=name, created_at=now, updated_at=now
+    )
     db.add(conversation)
     await db.flush()
     await _broadcast_conversation_created(db, conversation)
+    return conversation
+
+
+_MAX_NAME_LEN = 80
+
+
+def name_from_message(content: str | None) -> str | None:
+    """Derive a short conversation name from the first message's text."""
+    text = " ".join((content or "").split())
+    if not text:
+        return None
+    return text if len(text) <= _MAX_NAME_LEN else text[: _MAX_NAME_LEN - 1] + "…"
+
+
+async def get_or_create_active_conversation(
+    db: AsyncSession,
+    guild_pk: int,
+    user_id: str,
+    *,
+    name_hint: str | None = None,
+    force_new: bool = False,
+) -> tuple[Conversation, bool]:
+    """Return ``(conversation, created)`` for this user's current conversation.
+
+    Reuses the user's most recently updated conversation, bumping
+    ``updated_at`` (so the idle sweep in ``foreman.conversation_maintenance``
+    doesn't archive an in-progress conversation) and reactivating it if the
+    sweep already archived/closed it — rather than forking a brand-new
+    conversation (and Discord thread) per idle/resume cycle (#1314). Only
+    creates a new conversation when the user has none yet.
+
+    ``force_new=True`` (#1296) skips reuse: it always inserts a brand-new
+    conversation, for a top-level human message that isn't a reply within an
+    existing conversation. Commits *db*.
+    """
+    name = name_from_message(name_hint)
+    if force_new:
+        conversation = await create_conversation(db, guild_pk, user_id, name=name)
+        await db.commit()
+        return conversation, True
+
+    result = await db.exec(
+        select(Conversation)
+        .where(col(Conversation.guild_id) == guild_pk, col(Conversation.user_id) == user_id)
+        .order_by(col(Conversation.updated_at).desc())
+        .limit(1)
+    )
+    conversation = result.first()
+    if conversation is None:
+        conversation = await create_conversation(db, guild_pk, user_id, name=name)
+        await db.commit()
+        return conversation, True
+
+    reactivated = conversation.status != "active"
+    conversation.status = "active"
+    if conversation.name is None:
+        conversation.name = name
+    conversation.updated_at = datetime.now(UTC)
+    db.add(conversation)
+    await db.commit()
+    await db.refresh(conversation)
+    if reactivated:
+        await broadcast_conversation_updated(db, conversation)
+        await _mirror_status_to_discord(conversation)
+    return conversation, False
+
+
+async def _mirror_status_to_discord(conversation: Conversation) -> None:
+    """Archive/un-archive the conversation's Discord thread to match its status."""
+    if not conversation.discord_thread_id:
+        return
+    try:
+        from discord.thread_mirror import on_thread_updated  # noqa: PLC0415
+
+        await on_thread_updated(conversation.discord_thread_id, status=conversation.status)
+    except Exception:
+        logger.warning(
+            "conversation_service: Discord mirror update failed conversation=%s",
+            conversation.id,
+            exc_info=True,
+        )
+
+
+async def reactivate_conversation(db: AsyncSession, conversation: Conversation) -> None:
+    """Reactivate *conversation* after a reply landed in its Discord thread (#1278).
+
+    Discord un-archives a thread the moment someone posts in it, so leaving
+    the conversation "archived" would desync it and make the next top-level
+    message fork a new conversation. No-op status-wise if already active
+    (still bumps ``updated_at``). Commits *db*.
+    """
+    was_inactive = conversation.status != "active"
+    conversation.status = "active"
+    conversation.updated_at = datetime.now(UTC)
+    db.add(conversation)
+    await db.commit()
+    await db.refresh(conversation)
+    if was_inactive:
+        await broadcast_conversation_updated(db, conversation)
+        await _mirror_status_to_discord(conversation)
+
+
+async def set_conversation_status(
+    db: AsyncSession, conversation: Conversation, status: str
+) -> None:
+    """Set *conversation*'s lifecycle status, then broadcast and mirror to Discord.
+
+    Commits *db*. Used by the idle sweep (archive/close).
+    """
+    conversation.status = status
+    conversation.updated_at = datetime.now(UTC)
+    db.add(conversation)
+    await db.commit()
+    await db.refresh(conversation)
+    await broadcast_conversation_updated(db, conversation)
+    await _mirror_status_to_discord(conversation)
+
+
+async def ensure_conversation(
+    guild_slug: str, user_id: str, content: str | None = None, *, force_new: bool = False
+) -> Conversation | None:
+    """Get-or-create the active conversation for (guild_slug, user_id).
+
+    The entry point ``foreman.triggers.trigger_foreman`` calls for every
+    human-originated message with no ``task_id`` yet. Mirrors a newly created
+    conversation to Discord (a Discord thread is only ever created in
+    response to the Foreman creating a conversation). Returns None if the
+    guild can't be resolved. Never raises — callers treat conversation
+    bookkeeping as best-effort, never a reason to drop a message.
+    """
+    from auth_deps import get_guild_pk  # noqa: PLC0415 — avoid import cycle at module load
+    from database import get_db  # noqa: PLC0415
+
+    try:
+        db = await get_db()
+        try:
+            guild_pk = await get_guild_pk(db, guild_slug)
+            if guild_pk is None:
+                return None
+            conversation, created = await get_or_create_active_conversation(
+                db, guild_pk, user_id, name_hint=content, force_new=force_new
+            )
+        finally:
+            await db.close()
+    except Exception:
+        logger.warning(
+            "conversation_service: failed to ensure conversation guild=%s user=%s",
+            guild_slug,
+            user_id,
+            exc_info=True,
+        )
+        return None
+
+    if created:
+        try:
+            from discord.thread_mirror import on_conversation_created  # noqa: PLC0415
+
+            await on_conversation_created(
+                conversation_id=conversation.id,
+                guild_slug=guild_slug,
+                name=conversation.name,
+                user_id=user_id,
+            )
+        except Exception:
+            logger.warning(
+                "conversation_service: Discord mirror failed for conversation=%s",
+                conversation.id,
+                exc_info=True,
+            )
     return conversation
 
 
@@ -153,19 +305,14 @@ async def resolve_conversation_id(
 ) -> int | None:
     """Resolve the :class:`Conversation` id a new message/turn/task belongs to.
 
-    Mirrors ``thread_service.resolve_thread_id``'s precedence: prefers
-    *task_id*'s already-stamped conversation (an explicit, stable binding set
-    at task-creation time) over *user_id*'s conversation. Unlike
-    ``resolve_thread_id`` — which is read-only because a ``Thread`` is a
-    side-effecting, explicitly-created object — this *does* create a
-    ``Conversation`` when only *user_id* is given, because ``Conversation``
-    is a plain 1:1-with-(guild, user) anchor row with no side effects
-    (no Discord mirror, no WS broadcast) of its own.
+    Prefers *task_id*'s already-stamped conversation (an explicit, stable
+    binding set at task-creation time) over *user_id*'s conversation, creating
+    one when only *user_id* is given.
 
     Commits *db* itself when it creates a new conversation — most callers
     resolve this from a short-lived, read-only session (see
     ``foreman.runner._run_foreman_ai``) that gets ``close()``'d, not
-    ``commit()``'d, once history/thread lookups are done; without an explicit
+    ``commit()``'d, once history lookups are done; without an explicit
     commit here, ``get_or_create_conversation``'s flush-only insert would be
     silently rolled back on close, leaving every row this run stamps with a
     ``conversation_id`` that was never actually persisted (a dangling FK that
@@ -201,8 +348,8 @@ async def get_conversation_by_discord_thread_id(
     thread uses to find its conversation, instead of re-deriving it from the
     (guild, user) active-thread heuristic (see ``discord.router``). Still
     returns a conversation whose mirrored thread has since gone
-    archived/closed — see ``foreman.thread_service.reactivate_conversation_thread``,
-    which callers use to un-archive it when a user replies there anyway.
+    archived/closed — see :func:`reactivate_conversation`, which callers use
+    to un-archive it when a user replies there anyway.
     """
     result = await db.exec(
         select(Conversation).where(
@@ -216,22 +363,12 @@ async def get_conversation_by_discord_thread_id(
 async def rename_conversation(db: AsyncSession, conversation: Conversation, name: str) -> None:
     """Rename *conversation* and mirror the new name onto its Discord thread (#1278).
 
-    Also renames the conversation's current active ``Thread`` row, if any, so
-    a later Thread-driven sync (``thread_service.sync_conversation_after_thread_update``)
-    can't clobber this rename back to the old name. Commits *db* itself.
+    Commits *db* itself.
     """
-    from foreman.thread_service import _active_thread_for_conversation  # noqa: PLC0415
-
     now = datetime.now(UTC)
     conversation.name = name
     conversation.updated_at = now
     db.add(conversation)
-
-    thread = await _active_thread_for_conversation(db, conversation.id)
-    if thread is not None:
-        thread.name = name
-        thread.updated_at = now
-        db.add(thread)
 
     await db.commit()
     await broadcast_conversation_updated(db, conversation)
@@ -245,24 +382,13 @@ async def rename_conversation(db: AsyncSession, conversation: Conversation, name
 async def close_conversation(db: AsyncSession, conversation: Conversation) -> None:
     """Close *conversation* and archive its mirrored Discord thread (#1278).
 
-    Mirrors ``rename_conversation``'s pattern: writes both ``Conversation``
-    and its current active ``Thread`` (if any) so the two can't drift, then
-    archives Discord directly from ``Conversation.discord_thread_id`` — no
-    Thread lookup needed on the Discord side, since ``discord_thread_id`` is
-    the source of truth for the binding. Commits *db* itself.
+    Archives Discord directly from ``Conversation.discord_thread_id``, the
+    source of truth for the binding. Commits *db* itself.
     """
-    from foreman.thread_service import _active_thread_for_conversation  # noqa: PLC0415
-
     now = datetime.now(UTC)
     conversation.status = "closed"
     conversation.updated_at = now
     db.add(conversation)
-
-    thread = await _active_thread_for_conversation(db, conversation.id)
-    if thread is not None:
-        thread.status = "closed"
-        thread.updated_at = now
-        db.add(thread)
 
     await db.commit()
     await broadcast_conversation_updated(db, conversation)

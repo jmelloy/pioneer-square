@@ -254,7 +254,6 @@ def _build_journal(monkeypatch, *, task_id, discord_task_id, discord_channel_id=
             guild_id="g1",
             user_id=None,
             task_id=task_id,
-            thread_id=None,
             discord_task_id=discord_task_id,
             discord_channel_id=discord_channel_id,
         ),

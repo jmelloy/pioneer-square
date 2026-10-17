@@ -3,7 +3,7 @@ Thread (issue #1274).
 
 Covers the PR #1286 review finding: the backfill must prefer a conversation's
 *active* thread over merely its most-recently-updated one, matching
-``thread_service.get_or_create_active_thread``'s own definition of "the"
+the former Foreman thread service's own definition of "the"
 thread for a conversation. Runs the real migration up/down against the test
 database (rather than reimplementing its SQL) so the assertions cover the
 migration itself.

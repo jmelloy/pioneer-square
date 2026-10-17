@@ -134,20 +134,16 @@ async def test_resolve_session_conversation_resolves_via_discord_thread_id_direc
     by the other subject types above."""
     import database as database_module
     from auth_deps import get_guild_pk
-    from foreman.thread_service import (
-        get_or_create_active_thread,
-        sync_conversation_after_thread_update,
-    )
+    from foreman.conversation_service import get_or_create_active_conversation
 
     _test_client, db_url = client
     insert_guild(db_url, "g-router-conv1")
 
     async with database_module.AsyncSessionLocal() as db:
         guild_pk = await get_guild_pk(db, "g-router-conv1")
-        thread, _ = await get_or_create_active_thread(db, guild_pk, "user-conv1")
-        thread.discord_thread_id = "discord-thread-conv1"
-        db.add(thread)
-        await sync_conversation_after_thread_update(db, thread, previous_status=thread.status)
+        conv, _ = await get_or_create_active_conversation(db, guild_pk, "user-conv1")
+        conv.discord_thread_id = "discord-thread-conv1"
+        db.add(conv)
         await db.commit()
 
     session = await router.resolve_session("discord-thread-conv1")
@@ -208,8 +204,8 @@ async def test_persist_inbound_message_finds_conversation_by_discord_thread_id(c
     forking a new one via the (guild, user) active-thread heuristic."""
     import database as database_module
     from discord.thread_mirror import _stamp_discord_thread_id
-    from foreman.thread_service import get_or_create_active_thread
-    from models import Conversation, Message, Thread
+    from foreman.conversation_service import get_or_create_active_conversation
+    from models import Conversation, Message
     from sqlmodel import col, select
 
     _test_client, db_url = client
@@ -218,16 +214,13 @@ async def test_persist_inbound_message_finds_conversation_by_discord_thread_id(c
 
     async with database_module.AsyncSessionLocal() as db:
         guild_pk = await get_guild_pk(db, "g-persist1")
-        thread, _ = await get_or_create_active_thread(db, guild_pk, "user-persist-1")
+        created, _ = await get_or_create_active_conversation(db, guild_pk, "user-persist-1")
 
-    await _stamp_discord_thread_id(thread.id, "discord-thread-persist-1")
+    await _stamp_discord_thread_id(created.id, "discord-thread-persist-1")
 
-    # Foreman's idle sweep already archived this thread/conversation.
+    # Foreman's idle sweep already archived this conversation.
     async with database_module.AsyncSessionLocal() as db:
-        thread = await db.get(Thread, thread.id)
-        thread.status = "archived"
-        db.add(thread)
-        conversation = await db.get(Conversation, thread.conversation_id)
+        conversation = await db.get(Conversation, created.id)
         conversation.status = "archived"
         db.add(conversation)
         await db.commit()
@@ -245,12 +238,10 @@ async def test_persist_inbound_message_finds_conversation_by_discord_thread_id(c
         result = await db.exec(select(Message).where(col(Message.content) == "still there?"))
         message = result.first()
         reactivated_conversation = await db.get(Conversation, conversation.id)
-        reactivated_thread = await db.get(Thread, thread.id)
 
     assert message is not None
     assert message.conversation_id == conversation.id
     assert reactivated_conversation.status == "active"
-    assert reactivated_thread.status == "active"
 
 
 @pytest.mark.asyncio
@@ -262,7 +253,7 @@ async def test_persist_inbound_message_reply_in_bound_thread_without_author(clie
     import database as database_module
     from auth_deps import get_guild_pk
     from discord.thread_mirror import _stamp_discord_thread_id
-    from foreman.thread_service import get_or_create_active_thread
+    from foreman.conversation_service import get_or_create_active_conversation
     from models import Message
     from sqlmodel import col, select
 
@@ -270,8 +261,9 @@ async def test_persist_inbound_message_reply_in_bound_thread_without_author(clie
     insert_guild(db_url, "g-persist-bot")
     async with database_module.AsyncSessionLocal() as db:
         guild_pk = await get_guild_pk(db, "g-persist-bot")
-        thread, _ = await get_or_create_active_thread(db, guild_pk, "user-persist-bot")
-    await _stamp_discord_thread_id(thread.id, "discord-thread-persist-bot")
+        conversation, _ = await get_or_create_active_conversation(db, guild_pk, "user-persist-bot")
+        conversation_id = conversation.id
+    await _stamp_discord_thread_id(conversation_id, "discord-thread-persist-bot")
 
     with patch("discord.thread_mirror.on_thread_updated", new=AsyncMock()):
         returned = await router._persist_inbound_message(
@@ -287,7 +279,7 @@ async def test_persist_inbound_message_reply_in_bound_thread_without_author(clie
         message = result.first()
 
     assert message is not None
-    assert message.conversation_id == thread.conversation_id == returned
+    assert message.conversation_id == conversation_id == returned
 
 
 @pytest.mark.asyncio
@@ -295,12 +287,12 @@ async def test_persist_inbound_message_top_level_starts_new_conversation(client)
     """Issue #1296: a top-level message — one that doesn't land in a Discord
     thread already bound to a Conversation — always starts a brand-new
     Conversation, even though this user already has an active one. Without
-    this, ``ensure_conversation_thread``'s (guild, user) get-or-create would
+    this, ``ensure_conversation``'s (guild, user) get-or-create would
     silently fold the new message into whatever conversation happened to
     already be open."""
     import database as database_module
     from auth_deps import get_guild_pk
-    from foreman.thread_service import get_or_create_active_thread
+    from foreman.conversation_service import get_or_create_active_conversation
     from models import Message
     from sqlmodel import col, select
 
@@ -309,10 +301,12 @@ async def test_persist_inbound_message_top_level_starts_new_conversation(client)
 
     async with database_module.AsyncSessionLocal() as db:
         guild_pk = await get_guild_pk(db, "g-toplevel1")
-        existing_thread, _ = await get_or_create_active_thread(db, guild_pk, "user-tl-1")
-        existing_conversation_id = existing_thread.conversation_id
+        existing_conversation, _ = await get_or_create_active_conversation(
+            db, guild_pk, "user-tl-1"
+        )
+        existing_conversation_id = existing_conversation.id
 
-    with patch("discord.thread_mirror.on_thread_created", new=AsyncMock()):
+    with patch("discord.thread_mirror.on_conversation_created", new=AsyncMock()):
         await router._persist_inbound_message(
             "g-toplevel1",
             "hey, unrelated new topic",
@@ -348,7 +342,7 @@ async def test_persist_inbound_message_broadcast_carries_conversation_id(client)
 
     broadcast = AsyncMock()
     with (
-        patch("discord.thread_mirror.on_thread_created", new=AsyncMock()),
+        patch("discord.thread_mirror.on_conversation_created", new=AsyncMock()),
         patch("events.broadcast_msg", new=broadcast),
     ):
         returned = await router._persist_inbound_message(
@@ -377,7 +371,7 @@ async def test_persist_inbound_message_two_top_level_messages_get_separate_conve
     _test_client, db_url = client
     insert_guild(db_url, "g-toplevel2")
 
-    with patch("discord.thread_mirror.on_thread_created", new=AsyncMock()):
+    with patch("discord.thread_mirror.on_conversation_created", new=AsyncMock()):
         await router._persist_inbound_message(
             "g-toplevel2",
             "first ask",
@@ -419,9 +413,8 @@ async def test_forward_to_foreman_pins_the_conversation_it_just_persisted_to(cli
     discarded ``_persist_inbound_message``'s resolved id and called
     ``trigger_foreman`` with ``conversation_id=None``, forcing
     ``run_foreman_ai`` to re-derive one from scratch. The two disagree exactly
-    when ``reactivate_conversation_thread`` falls back to "no matching Thread
-    row" (its own documented case: the Thread was soft-deleted or never
-    created) while a newer, unrelated Conversation exists for the same user
+    when a reply reactivates an older Discord-thread-bound Conversation while
+    a newer, unrelated Conversation exists for the same user
     (issue #1296 made multiple Conversations per user the norm) — so the
     Foreman's reply would silently end up in a Conversation the human never
     posted in, and never appear when fetching the one they actually replied
@@ -429,8 +422,8 @@ async def test_forward_to_foreman_pins_the_conversation_it_just_persisted_to(cli
     """
     import database as database_module
     from auth_deps import get_guild_pk
-    from foreman.thread_service import get_or_create_active_thread
-    from models import Conversation, Message, Thread
+    from foreman.conversation_service import get_or_create_active_conversation
+    from models import Conversation, Message
 
     _test_client, db_url = client
     guild_id = "g-router-pin1"
@@ -441,19 +434,10 @@ async def test_forward_to_foreman_pins_the_conversation_it_just_persisted_to(cli
         guild_pk = await get_guild_pk(db, guild_id)
 
         # Conversation A: an older Discord-thread-bound conversation.
-        old_thread, _ = await get_or_create_active_thread(db, guild_pk, user_id)
-        conversation_a_id = old_thread.conversation_id
-        conversation_a = await db.get(Conversation, conversation_a_id)
+        conversation_a, _ = await get_or_create_active_conversation(db, guild_pk, user_id)
+        conversation_a_id = conversation_a.id
         conversation_a.discord_thread_id = "discord-thread-pin-a"
         db.add(conversation_a)
-        await db.commit()
-
-        # Its Thread row is gone (soft-deleted) -- reactivate_conversation_thread's
-        # own documented "falls back" case -- while Conversation.discord_thread_id
-        # (the source of truth, per its docstring) still points at it.
-        thread_row = await db.get(Thread, old_thread.id)
-        thread_row.deleted_at = datetime.now(UTC)
-        db.add(thread_row)
         await db.commit()
 
         # Conversation B: a second, newer top-level conversation for the same user.
@@ -507,7 +491,7 @@ async def test_route_inbound_message_guild_channel_top_level_starts_new_conversa
     rather than calling ``_persist_inbound_message`` directly."""
     import database as database_module
     from auth_deps import get_guild_pk
-    from foreman.thread_service import get_or_create_active_thread
+    from foreman.conversation_service import get_or_create_active_conversation
     from models import Message
     from sqlmodel import col, select
 
@@ -517,8 +501,8 @@ async def test_route_inbound_message_guild_channel_top_level_starts_new_conversa
 
     async with database_module.AsyncSessionLocal() as db:
         guild_pk = await get_guild_pk(db, "g-e2e1")
-        old_thread, _ = await get_or_create_active_thread(db, guild_pk, "ps-user-e2e1")
-        old_conversation_id = old_thread.conversation_id
+        old_conversation, _ = await get_or_create_active_conversation(db, guild_pk, "ps-user-e2e1")
+        old_conversation_id = old_conversation.id
 
     with (
         patch.object(
@@ -526,7 +510,7 @@ async def test_route_inbound_message_guild_channel_top_level_starts_new_conversa
         ),
         patch("foreman.triggers.trigger_foreman", new=AsyncMock()) as mock_trigger,
         patch("foreman.runner.reset_foreman_poll"),
-        patch("discord.thread_mirror.on_thread_created", new=AsyncMock()),
+        patch("discord.thread_mirror.on_conversation_created", new=AsyncMock()),
     ):
         await router._route_inbound_message(
             {
@@ -555,7 +539,7 @@ async def test_route_inbound_message_dm_mention_top_level_starts_new_conversatio
     guild channel — it must also start its own new Conversation."""
     import database as database_module
     from auth_deps import get_guild_pk
-    from foreman.thread_service import get_or_create_active_thread
+    from foreman.conversation_service import get_or_create_active_conversation
     from models import Message
     from sqlmodel import col, select
 
@@ -564,8 +548,8 @@ async def test_route_inbound_message_dm_mention_top_level_starts_new_conversatio
 
     async with database_module.AsyncSessionLocal() as db:
         guild_pk = await get_guild_pk(db, "g-dm1")
-        old_thread, _ = await get_or_create_active_thread(db, guild_pk, "ps-user-dm1")
-        old_conversation_id = old_thread.conversation_id
+        old_conversation, _ = await get_or_create_active_conversation(db, guild_pk, "ps-user-dm1")
+        old_conversation_id = old_conversation.id
 
     with (
         patch.dict(os.environ, {"DISCORD_APPLICATION_ID": "bot-id-dm"}),
@@ -575,7 +559,7 @@ async def test_route_inbound_message_dm_mention_top_level_starts_new_conversatio
         patch.object(router, "_resolve_user_guild_slugs", new=AsyncMock(return_value=["g-dm1"])),
         patch("foreman.triggers.trigger_foreman", new=AsyncMock()) as mock_trigger,
         patch("foreman.runner.reset_foreman_poll"),
-        patch("discord.thread_mirror.on_thread_created", new=AsyncMock()),
+        patch("discord.thread_mirror.on_conversation_created", new=AsyncMock()),
     ):
         await router._route_inbound_message(
             {
