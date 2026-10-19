@@ -84,6 +84,19 @@ async def broadcast_conversation_updated(db: AsyncSession, conversation: Convers
         )
 
 
+async def _latest_conversation(
+    db: AsyncSession, guild_pk: int, user_id: str
+) -> Conversation | None:
+    """Most recently updated conversation for (guild, user), or None."""
+    result = await db.exec(
+        select(Conversation)
+        .where(col(Conversation.guild_id) == guild_pk, col(Conversation.user_id) == user_id)
+        .order_by(col(Conversation.updated_at).desc())
+        .limit(1)
+    )
+    return result.first()
+
+
 async def get_or_create_conversation(db: AsyncSession, guild_pk: int, user_id: str) -> Conversation:
     """Get-or-create *a* :class:`Conversation` for this (guild, user) pair.
 
@@ -95,14 +108,11 @@ async def get_or_create_conversation(db: AsyncSession, guild_pk: int, user_id: s
     get-or-create semantics for existing callers that still want "the"
     conversation for a pair (picking the most recently updated one when more
     than one exists).
+
+    Does not commit, bump ``updated_at`` or reactivate — use
+    :func:`get_or_create_active_conversation` for those semantics.
     """
-    result = await db.exec(
-        select(Conversation)
-        .where(col(Conversation.guild_id) == guild_pk, col(Conversation.user_id) == user_id)
-        .order_by(col(Conversation.updated_at).desc())
-        .limit(1)
-    )
-    conversation = result.first()
+    conversation = await _latest_conversation(db, guild_pk, user_id)
     if conversation is not None:
         return conversation
     return await create_conversation(db, guild_pk, user_id)
@@ -169,13 +179,7 @@ async def get_or_create_active_conversation(
         await db.commit()
         return conversation, True
 
-    result = await db.exec(
-        select(Conversation)
-        .where(col(Conversation.guild_id) == guild_pk, col(Conversation.user_id) == user_id)
-        .order_by(col(Conversation.updated_at).desc())
-        .limit(1)
-    )
-    conversation = result.first()
+    conversation = await _latest_conversation(db, guild_pk, user_id)
     if conversation is None:
         conversation = await create_conversation(db, guild_pk, user_id, name=name)
         await db.commit()
