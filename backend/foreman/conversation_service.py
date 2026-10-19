@@ -373,6 +373,7 @@ async def rename_conversation(db: AsyncSession, conversation: Conversation, name
     db.add(conversation)
 
     await db.commit()
+    await db.refresh(conversation)
     await broadcast_conversation_updated(db, conversation)
 
     if conversation.discord_thread_id:
@@ -393,6 +394,7 @@ async def close_conversation(db: AsyncSession, conversation: Conversation) -> No
     db.add(conversation)
 
     await db.commit()
+    await db.refresh(conversation)
     await broadcast_conversation_updated(db, conversation)
 
     if conversation.discord_thread_id:
