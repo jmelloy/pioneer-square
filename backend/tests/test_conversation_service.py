@@ -405,20 +405,24 @@ class TestCloseConversation:
 
 
 @pytest.mark.asyncio
-async def test_warn_on_discord_mirror_failure_swallows_and_logs(caplog):
+async def test_warn_on_discord_mirror_failure_swallows_and_logs():
+    from foreman import conversation_service
     from foreman.conversation_service import warn_on_discord_mirror_failure
 
-    with caplog.at_level("WARNING"):
+    with patch.object(conversation_service, "logger") as mock_logger:
         async with warn_on_discord_mirror_failure(42):
             raise RuntimeError("boom")
-    assert "Discord mirror failed for conversation=42" in caplog.text
+    mock_logger.warning.assert_called_once()
+    assert 42 in mock_logger.warning.call_args.args
+    assert mock_logger.warning.call_args.kwargs["exc_info"] is True
 
 
 @pytest.mark.asyncio
-async def test_warn_on_discord_mirror_failure_passes_through_on_success(caplog):
+async def test_warn_on_discord_mirror_failure_passes_through_on_success():
+    from foreman import conversation_service
     from foreman.conversation_service import warn_on_discord_mirror_failure
 
-    with caplog.at_level("WARNING"):
+    with patch.object(conversation_service, "logger") as mock_logger:
         async with warn_on_discord_mirror_failure(1):
             pass
-    assert "Discord mirror failed" not in caplog.text
+    mock_logger.warning.assert_not_called()
