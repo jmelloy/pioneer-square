@@ -402,3 +402,27 @@ class TestCloseConversation:
         assert payload["type"] == "conversation-updated"
         assert payload["conversationId"] == conversation.id
         assert payload["status"] == "closed"
+
+
+@pytest.mark.asyncio
+async def test_warn_on_discord_mirror_failure_swallows_and_logs():
+    from foreman import conversation_service
+    from foreman.conversation_service import warn_on_discord_mirror_failure
+
+    with patch.object(conversation_service, "logger") as mock_logger:
+        async with warn_on_discord_mirror_failure(42):
+            raise RuntimeError("boom")
+    mock_logger.warning.assert_called_once()
+    assert 42 in mock_logger.warning.call_args.args
+    assert mock_logger.warning.call_args.kwargs["exc_info"] is True
+
+
+@pytest.mark.asyncio
+async def test_warn_on_discord_mirror_failure_passes_through_on_success():
+    from foreman import conversation_service
+    from foreman.conversation_service import warn_on_discord_mirror_failure
+
+    with patch.object(conversation_service, "logger") as mock_logger:
+        async with warn_on_discord_mirror_failure(1):
+            pass
+    mock_logger.warning.assert_not_called()
