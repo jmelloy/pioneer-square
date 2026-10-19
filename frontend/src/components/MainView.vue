@@ -93,6 +93,7 @@
       />
       <IssueViewer
         v-else-if="uiStore.activeTab.startsWith('issue-')"
+        :key="uiStore.activeTab"
         v-bind="parseIssueKey(uiStore.activeTab)"
       />
     </div>
