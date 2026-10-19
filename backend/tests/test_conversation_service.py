@@ -402,3 +402,23 @@ class TestCloseConversation:
         assert payload["type"] == "conversation-updated"
         assert payload["conversationId"] == conversation.id
         assert payload["status"] == "closed"
+
+
+@pytest.mark.asyncio
+async def test_warn_on_discord_mirror_failure_swallows_and_logs(caplog):
+    from foreman.conversation_service import warn_on_discord_mirror_failure
+
+    with caplog.at_level("WARNING"):
+        async with warn_on_discord_mirror_failure(42):
+            raise RuntimeError("boom")
+    assert "Discord mirror failed for conversation=42" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_warn_on_discord_mirror_failure_passes_through_on_success(caplog):
+    from foreman.conversation_service import warn_on_discord_mirror_failure
+
+    with caplog.at_level("WARNING"):
+        async with warn_on_discord_mirror_failure(1):
+            pass
+    assert "Discord mirror failed" not in caplog.text

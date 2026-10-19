@@ -11,6 +11,8 @@ driven by ``discord.thread_mirror``.
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 from events import broadcast
@@ -195,20 +197,31 @@ async def get_or_create_active_conversation(
     return conversation, False
 
 
+@asynccontextmanager
+async def warn_on_discord_mirror_failure(conversation_id: int | None) -> AsyncIterator[None]:
+    """Swallow and log (as a warning) any error from a best-effort Discord mirror call.
+
+    Discord mirroring must never fail the conversation bookkeeping that
+    triggered it, so every mirror call site wraps its body in this.
+    """
+    try:
+        yield
+    except Exception:
+        logger.warning(
+            "conversation_service: Discord mirror failed for conversation=%s",
+            conversation_id,
+            exc_info=True,
+        )
+
+
 async def _mirror_status_to_discord(conversation: Conversation) -> None:
     """Archive/un-archive the conversation's Discord thread to match its status."""
     if not conversation.discord_thread_id:
         return
-    try:
+    async with warn_on_discord_mirror_failure(conversation.id):
         from discord.thread_mirror import on_thread_updated  # noqa: PLC0415
 
         await on_thread_updated(conversation.discord_thread_id, status=conversation.status)
-    except Exception:
-        logger.warning(
-            "conversation_service: Discord mirror update failed conversation=%s",
-            conversation.id,
-            exc_info=True,
-        )
 
 
 async def reactivate_conversation(db: AsyncSession, conversation: Conversation) -> None:
@@ -282,7 +295,7 @@ async def ensure_conversation(
         return None
 
     if created:
-        try:
+        async with warn_on_discord_mirror_failure(conversation.id):
             from discord.thread_mirror import on_conversation_created  # noqa: PLC0415
 
             await on_conversation_created(
@@ -290,12 +303,6 @@ async def ensure_conversation(
                 guild_slug=guild_slug,
                 name=conversation.name,
                 user_id=user_id,
-            )
-        except Exception:
-            logger.warning(
-                "conversation_service: Discord mirror failed for conversation=%s",
-                conversation.id,
-                exc_info=True,
             )
     return conversation
 
