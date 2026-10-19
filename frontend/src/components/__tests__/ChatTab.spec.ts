@@ -3,11 +3,12 @@ import { createPinia, setActivePinia } from 'pinia'
 import { mount } from '@vue/test-utils'
 import ChatTab from '../chat-pane/ChatTab.vue'
 import { useGuildStore } from '../../stores/guild'
+import { useUiStore } from '../../stores/ui'
 
 describe('ChatTab conversation isolation', () => {
   beforeEach(() => setActivePinia(createPinia()))
 
-  it('only renders unscoped messages while retaining conversation messages in the store', async () => {
+  it('renders unscoped messages and only the top-level comment of each conversation', async () => {
     const guild = useGuildStore()
     guild.messages = [
       { type: 'chat', from: 'system', content: 'Guild announcement' },
@@ -17,10 +18,14 @@ describe('ChatTab conversation isolation', () => {
     ]
     const wrapper = mount(ChatTab)
     expect(wrapper.text()).toContain('Guild announcement')
-    expect(wrapper.text()).not.toContain('Conversation question')
+    expect(wrapper.text()).toContain('Conversation question')
+    expect(wrapper.text()).toContain('Another conversation')
     expect(wrapper.text()).not.toContain('Conversation answer')
-    expect(wrapper.text()).not.toContain('Another conversation')
     expect(guild.messages).toHaveLength(4)
+    expect(wrapper.findAll('.conversation-link')).toHaveLength(2)
+
+    await wrapper.find('.conversation-link').trigger('click')
+    expect(useUiStore().activeTab).toBe('conversation-42')
 
     guild.messages.push({
       type: 'chat',

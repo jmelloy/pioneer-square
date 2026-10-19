@@ -62,6 +62,15 @@
         >
           Open PR →
         </a>
+        <button
+          v-if="(msg as ChatMessage).conversationId != null"
+          type="button"
+          class="conversation-link"
+          :title="'Open conversation ' + conversationLabel(msg as ChatMessage)"
+          @click="openConversation((msg as ChatMessage).conversationId as number)"
+        >
+          View conversation: {{ conversationLabel(msg as ChatMessage) }} →
+        </button>
       </template>
     </div>
   </div>
@@ -81,6 +90,8 @@
 import { ref, computed, watch, nextTick } from 'vue'
 import { renderMarkdown } from '../../utils/markdown'
 import { useGuildStore } from '../../stores/guild'
+import { useUiStore } from '../../stores/ui'
+import { useConversationsStore } from '../../stores/conversations'
 import { formatClock } from '../../utils/format'
 import { useChatGrouping, isToolUseGroup } from '../../composables/useChatGrouping'
 import type { GroupedMessage } from '../../composables/useChatGrouping'
@@ -91,7 +102,31 @@ const guildStore = useGuildStore()
 const inputText = ref('')
 const messagesEl = ref<HTMLElement | null>(null)
 
-const messages = computed(() => guildStore.messages.filter((msg) => msg.conversationId == null))
+const uiStore = useUiStore()
+const conversationsStore = useConversationsStore()
+
+// Main chat shows guild-level messages plus the top-level comment (first
+// visible message) of each conversation; replies stay in the detail view.
+const messages = computed(() => {
+  const seen = new Set<number>()
+  return guildStore.messages.filter((msg) => {
+    const id = msg.conversationId
+    if (id == null) return true
+    if (msg.role === 'tool_use' || msg.role === 'tool_result' || seen.has(id)) return false
+    seen.add(id)
+    return true
+  })
+})
+
+function conversationLabel(msg: ChatMessage): string {
+  const id = msg.conversationId as number
+  return conversationsStore.conversations.find((c) => c.id === id)?.name || `#${id}`
+}
+
+function openConversation(id: number) {
+  uiStore.selectConversation(id)
+  uiStore.openConversationTab(id)
+}
 const groupedMessages = useChatGrouping(messages)
 
 function msgSender(msg: ChatMessage): string {
@@ -303,6 +338,28 @@ watch(
   padding: 2px 6px;
   border: 1px solid var(--color-teal);
   transition: all 0.15s;
+}
+
+.conversation-link {
+  font-family: var(--font-pixel);
+  font-size: 7px;
+  color: var(--color-teal);
+  background: none;
+  align-self: flex-end;
+  margin-top: 2px;
+  padding: 2px 6px;
+  border: 1px solid var(--color-teal);
+  cursor: pointer;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+
+.conversation-link:hover {
+  background: rgba(0, 187, 170, 0.15);
+  box-shadow: 0 0 6px rgba(0, 187, 170, 0.4);
 }
 
 .pr-link:hover {
