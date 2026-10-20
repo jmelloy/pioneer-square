@@ -473,6 +473,7 @@ from routes import discord_connect as _discord_connect_routes  # noqa: E402
 from routes import foreman as _foreman_routes  # noqa: E402
 from routes import guilds as _guilds_routes  # noqa: E402
 from routes import issues as _issues_routes  # noqa: E402
+from routes import mcp as _mcp_routes  # noqa: E402
 from routes import models as _models_routes  # noqa: E402
 from routes import push as _push_routes  # noqa: E402
 from routes import tasks as _tasks_routes  # noqa: E402
@@ -503,6 +504,7 @@ app.include_router(_cost_routes.router)
 app.include_router(_discord_routes.router)
 app.include_router(_discord_admin_routes.router)
 app.include_router(_discord_connect_routes.router)
+app.include_router(_mcp_routes.router)
 if os.environ.get("DEBUG_TOKEN"):
     # /debug/... routes only exist when an operator has opted in by setting
     # DEBUG_TOKEN — see auth_deps.require_debug_token.

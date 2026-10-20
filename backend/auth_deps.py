@@ -24,6 +24,7 @@ Helper:
 
 from __future__ import annotations
 
+import hmac
 import os
 
 from database import get_db
@@ -187,6 +188,15 @@ async def require_worker_or_member_path(
     return await authorize_worker_or_member(guild_id, token)
 
 
+def check_debug_token(token: str | None) -> None:
+    """Raise 401/403 unless *token* matches the ``DEBUG_TOKEN`` env var."""
+    expected = os.environ.get("DEBUG_TOKEN", "")
+    if not token:
+        raise HTTPException(status_code=401, detail="Debug token required")
+    if not expected or not hmac.compare_digest(token.encode(), expected.encode()):
+        raise HTTPException(status_code=403, detail="Invalid debug token")
+
+
 def require_debug_token(
     authorization: str | None = Header(default=None),
     x_debug_token: str | None = Header(default=None),
@@ -199,13 +209,9 @@ def require_debug_token(
     is set — see ``routes/debug_query.py`` and its conditional mount in
     ``main.py``.
     """
-    expected = os.environ.get("DEBUG_TOKEN", "")
     token = x_debug_token
     if not token and authorization:
         scheme, _, value = authorization.partition(" ")
         if scheme.lower() == "bearer" and value:
             token = value
-    if not token:
-        raise HTTPException(status_code=401, detail="Debug token required")
-    if not expected or token != expected:
-        raise HTTPException(status_code=403, detail="Invalid debug token")
+    check_debug_token(token)
