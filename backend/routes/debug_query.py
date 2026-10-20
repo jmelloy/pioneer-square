@@ -116,16 +116,12 @@ def _validate_readonly_query(sql: str) -> str:
     return body
 
 
-@router.post("/query")
-async def debug_raw_query(
-    data: DebugRawQueryRequest,
-    db: AsyncSession = Depends(get_db_dep),
-):
-    """Raw read-only SQL lookup across the allow-listed operational tables.
+async def execute_readonly_query(db: AsyncSession, sql: str) -> list[dict]:
+    """Validate and run *sql* read-only; raises HTTPException on any failure.
 
-    Not guild-scoped — the debug token is an operator-wide credential.
+    Shared by ``POST /debug/query`` and the MCP ``debug_query`` tool.
     """
-    validated = _validate_readonly_query(data.sql)
+    validated = _validate_readonly_query(sql)
     # READ ONLY makes Postgres reject any write or write-side function for this
     # transaction — a DB guarantee that replaces a fragile keyword blocklist.
     # Issued first, before any snapshot-taking statement, as Postgres requires.
@@ -146,3 +142,15 @@ async def debug_raw_query(
         raise HTTPException(status_code=400, detail=f"Query failed: {exc.orig}") from exc
     except SQLAlchemyError as exc:
         raise HTTPException(status_code=400, detail=f"Query failed: {exc}") from exc
+
+
+@router.post("/query")
+async def debug_raw_query(
+    data: DebugRawQueryRequest,
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Raw read-only SQL lookup across the allow-listed operational tables.
+
+    Not guild-scoped — the debug token is an operator-wide credential.
+    """
+    return await execute_readonly_query(db, data.sql)
