@@ -563,3 +563,41 @@ async def test_start_gateway_spawns_task_and_stop_gateway_cancels_it(monkeypatch
         await gateway.stop_gateway()
 
     assert gateway._gateway_task is None
+
+
+# ---------------------------------------------------------------------------
+# _query_channel_wired: Conversation.discord_thread_id
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_conversation_thread_is_wired_and_non_mention_message_queued(client):
+    import database as database_module
+    from auth_deps import get_guild_pk
+    from foreman.conversation_service import get_or_create_active_conversation
+    from helpers import insert_guild
+
+    _test_client, db_url = client
+    insert_guild(db_url, "g-gw-conv1")
+    async with database_module.AsyncSessionLocal() as db:
+        guild_pk = await get_guild_pk(db, "g-gw-conv1")
+        conv, _ = await get_or_create_active_conversation(db, guild_pk, "user-gw-conv1")
+        conv.discord_thread_id = "gw-conv-thread-1"
+        db.add(conv)
+        await db.commit()
+
+    gateway._channel_wired_cache.clear()
+    assert await gateway._is_channel_wired("gw-conv-thread-1") is True
+    assert await gateway._is_channel_wired("gw-unknown-thread") is False
+
+    q: asyncio.Queue = asyncio.Queue()
+    gw_client = gateway.GatewayClient("token", queue=q)
+    await gw_client._handle_message_create(
+        {
+            "author": {"bot": False},
+            "guild_id": "g1",
+            "channel_id": "gw-conv-thread-1",
+            "content": "no mention here",
+        }
+    )
+    assert q.qsize() == 1

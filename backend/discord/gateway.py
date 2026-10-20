@@ -179,12 +179,13 @@ async def _query_channel_wired(channel_id: str) -> bool:
     then the single ``discord_thread_bindings`` table — a message posted
     inside any thread Pioneer Square created (per-PR/issue, per-task stream,
     or legacy per-guild-daily) carries that thread's own ID as ``channel_id``,
-    not its parent channel's. Never raises — DB errors are treated as "not
+    not its parent channel's — and finally ``Conversation.discord_thread_id``
+    for Foreman conversation threads. Never raises — DB errors are treated as "not
     wired".
     """
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415
-        from models import DiscordChannelGuild, DiscordThreadBinding  # noqa: PLC0415
+        from models import Conversation, DiscordChannelGuild, DiscordThreadBinding  # noqa: PLC0415
         from sqlmodel import col, select  # noqa: PLC0415
 
         async with AsyncSessionLocal() as db:
@@ -200,6 +201,14 @@ async def _query_channel_wired(channel_id: str) -> bool:
                 select(DiscordThreadBinding.id).where(
                     col(DiscordThreadBinding.thread_id) == channel_id
                 )
+            )
+            if result.first() is not None:
+                return True
+
+            # Foreman conversation threads (#1168) are recorded only on
+            # Conversation.discord_thread_id, with no thread-binding row.
+            result = await db.exec(
+                select(Conversation.id).where(col(Conversation.discord_thread_id) == channel_id)
             )
             return result.first() is not None
     except Exception:
