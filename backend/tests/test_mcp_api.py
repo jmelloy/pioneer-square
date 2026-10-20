@@ -184,3 +184,29 @@ def test_protocol_errors(client):
     c, *_ = _setup(client)
     assert c.post("/mcp", content="nope").status_code == 400
     assert _rpc(c, "bogus").json()["error"]["code"] == -32601
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        [1, 2],
+        "str",
+        5,
+        {"name": ["x"], "arguments": {}},
+        {"name": "list_tasks", "arguments": [1]},
+        {"name": "list_tasks", "arguments": "x"},
+        {"name": 7},
+    ],
+)
+def test_malformed_params_return_invalid_params(client, params):
+    c, gid, token, _ = _setup(client)
+    r = _rpc(c, "tools/call", params, token=token)
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == -32602
+
+
+def test_non_numeric_limit_is_invalid_params(client):
+    c, gid, token, _ = _setup(client)
+    call = {"name": "list_tasks", "arguments": {"guild_id": gid, "limit": "abc"}}
+    r = _rpc(c, "tools/call", call, token=token)
+    assert r.status_code == 400 and r.json()["error"]["code"] == -32602

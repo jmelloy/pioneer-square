@@ -51,6 +51,7 @@ _JSON_ERR_PARSE, _JSON_ERR_REQUEST, _JSON_ERR_METHOD, _JSON_ERR_PARAMS = (
     -32601,
     -32602,
 )
+_JSON_ERR_INTERNAL = -32603
 
 NORMAL_TOOLS: list[dict[str, Any]] = [
     {
@@ -280,7 +281,11 @@ async def mcp_endpoint(  # noqa: C901
     if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0" or "method" not in msg:
         return _rpc_error(None, _JSON_ERR_REQUEST, "Invalid request", 400)
     rid, method = msg.get("id"), msg["method"]
-    params = msg.get("params") or {}
+    params = msg.get("params")
+    if params is None:
+        params = {}
+    if not isinstance(params, dict):
+        return _rpc_error(rid, _JSON_ERR_PARAMS, "params must be an object", 400)
 
     if "id" not in msg:  # notification (e.g. notifications/initialized)
         return Response(status_code=202)
@@ -311,7 +316,13 @@ async def mcp_endpoint(  # noqa: C901
     if method != "tools/call":
         return _rpc_error(rid, _JSON_ERR_METHOD, f"Method not found: {method}")
 
-    name, args = params.get("name"), params.get("arguments") or {}
+    name, args = params.get("name"), params.get("arguments")
+    if args is None:
+        args = {}
+    if not isinstance(name, str) or not isinstance(args, dict):
+        return _rpc_error(
+            rid, _JSON_ERR_PARAMS, "name must be a string and arguments an object", 400
+        )
     if name in _DEBUG_HANDLERS:
         # Missing/invalid debug credentials look identical to an unknown tool
         # only after the caller proves they are at least a normal user, so the
@@ -320,17 +331,19 @@ async def mcp_endpoint(  # noqa: C901
     elif name in _NORMAL_HANDLERS:
         handler, tier = _NORMAL_HANDLERS[name], "normal"
     else:
-        return _rpc_error(rid, _JSON_ERR_PARAMS, f"Unknown tool: {name}")
+        return _rpc_error(rid, _JSON_ERR_PARAMS, f"Unknown tool: {name}", 400)
 
     creds = await http_bearer(request)
     token = creds.credentials if creds else None
     guild_id = args.get("guild_id") or x_guild_id
     if tier == "normal":
         if not isinstance(guild_id, str) or not guild_id:
-            return _rpc_error(rid, _JSON_ERR_PARAMS, "guild_id is required")
+            return _rpc_error(rid, _JSON_ERR_PARAMS, "guild_id is required", 400)
         args["guild_id"] = guild_id
     elif not guild_id:
-        return _rpc_error(rid, _JSON_ERR_PARAMS, "X-Guild-Id header is required for debug tools")
+        return _rpc_error(
+            rid, _JSON_ERR_PARAMS, "X-Guild-Id header is required for debug tools", 400
+        )
 
     try:
         principal = await authorize_worker_or_member(guild_id, token)
@@ -351,4 +364,7 @@ async def mcp_endpoint(  # noqa: C901
     except ToolError as exc:
         return _tool_result(rid, str(exc), is_error=True)
     except (KeyError, ValueError, TypeError) as exc:
-        return _rpc_error(rid, _JSON_ERR_PARAMS, f"Invalid arguments: {exc}")
+        return _rpc_error(rid, _JSON_ERR_PARAMS, f"Invalid arguments: {exc}", 400)
+    except Exception:
+        logging.getLogger(__name__).exception("MCP tool %s failed", name)
+        return _rpc_error(rid, _JSON_ERR_INTERNAL, "Internal error", 500)
