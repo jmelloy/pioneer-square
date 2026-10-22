@@ -12,6 +12,7 @@ import tempfile
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+from .git_ops import run_git
 from .runner_types import RunRequest, RunResult, StopReason  # pyright: ignore[reportMissingImports]
 
 logger = logging.getLogger(__name__)
@@ -172,6 +173,25 @@ async def run_codex_auto(
     return success, stop_reason, last_text, session_id
 
 
+async def _default_codex_args(cwd: str) -> list[str]:
+    # Linked worktrees keep their index and shared objects outside the working directory.
+    rc, output, _ = await run_git(
+        ["rev-parse", "--path-format=absolute", "--git-common-dir", "--absolute-git-dir"],
+        cwd=cwd,
+    )
+    git_dirs = dict.fromkeys(output.splitlines()) if rc == 0 else {}
+    filesystem = ", ".join(f'{json.dumps(path)}="write"' for path in git_dirs)
+    return [
+        "-c",
+        'approval_policy="never"',
+        "-c",
+        'default_permissions="pioneer"',
+        "-c",
+        'permissions.pioneer={extends=":workspace", network={enabled=true}, '
+        f"filesystem={{{filesystem}}}}}",
+    ]
+
+
 async def _run_codex_once(
     description: str,
     cwd: str,
@@ -191,22 +211,6 @@ async def _run_codex_once(
     )
     last_message_path = last_message_file.name
     last_message_file.close()
-    cmd = [
-        codex_path,
-        "exec",
-        "-C",
-        cwd,
-        *(["resume", resume_session_id] if resume_session_id else []),
-        "--json",
-        "--output-last-message",
-        last_message_path,
-        *(["--model", model] if model and "--model" not in (codex_args or []) else []),
-        *(codex_args or []),
-        description,
-    ]
-    logger.info("Spawning codex in %s; description=%r", cwd, description)
-    logger.info("codex argv: %s", cmd)
-    await emit(f"[codex] Starting: {description[:80]}")
     last_text = ""
     stop_reason = "no_events"
     event_count = 0
@@ -214,6 +218,23 @@ async def _run_codex_once(
     master_fd: int | None = None
     slave_fd: int | None = None
     try:
+        codex_args = codex_args or await _default_codex_args(cwd)
+        cmd = [
+            codex_path,
+            "exec",
+            "-C",
+            cwd,
+            *(["resume", resume_session_id] if resume_session_id else []),
+            "--json",
+            "--output-last-message",
+            last_message_path,
+            *(["--model", model] if model and "--model" not in codex_args else []),
+            *codex_args,
+            description,
+        ]
+        logger.info("Spawning codex in %s; description=%r", cwd, description)
+        logger.info("codex argv: %s", cmd)
+        await emit(f"[codex] Starting: {description[:80]}")
         # `codex exec` treats any non-TTY stdin, including /dev/null, as piped
         # prompt content and tries to drain it. Give it an idle TTY so the
         # explicit prompt argument is the only task input.
@@ -221,6 +242,9 @@ async def _run_codex_once(
         subprocess_env = dict(env) if env is not None else dict(os.environ)
         if openai_api_key is not None:
             subprocess_env["OPENAI_API_KEY"] = openai_api_key
+        # `codex exec` uses CODEX_API_KEY for invocation-scoped API authentication.
+        if not subprocess_env.get("CODEX_API_KEY") and subprocess_env.get("OPENAI_API_KEY"):
+            subprocess_env["CODEX_API_KEY"] = subprocess_env["OPENAI_API_KEY"]
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=cwd,
@@ -306,7 +330,7 @@ async def _run_codex_once(
 class CodexRunner:
     """Codex adapter for the shared Runner seam."""
 
-    credential_hint = "OPENAI_API_KEY"
+    credential_hint = "CODEX_API_KEY or OPENAI_API_KEY"
 
     def __init__(
         self,
@@ -345,7 +369,7 @@ class CodexRunner:
         )
 
     async def probe_credentials(self, env: dict[str, str]) -> bool:
-        if env.get("OPENAI_API_KEY") or self.openai_api_key:
+        if env.get("CODEX_API_KEY") or env.get("OPENAI_API_KEY") or self.openai_api_key:
             return True
         try:
             proc = await asyncio.create_subprocess_exec(

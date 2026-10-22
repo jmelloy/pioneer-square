@@ -70,8 +70,8 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="codex_args",
         action="append",
         help=(
-            "Extra argument passed to `codex exec` before the prompt "
-            "(may be repeated, e.g. --codex-arg --sandbox=workspace-write)."
+            "Argument override for `codex exec` (replaces the default permission policy; "
+            "may be repeated, e.g. --codex-arg=--sandbox=read-only)."
         ),
     )
     parser.add_argument(
