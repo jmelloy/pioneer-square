@@ -45,6 +45,7 @@ class Config:
     work_dir: str = "worktrees"
     claude_path: str = "claude"
     codex_path: str = "codex"
+    # Empty selects task-scoped workspace/network/Git permissions; non-empty replaces them.
     codex_args: list[str] = field(default_factory=list)
     codex_doctor: bool = True
     # OpenAI API key for Codex tasks. Falls back to OPENAI_API_KEY env var at

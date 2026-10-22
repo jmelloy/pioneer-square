@@ -62,10 +62,13 @@ max_turns = 50
 # OpenAI API key for Codex tasks. Use "env:VAR_NAME" to read from an
 # environment variable (recommended), or set OPENAI_API_KEY in the environment.
 # api_key = "env:OPENAI_API_KEY"
+# Passed to `codex exec` as CODEX_API_KEY. An explicit CODEX_API_KEY in the
+# environment (including [codex.env]) takes precedence.
 
-# Extra args passed to `codex exec` before the prompt. Keep approval policy
-# non-interactive for unattended workers.
-# args = ["--sandbox", "workspace-write", "--ask-for-approval", "never"]
+# With no args, workers use a workspace sandbox with network access, no approval
+# prompts, and write access to this task's Git metadata (including linked worktrees).
+# Non-empty args replace those defaults; configure the entire permission policy.
+# args = ["--sandbox", "read-only", "-c", 'approval_policy="never"']
 
 # Run `codex doctor` at worker startup and log the result (non-fatal).
 doctor = true
