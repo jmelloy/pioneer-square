@@ -162,14 +162,16 @@ resource "aws_autoscaling_group" "ecs_capacity" {
     propagate_at_launch = true
   }
 
-  # ECS managed scaling owns desired_capacity, and ECS adds the AmazonECSManaged
-  # tag when the ASG is attached to a capacity provider. Do not let the targeted
-  # migrate/bootstrap apply fight managed scaling before running the migration.
+  # ECS's service-role permissions require this tag to manage scaling and instance protection.
+  tag {
+    key                 = "AmazonECSManaged"
+    value               = "true"
+    propagate_at_launch = true
+  }
+
+  # ECS managed scaling owns desired_capacity, including during targeted bootstrap applies.
   lifecycle {
-    ignore_changes = [
-      desired_capacity,
-      tag,
-    ]
+    ignore_changes = [desired_capacity]
   }
 }
 
