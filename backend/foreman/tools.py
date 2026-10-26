@@ -25,6 +25,7 @@ import discord_notifier
 import worker_runtime
 from database import get_db
 from db import github_cache
+from db.github_events import link_task_context
 from events import (
     broadcast,  # noqa: F401 — looked up as foreman.tools.broadcast by ports.RealEvents
     broadcast_msg,
@@ -41,6 +42,7 @@ from github_app_auth import get_app_installation_token, get_app_slug
 from lock_service import LockService
 from models import (
     Agent,
+    Conversation,
     GithubToken,
     Guild,
     GuildKey,
@@ -1450,6 +1452,8 @@ async def exec_tools(
     guild_id: str,
     tool_uses: list,
     user_id: str | None = None,
+    *,
+    conversation_id: int | None = None,
 ) -> list:
     """Execute tool calls from the foreman AI and return tool-result blocks.
 
@@ -1464,7 +1468,9 @@ async def exec_tools(
     stamped onto any tasks created by ``create_task`` / ``assign_task`` so
     worker-driven events later route back to the same user thread.
     """
-    coros = [_exec_one_tool(guild_id, tu, user_id) for tu in tool_uses]
+    coros = [
+        _exec_one_tool(guild_id, tu, user_id, conversation_id=conversation_id) for tu in tool_uses
+    ]
     return list(await asyncio.gather(*coros))
 
 
@@ -1566,12 +1572,9 @@ async def _handle_create_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
     phase = inp.get("phase", "execute")
     task_id = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
     created_at = datetime.now(UTC)
-    # Route this task back to the conversation it was created from (#1167) —
-    # reuses the conversation foreman.triggers.trigger_foreman already
-    # created/touched for this message; falls back to None for
-    # system/webhook-triggered work with no human user_id.
-    conversation_id: int | None = None
-    if guild_pk is not None and user_id:
+    # A run's pinned conversation wins over the user's unrelated latest one.
+    conversation_id = ctx.conversation_id
+    if conversation_id is None and guild_pk is not None and user_id:
         conversation, _created = await get_or_create_active_conversation(
             db, guild_pk, user_id, name_hint=name
         )
@@ -1595,6 +1598,8 @@ async def _handle_create_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
             conversation_id=conversation_id,
         )
     )
+    await db.flush()
+    await link_task_context(db, task_id)
     await db.commit()
     await ctx.events.broadcast(
         guild_id,
@@ -1925,6 +1930,7 @@ async def _handle_assign_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
                     task_id,
                     task_name,
                 )
+                await link_task_context(db, task_id)
                 result_text = f"Task {task_id} assigned to {wid}."
             else:
                 name = inp.get("name") or desc[:60]
@@ -1934,8 +1940,8 @@ async def _handle_assign_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
                 created_at = datetime.now(UTC)
                 # Route this task back to the conversation it was created
                 # from (#1167).
-                conversation_id: int | None = None
-                if guild_pk is not None and user_id:
+                conversation_id = ctx.conversation_id
+                if conversation_id is None and guild_pk is not None and user_id:
                     assign_conversation, _created = await get_or_create_active_conversation(
                         db, guild_pk, user_id, name_hint=name
                     )
@@ -2016,6 +2022,7 @@ async def _handle_assign_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
                     task_id,
                     name,
                 )
+                await link_task_context(db, task_id)
                 result_text = f"Task {task_id} queued for {wid}."
         finally:
             await LockService(db).release(assign_lock_key, owner=assign_lock_id)
@@ -2676,6 +2683,12 @@ async def _handle_create_github_issue(inp: dict, ctx: ToolContext) -> tuple[str,
     if inp.get("labels"):
         payload["labels"] = inp["labels"]
     issue = await _to_thread(_gh_api_post, f"/repos/{repo}/issues", token, payload)
+    try:
+        await github_cache.upsert_issue(ctx.db, repo, issue, conversation_id=ctx.conversation_id)
+    except Exception:
+        # Remote creation succeeded; reporting failure here invites duplicate issues.
+        await ctx.db.rollback()
+        logger.warning("Failed to cache created issue %s#%s", repo, issue["number"], exc_info=True)
     result_text = json.dumps(
         {
             "number": issue["number"],
@@ -2709,6 +2722,12 @@ async def _handle_create_pr(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
             "base": base,
         },
     )
+    try:
+        await github_cache.upsert_pr(ctx.db, repo, pr, conversation_id=ctx.conversation_id)
+    except Exception:
+        # Remote creation succeeded; do not encourage retrying the GitHub write.
+        await ctx.db.rollback()
+        logger.warning("Failed to cache created PR %s#%s", repo, pr["number"], exc_info=True)
     logger.info(
         "guild=%s create_pr: repo=%s %s -> %s pr=#%s",
         guild_id,
@@ -3271,7 +3290,9 @@ _TOOL_REGISTRY: dict[str, ForemanTool] = {
 }
 
 
-async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
+async def _exec_one_tool(
+    guild_id: str, tu, user_id: str | None = None, *, conversation_id: int | None = None
+) -> dict:
     """Dispatch a single tool call via the registry and return a tool_result block."""
     _ctx_token = _api_calls_ctx.set([])
     result_text = ""
@@ -3302,11 +3323,17 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 user_id=user_id,
                 db=db,
                 guild_pk=await get_guild_pk(db, guild_id),
+                conversation_id=conversation_id,
                 events=RealEvents(),
                 github=RealGithub(),
                 clock=SystemClock(),
                 scheduler=RealScheduler(),
             )
+
+            if conversation_id is not None:
+                conversation = await db.get(Conversation, conversation_id)
+                if conversation is None or conversation.guild_id != ctx.guild_pk:
+                    raise ValueError("Conversation does not belong to this guild")
 
             if tool.context == _CTX_DB:
                 result_text, is_error = await tool.handler(inp, ctx)

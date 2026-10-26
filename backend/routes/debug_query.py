@@ -63,6 +63,12 @@ _ALLOWED_TABLES = frozenset(
         "github_events",
         "llm_usage",
         "foreman_turns",
+        "conversations",
+        "messages",
+        "github_issues",
+        "github_pull_requests",
+        "discord_thread_bindings",
+        "discord_channel_guilds",
     }
 )
 

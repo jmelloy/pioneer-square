@@ -476,10 +476,9 @@ async def _auto_route_task_reply(
     """Route a task-bound thread reply straight to redirect_task/send_followup (#959),
     bypassing the Foreman AI — see the module docstring.
 
-    Returns True once the reply has been routed this way (the underlying tool call's
-    own success/failure is logged by ``exec_tools``/``_exec_one_tool`` regardless), or
-    False if *task_id* can't be found or its state isn't one this auto-routes, so the
-    caller should fall back to the normal Foreman-chat path.
+    Returns True only after successful dispatch. Missing tasks, unsupported states,
+    and failed/empty tool results fall back to normal Foreman chat so the user gets
+    an explanation or recovery rather than a silently swallowed reply.
     """
     row = await _task_state_row(task_id)
     if row is None:
@@ -513,7 +512,7 @@ async def _auto_route_task_reply(
         result.get("is_error", False),
         result.get("content"),
     )
-    return True
+    return bool(results) and not result.get("is_error", False)
 
 
 async def _resolve_user_guild_slugs(ps_user_id: str) -> list[str]:
@@ -816,8 +815,13 @@ async def _forward_to_foreman(
             exc_info=True,
         )
 
-    if task_id and await _auto_route_task_reply(guild_slug, task_id, content, user_id=ps_user_id):
-        return
+    if task_id:
+        if await _auto_route_task_reply(guild_slug, task_id, content, user_id=ps_user_id):
+            return
+        human_message += (
+            "\n[Direct task routing did not complete. Inspect the task/worker state before "
+            "retrying a mutation: a failed dispatch may have partially applied.]"
+        )
 
     from foreman.runner import reset_foreman_poll  # noqa: PLC0415
 

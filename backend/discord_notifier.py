@@ -281,12 +281,24 @@ async def _bot_request(
     if not bot_token():
         return None
     try:
-        return await _bot_request_raw(method, path, json_body)
+        for attempt in range(3):
+            try:
+                return await _bot_request_raw(method, path, json_body)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 429 or attempt == 2:
+                    raise
+                delay = float(exc.response.headers.get("Retry-After", "1"))
+                if not 0 <= delay <= 60:
+                    raise
+                logger.info(
+                    "Discord rate limited method=%s path=%s retry_after=%s", method, path, delay
+                )
+                await asyncio.sleep(delay)
     except Exception:
         logger.warning(
             "Discord bot API request failed method=%s path=%s", method, path, exc_info=True
         )
-        return None
+    return None
 
 
 async def get(path: str) -> dict | list | None:
@@ -818,6 +830,15 @@ async def notify_foreman_chat(
         )
         if thread_id:
             await _post_foreman_chat_line(thread_id, content)
+        else:
+            logger.warning(
+                "discord: foreman reply undelivered guild=%s conversation=%s task=%s "
+                "reply_channel=%s reason=missing-conversation-mirror",
+                guild_id,
+                conversation_id,
+                task_id,
+                channel_id,
+            )
         return
 
     if channel_id:

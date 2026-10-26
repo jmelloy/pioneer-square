@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from models import GithubIssue, GithubPullRequest
-from sqlalchemy import func
+from models import GithubIssue, GithubPullRequest, Task
+from sqlalchemy import func, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -136,6 +136,28 @@ async def upsert_pr(
         )
     )
     return result.one()
+
+
+def conversation_item_filter(
+    model: type[GithubIssue] | type[GithubPullRequest], conversation_id: int
+):
+    """Cache ownership plus task links form a set, without changing the first owner."""
+    repo_col, number_col = (
+        (Task.issue_repo, Task.issue_number)
+        if model is GithubIssue
+        else (Task.pr_repo, Task.pr_number)
+    )
+    linked_task = (
+        select(Task.id)
+        .where(
+            col(Task.conversation_id) == conversation_id,
+            col(Task.deleted_at).is_(None),
+            col(repo_col) == col(model.repo),
+            col(number_col) == col(model.number),
+        )
+        .exists()
+    )
+    return or_(col(model.conversation_id) == conversation_id, linked_task)
 
 
 async def get_issue(db: AsyncSession, repo: str, number: int) -> GithubIssue | None:

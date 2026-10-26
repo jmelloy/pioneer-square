@@ -32,5 +32,6 @@ class ToolContext:
     github: Github
     clock: Clock
     scheduler: Scheduler
+    conversation_id: int | None = None
     github_token: str | None = None
     github_username: str | None = None

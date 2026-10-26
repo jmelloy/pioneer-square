@@ -232,7 +232,7 @@ def test_run_foreman_ai_records_action_on_tool_calls():
                 return LLMResult(content=[end_turn_block], stop_reason="end_turn", api_log_id=2)
 
         class ScriptedToolExecutor:
-            async def exec(self, guild_id, tool_uses, *, user_id=None):
+            async def exec(self, guild_id, tool_uses, *, user_id=None, conversation_id=None):
                 return [{"type": "tool_result", "tool_use_id": "tu-1", "content": "ok"}]
 
         class RecordingJournal:

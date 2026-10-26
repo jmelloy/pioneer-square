@@ -27,10 +27,14 @@ from database import get_db_dep
 from db import github_cache
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from foreman.conversation_service import ensure_conversation
 from foreman.runner import ensure_poll_loop, run_foreman_ai
 from lock_service import LockService
 from models import (
+    Conversation,
     GithubEvent,
+    GithubIssue,
+    GithubPullRequest,
     GithubToken,
     Guild,
     GuildMember,
@@ -144,7 +148,7 @@ class DebounceQueue:
 
     def __init__(self, window_seconds: float = DEBOUNCE_WINDOW_SECONDS) -> None:
         self._window = window_seconds
-        self._buffers: dict[str, list[tuple[str, str | None, str | None]]] = {}
+        self._buffers: dict[str, list[tuple[str, str | None, str | None, int | None]]] = {}
         self._tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
         self._generation: dict[str, int] = {}
 
@@ -191,26 +195,28 @@ class DebounceQueue:
             )
 
     async def _deliver(
-        self, key: str, guild_id: str, items: list[tuple[str, str | None, str | None]]
+        self, key: str, guild_id: str, items: list[tuple[str, str | None, str | None, int | None]]
     ) -> None:
-        summaries = [s for s, _, _ in items]
+        summaries = [s for s, _, _, _ in items]
         combined = "\n\n---\n\n".join(summaries) if len(summaries) > 1 else summaries[0]
         # Use the first non-bot user_id in the batch. All items share the same
         # task owner, but a bot user_id (ending in "[bot]") is less useful for
         # attribution than a real human.  Fall back to any non-None user_id if
         # every entry is a bot, and to None if the batch is entirely anonymous.
         user_id = next(
-            (uid for _, uid, _ in items if uid and not uid.endswith("[bot]")),
-            next((uid for _, uid, _ in items if uid), None),
+            (uid for _, uid, _, _ in items if uid and not uid.endswith("[bot]")),
+            next((uid for _, uid, _, _ in items if uid), None),
         )
         # All events buffered under one key share a task (key is "{guild}:{task_id}");
         # task_id is metadata on the run, not a separate context (issue #1200).
-        task_id = next((tid for _, _, tid in items if tid), None)
+        task_id = next((tid for _, _, tid, _ in items if tid), None)
+        conversation_id = next((cid for _, _, _, cid in items if cid is not None), None)
         await run_foreman_ai(
             guild_id,
             combined,
             user_id=user_id,
             task_id=task_id,
+            conversation_id=conversation_id,
             trigger="github-event",
         )
         # Automated github churn (CI check/status especially) fired its run above;
@@ -260,6 +266,7 @@ class DebounceQueue:
         summary: str,
         user_id: str | None,
         task_id: str | None = None,
+        conversation_id: int | None = None,
     ) -> None:
         """Buffer *summary* and (re)start the per-PR debounce timer.
 
@@ -288,7 +295,7 @@ class DebounceQueue:
         # above ensures the old task cannot also deliver the same events, so
         # there is no risk of double delivery.
         self._buffers[key] = snapshot
-        self._buffers[key].append((summary, user_id, task_id))
+        self._buffers[key].append((summary, user_id, task_id, conversation_id))
         # Use asyncio.create_task directly: the task is kept alive by
         # self._tasks[key] (a strong reference), so GC is not a concern.
         # _log_fire_error handles unexpected exceptions via the done callback.
@@ -380,7 +387,9 @@ def _should_notify_ci_result(head_branch: str | None, conclusion: str | None) ->
     return head_branch != "main" or conclusion == "failure"
 
 
-async def _find_task(db, guild_pk: int, repo: str | None, pr_number: int | None):
+async def _find_task(
+    db, guild_pk: int, repo: str | None, pr_number: int | None, *, issue: bool = False
+):
     """Match a webhook to one of this guild's tasks by (repo, pr_number).
 
     Returns the task row (id, user_id, issue_repo, issue_number, branch,
@@ -406,10 +415,11 @@ async def _find_task(db, guild_pk: int, repo: str | None, pr_number: int | None)
         )
         .where(
             col(Task.guild_id) == guild_pk,
-            col(Task.pr_repo) == repo,
-            col(Task.pr_number) == pr_number,
+            col(Task.issue_repo if issue else Task.pr_repo) == repo,
+            col(Task.issue_number if issue else Task.pr_number) == pr_number,
+            col(Task.deleted_at).is_(None),
         )
-        .order_by(col(Task.created_at).desc())
+        .order_by(col(Task.created_at).desc(), col(Task.id).desc())
         .limit(1)
     )
     return res.first()
@@ -434,6 +444,7 @@ async def _find_task_conversation_by_issue(
             col(Task.guild_id) == guild_pk,
             col(Task.issue_repo) == repo,
             col(Task.issue_number) == issue_number,
+            col(Task.deleted_at).is_(None),
             col(Task.conversation_id).is_not(None),
         )
         .order_by(col(Task.created_at).desc())
@@ -460,6 +471,7 @@ def _should_dispatch_to_foreman(
     payload: dict,
     sender_login: str | None,
     task_id: str | None,
+    conversation_id: int | None = None,
 ) -> tuple[bool, str]:
     """Decide whether this webhook should wake the foreman.
 
@@ -468,11 +480,11 @@ def _should_dispatch_to_foreman(
     log lines and tests.
 
     Filtering rules (see docs/github-pr-subscriptions.md §4):
-    - No matching task ⇒ skip (foreman has no context)
+    - No matching task or explicit cached conversation ⇒ skip (no owned context)
     - ``[bot]`` senders on non-CI events ⇒ skip (Dependabot opening PRs etc)
     - ``check_run`` events with ``status != "completed"`` ⇒ skip (pending runs are noisy)
     """
-    if not task_id:
+    if not task_id and conversation_id is None:
         return False, "no-matching-task"
     if sender_login and sender_login.endswith("[bot]") and event_type not in _BOT_OK_EVENTS:
         return False, "bot-non-ci-sender"
@@ -754,15 +766,71 @@ async def github_webhook(
         )
         raise HTTPException(status_code=400, detail="Payload must be a JSON object")
 
+    # Avoid conversation-creation side effects on already accepted redeliveries.
+    if (
+        await db.exec(select(GithubEvent.id).where(col(GithubEvent.delivery_id) == delivery_id))
+    ).first():
+        return Response(status_code=202)
+
     action = payload.get("action") if isinstance(payload.get("action"), str) else None
     pr_number, pr_url, repo = _extract_pr_info(payload)
     sender = payload.get("sender") or {}
     sender_login = sender.get("login") if isinstance(sender, dict) else None
 
-    task_row = await _find_task(db, guild_pk, repo, pr_number)
+    issue_payload = payload.get("issue") or {}
+    issue_number = issue_payload.get("number") if isinstance(issue_payload, dict) else None
+    lookup_number = pr_number if pr_number is not None else issue_number
+    is_issue = pr_number is None and issue_number is not None
+    task_row = await _find_task(db, guild_pk, repo, lookup_number, issue=is_issue)
     task_id = task_row.id if task_row else None
     task_user_id = task_row.user_id if task_row else None
     task_conversation_id = task_row.conversation_id if task_row else None
+    if task_conversation_id is None and repo and lookup_number is not None:
+        model = GithubIssue if is_issue else GithubPullRequest
+        cached = (
+            await db.exec(
+                select(Conversation.id, Conversation.user_id)
+                .join(model, col(model.conversation_id) == col(Conversation.id))
+                .where(
+                    col(Conversation.guild_id) == guild_pk,
+                    col(model.repo) == repo,
+                    col(model.number) == lookup_number,
+                )
+            )
+        ).first()
+        if cached:
+            task_conversation_id, task_user_id = cached
+
+    # Unowned review/issue work must not inherit the owner's unrelated latest chat.
+    requested_reviewer = (payload.get("requested_reviewer") or {}).get("login")
+    owner_login = (
+        await _get_guild_owner_github_login(db, guild_pk)
+        if event_type == "pull_request" and action == "review_requested"
+        else None
+    )
+    starts_work = bool(
+        (requested_reviewer and owner_login and requested_reviewer.lower() == owner_login.lower())
+        or _devready_issue_trigger(event_type, action, payload)
+    )
+    if task_conversation_id is None and starts_work:
+        owner = (
+            await db.exec(
+                select(GuildMember.user_id)
+                .where(
+                    col(GuildMember.guild_id) == guild_pk,
+                    col(GuildMember.role) == "owner",
+                    col(GuildMember.deleted_at).is_(None),
+                )
+                .limit(1)
+            )
+        ).first()
+        if owner:
+            node = payload.get("pull_request") or issue_payload
+            conversation = await ensure_conversation(
+                guild_id, owner, f"{repo}#{lookup_number}: {node.get('title', '')}", force_new=True
+            )
+            if conversation is not None:
+                task_conversation_id, task_user_id = conversation.id, owner
 
     # Trim the persisted payload so a runaway diff hunk can't balloon the DB.
     body_text = body.decode("utf-8", errors="replace")
@@ -818,7 +886,10 @@ async def github_webhook(
                 db, guild_pk, repo, issue_payload.get("number")
             )
             await github_cache.upsert_issue(
-                db, repo, issue_payload, conversation_id=issue_conversation_id
+                db,
+                repo,
+                issue_payload,
+                conversation_id=issue_conversation_id or task_conversation_id,
             )
     elif event_type == "pull_request" and repo:
         pr_payload = payload.get("pull_request")
@@ -1123,6 +1194,8 @@ async def github_webhook(
             to="foreman",
             content=chat_line,
             createdAt=chat_now.isoformat(),
+            taskId=task_id,
+            conversationId=task_conversation_id,
         ),
     )
     db.add(
@@ -1182,7 +1255,12 @@ async def github_webhook(
                 # Key is PR-scoped so rapid re-requests for the same PR coalesce.
                 key = f"{guild_id}:review_requested:{repo}#{pr_number}"
                 await _debounce_queue.schedule(
-                    key, guild_id, summary, task_user_id, task_id=task_id
+                    key,
+                    guild_id,
+                    summary,
+                    task_user_id,
+                    task_id=task_id,
+                    conversation_id=task_conversation_id,
                 )
                 logger.info(
                     "github webhook review_requested dispatched guild=%s delivery=%s repo=%s pr=%s "
@@ -1215,7 +1293,14 @@ async def github_webhook(
         )
         # Key is issue-scoped so rapid re-labeling of the same issue coalesces.
         key = f"{guild_id}:issues-devready:{repo}#{issue_num}"
-        await _debounce_queue.schedule(key, guild_id, summary, task_user_id, task_id=task_id)
+        await _debounce_queue.schedule(
+            key,
+            guild_id,
+            summary,
+            task_user_id,
+            task_id=task_id,
+            conversation_id=task_conversation_id,
+        )
         logger.info(
             "github webhook issues devready dispatched guild=%s delivery=%s repo=%s issue=%s "
             "action=%s label=%s",
@@ -1228,14 +1313,21 @@ async def github_webhook(
         )
     else:
         dispatch, skip_reason = _should_dispatch_to_foreman(
-            event_type, action, payload, sender_login, task_id
+            event_type, action, payload, sender_login, task_id, task_conversation_id
         )
         if dispatch:
             summary = _build_foreman_summary(
-                event_type, action, payload, repo, pr_number, task_id or "", sender_login
+                event_type, action, payload, repo, lookup_number, task_id or "", sender_login
             )
-            key = f"{guild_id}:{task_id}"
-            await _debounce_queue.schedule(key, guild_id, summary, task_user_id, task_id=task_id)
+            key = f"{guild_id}:{task_id or f'conversation:{task_conversation_id}'}"
+            await _debounce_queue.schedule(
+                key,
+                guild_id,
+                summary,
+                task_user_id,
+                task_id=task_id,
+                conversation_id=task_conversation_id,
+            )
         else:
             logger.info(
                 "github webhook skip-foreman guild=%s delivery=%s event=%s reason=%s",
