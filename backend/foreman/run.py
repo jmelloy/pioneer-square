@@ -41,7 +41,12 @@ logger = logging.getLogger(__name__)
 
 class ToolExecutor(Protocol):
     async def exec(
-        self, guild_id: str, tool_uses: list[Any], *, user_id: str | None = None
+        self,
+        guild_id: str,
+        tool_uses: list[Any],
+        *,
+        user_id: str | None = None,
+        conversation_id: int | None = None,
     ) -> list[dict]: ...
 
 
@@ -53,11 +58,18 @@ class RealToolExecutor:
     """
 
     async def exec(
-        self, guild_id: str, tool_uses: list[Any], *, user_id: str | None = None
+        self,
+        guild_id: str,
+        tool_uses: list[Any],
+        *,
+        user_id: str | None = None,
+        conversation_id: int | None = None,
     ) -> list[dict]:
         from foreman import tools as _tools
 
-        return await _tools.exec_tools(guild_id, tool_uses, user_id=user_id)
+        return await _tools.exec_tools(
+            guild_id, tool_uses, user_id=user_id, conversation_id=conversation_id
+        )
 
 
 @dataclass
@@ -193,7 +205,10 @@ class ForemanRun:
         _record_guild_action(self._cfg.guild_id)
 
         tool_results = await self._tools.exec(
-            self._cfg.guild_id, tool_uses, user_id=self._cfg.user_id
+            self._cfg.guild_id,
+            tool_uses,
+            user_id=self._cfg.user_id,
+            conversation_id=self._cfg.conversation_id,
         )
         # Truncate verbose results; filter to only IDs in the current batch so
         # stale results that survived history trimming are never persisted.

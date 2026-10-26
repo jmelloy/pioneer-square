@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import discord_notifier
+from db.github_events import link_task_context
 from events import (
     agent_owner_lock,
     agent_owners,
@@ -851,6 +852,8 @@ async def handle_task_update(ctx: WSContext, msg: TaskUpdateMsg) -> None:
         await ctx.db.exec(update(Task).where(col(Task.id) == task_id).values(**update_values))
         if update_values.get("state") in TERMINAL_STATES:
             await LockService(ctx.db).release(f"task:{task_id}")
+        if "prUrl" in fields_set:
+            await link_task_context(ctx.db, task_id)
         await ctx.db.commit()
     await broadcast_msg(ctx.guild_id, msg, exclude=ctx.websocket)
     if "state" in update_values:
@@ -993,6 +996,8 @@ async def handle_task_complete(ctx: WSContext, msg: TaskCompleteMsg) -> None:
             .values(state=next_state)
         )
         await LockService(ctx.db).release(f"task:{task_id}")
+        if pr_url:
+            await link_task_context(ctx.db, task_id)
         await ctx.db.commit()
     await broadcast_msg(ctx.guild_id, msg, exclude=ctx.websocket)
     if task_id:
@@ -1076,6 +1081,8 @@ async def handle_task_followup_done(ctx: WSContext, msg: TaskFollowupDoneMsg) ->
                 .values(**pr_update)
             )
         await LockService(ctx.db).release(f"task:{task_id}")
+        if pr_update:
+            await link_task_context(ctx.db, task_id)
         await ctx.db.commit()
     await broadcast_msg(ctx.guild_id, msg, exclude=ctx.websocket)
     if not task_id:

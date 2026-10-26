@@ -14,6 +14,8 @@ from typing import Any
 
 from auth_deps import get_guild_pk
 from database import AsyncSessionLocal, get_db
+from db.github_cache import conversation_item_filter
+from db.github_events import conversation_event_filter
 from events import broadcast_msg
 from foreman.constants import (
     _24H_SECS,
@@ -118,13 +120,11 @@ class _GuildRunLock:
 _guild_locks: dict[tuple[str, str | None], _GuildRunLock] = {}
 
 
-# Max number of queued human messages per (guild, user) key. Bounded so a
-# guild nobody is watching can't grow this without limit; the oldest entry is
-# dropped (with a warning) once the cap is hit.
+# Bound queued human/GitHub work per (guild, user); overflow favors human input.
 _HUMAN_QUEUE_MAX = 50
 
-# FIFO queues of human messages that arrived while the foreman was busy,
-# keyed by the same lock key used for ``_guild_locks``.
+# FIFO work arriving while the foreman is busy, keyed like ``_guild_locks``.
+# shortcut: in-memory queues lose work on restart; use a durable inbox for guaranteed delivery.
 _human_queues: dict[tuple[str, str | None], "deque[_QueuedHumanTurn]"] = {}
 
 
@@ -510,6 +510,8 @@ async def _load_conversation_context(db, conversation_id: int | None) -> str:
             col(Task.phase),
             col(Task.issue_repo),
             col(Task.issue_number),
+            col(Task.pr_repo),
+            col(Task.pr_number),
             col(Task.branch),
             col(Task.pr_url),
         )
@@ -528,15 +530,26 @@ async def _load_conversation_context(db, conversation_id: int | None) -> str:
             col(GithubEvent.pr_url),
             col(GithubEvent.created_at),
         )
-        .where(col(GithubEvent.conversation_id) == conversation_id)
+        .where(conversation_event_filter(conversation_id))
         .order_by(col(GithubEvent.id).desc())
         .limit(MAX_CONVERSATION_EVENTS)
     )
     events = [dict(r._mapping) for r in event_result.all()]
 
-    if not tasks and not events:
+    items = {}
+    for key, model in (("issues", GithubIssue), ("pull_requests", GithubPullRequest)):
+        result = await db.exec(
+            select(model.repo, model.number, model.title, model.state)
+            .where(conversation_item_filter(model, conversation_id))
+            .order_by(col(model.updated_at).desc())
+            .limit(MAX_CONVERSATION_TASKS)
+        )
+        items[key] = [dict(row._mapping) for row in result.all()]
+    if not tasks and not events and not any(items.values()):
         return ""
-    return json.dumps({"tasks": tasks, "github_events": events}, indent=2, default=_json_default)
+    return json.dumps(
+        {"tasks": tasks, "github_events": events, **items}, indent=2, default=_json_default
+    )
 
 
 async def _save_turn(
@@ -1242,15 +1255,16 @@ async def run_foreman_ai(
     falling back to "the user's most recent conversation" would be wrong here.
 
     Uses the ``busy`` flag on the ``_GuildRunLock`` stored in ``_guild_locks``.
-    If a run is already in progress, automated invocations (``is_human=False``
-    — periodic-check, GitHub webhook events, worker lifecycle, task review
-    escalations) are dropped; the poll loop re-triggers on the next tick.
+    If a run is already in progress, GitHub webhook batches and human invocations
+    are queued. Other automated snapshots (periodic-check, worker lifecycle, task
+    review escalations) are dropped; the poll loop re-triggers on the next tick.
     Dropping is preferred over queuing for these to avoid unbounded build-up
     of stale automated snapshots.
 
     Human-originated invocations (``is_human=True`` — Discord/web UI chat,
-    user-requested follow-ups) are never dropped: when busy, they are appended
-    to a small bounded FIFO queue (``_human_queues``) and drained in order once
+    user-requested follow-ups) and GitHub batches, which may contain reviewer
+    instructions, use the bounded FIFO rather than being discarded when busy.
+    They are appended to ``_human_queues`` and drained in order once
     the in-flight run for that key finishes, before the slot is freed.
 
     Every run — whether or not it carries a ``task_id`` — keys its lock on
@@ -1269,7 +1283,7 @@ async def run_foreman_ai(
     lock_key = (guild_id, user_id)
     state = _guild_locks.setdefault(lock_key, _GuildRunLock())
     if state.busy:
-        if is_human:
+        if is_human or trigger == "github-event":
             _enqueue_human_turn(
                 lock_key,
                 guild_id,
@@ -1300,6 +1314,11 @@ async def run_foreman_ai(
             trigger=trigger,
             conversation_id=conversation_id,
         )
+    except Exception:
+        # Context-loading errors must not strand human messages behind a released lock.
+        await _drain_human_queue(lock_key)
+        raise
+    else:
         # Drain any human messages that queued up while this turn ran, before
         # going idle — each drained turn can itself queue further messages, so
         # loop until the queue for this key is empty.
@@ -1322,13 +1341,24 @@ def _enqueue_human_turn(
 ) -> None:
     """Append a human message to the busy queue for *lock_key*, bounded and FIFO.
 
-    When the queue is already at capacity, the oldest queued message is
-    dropped (with a warning) to make room — better to lose the stalest queued
-    turn than to grow memory without bound or drop the newest arrival.
+    At capacity, discard the oldest GitHub batch first. Incoming GitHub work
+    must never evict human input. An all-human queue retains its existing
+    oldest-drop policy; overflow is always logged.
     """
     queue = _human_queues.setdefault(lock_key, deque())
     if len(queue) >= _HUMAN_QUEUE_MAX:
-        dropped = queue.popleft()
+        dropped = next((turn for turn in queue if turn.trigger == "github-event"), None)
+        if dropped is not None:
+            queue.remove(dropped)
+        elif trigger == "github-event":
+            logger.warning(
+                "guild=%s key=%s queue full of human input; dropping incoming GitHub batch",
+                guild_id,
+                lock_key[1],
+            )
+            return
+        else:
+            dropped = queue.popleft()
         logger.warning(
             "guild=%s key=%s human message queue full (max=%d); dropping oldest "
             "queued message (queued_at=%s)",

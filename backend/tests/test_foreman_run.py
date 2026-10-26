@@ -56,7 +56,7 @@ class ScriptedToolExecutor:
         self._results = results_by_tool_use_id
         self.batches: list[list] = []
 
-    async def exec(self, guild_id, tool_uses, *, user_id=None) -> list[dict]:
+    async def exec(self, guild_id, tool_uses, *, user_id=None, conversation_id=None) -> list[dict]:
         self.batches.append(tool_uses)
         return [self._results[tu.id] for tu in tool_uses]
 

@@ -554,7 +554,9 @@ class TestDebounce:
         """
         self._foreman_calls: list[tuple[str, str, str | None, str | None]] = []
 
-        async def fake_run_foreman(guild_id, summary, *, user_id=None, task_id=None, trigger=None):
+        async def fake_run_foreman(
+            guild_id, summary, *, user_id=None, task_id=None, trigger=None, conversation_id=None
+        ):
             self._foreman_calls.append((guild_id, summary, user_id, task_id))
 
         queue = wh.DebounceQueue(window_seconds=0.05)
@@ -658,14 +660,14 @@ class TestDebounce:
             key = "g-stalegen:t-sg1"
 
             # State as if a newer timer (gen=2) has taken over
-            q._buffers[key] = [("stale event", "u8", None)]
+            q._buffers[key] = [("stale event", "u8", None, None)]
             q._generation[key] = 2
 
             # Run _fire with the old gen (1) — stale coroutine waking up
             await q._fire(key, "g-stalegen", 1)
 
             assert len(self._foreman_calls) == 0
-            assert q._buffers.get(key) == [("stale event", "u8", None)]
+            assert q._buffers.get(key) == [("stale event", "u8", None, None)]
 
     async def test_cancelled_events_not_lost(self):
         """Events buffered before an external cancellation are preserved for re-delivery."""
@@ -1512,7 +1514,7 @@ async def test_deliver_kwargs_match_run_foreman_ai_signature():
         patch.object(wh, "run_foreman_ai", new=recorder),
         patch.object(wh, "ensure_poll_loop"),
     ):
-        await queue._deliver("g-sig:t-sig1", "g-sig", [("event", "u-sig", "t-sig1")])
+        await queue._deliver("g-sig:t-sig1", "g-sig", [("event", "u-sig", "t-sig1", 123)])
 
     assert len(recorded) == 1
     args, kwargs = recorded[0]

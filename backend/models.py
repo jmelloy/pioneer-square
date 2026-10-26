@@ -690,6 +690,9 @@ class ForemanTurn(SQLModel, table=True):
 
 class GithubEvent(SQLModel, table=True):
     __tablename__ = "github_events"  # type: ignore[assignment]
+    __table_args__ = (
+        Index("ix_github_events_guild_repo_pr_id", "guild_id", "repo", "pr_number", "id"),
+    )
 
     id: int | None = Field(default=None, primary_key=True)
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
