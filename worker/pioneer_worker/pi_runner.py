@@ -264,6 +264,22 @@ def parse_pi_event(event: dict, last_text: str) -> tuple[str | None, dict | None
         # Current pi RPC streams assistant deltas under assistantMessageEvent;
         # older versions repeated the full assistant message under message.content.
         ame = event.get("assistantMessageEvent", {})
+        if ame.get("type") == "thinking_end":
+            thinking = ame.get("content", "").strip()
+            if thinking:
+                summary = thinking.replace("\n", " ")[:160]
+                return (
+                    f"[thinking] {summary}",
+                    {
+                        "toolType": "thinking",
+                        "activity": "thinking",
+                        "input": thinking,
+                        "summary": summary,
+                        "fullText": thinking,
+                    },
+                    last_text,
+                )
+            return None, None, last_text
         if ame.get("type") == "text_delta":
             delta = ame.get("delta", "")
             return (delta if delta.strip() else None), None, last_text + delta
@@ -291,6 +307,13 @@ def parse_pi_event(event: dict, last_text: str) -> tuple[str | None, dict | None
             summary = f"▶ {name}({json.dumps(inp)[:80]})"
         detail = {"toolType": "tool_use", "name": name, "input": inp}
         return summary, detail, last_text
+    if t == "tool_execution_update":
+        output = _result_text(event.get("partialResult", {})).strip()
+        return (
+            f"[pi] {event.get('toolName') or 'Tool'} running",
+            {"toolType": "pi_json", "event": event, "output": output},
+            last_text,
+        )
     if t == "tool_execution_end":
         out = _result_text(event.get("result", {})).strip()
         if not out:
@@ -315,7 +338,18 @@ def parse_pi_event(event: dict, last_text: str) -> tuple[str | None, dict | None
             return (delta if delta.strip() else None), None, full
     if t == "agent_start":
         return "[pi] agent started", None, last_text
-    return None, None, last_text
+    if not t or t in {
+        "response",
+        "session",
+        "turn_start",
+        "turn_end",
+        "message_start",
+        "message_end",
+        "agent_end",
+        "agent_settled",
+    }:
+        return None, None, last_text
+    return f"[pi-json] {t}", {"toolType": "pi_json", "event": event}, last_text
 
 
 async def run_pi_auto(
@@ -585,7 +619,7 @@ async def _run_pi_once(
                         await _flush_text_buf()
                         await emit(f"[pi] ✗ {error_msg or 'assistant message failed'}")
             text, detail, accumulated = parse_pi_event(event, accumulated)
-            if etype == "message_update":
+            if etype == "message_update" and detail is None:
                 # Buffer streaming text; emit only at newline boundaries so
                 # each terminal-output message carries a full line, not a token.
                 if text:

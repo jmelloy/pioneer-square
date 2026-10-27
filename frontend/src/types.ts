@@ -6,7 +6,7 @@ export type AgentActivity =
 export type AgentType = 'foreman' | 'worker' | string
 
 export interface LogDetail {
-  toolType?: 'tool_use' | 'tool_result' | 'thinking' | 'claude_json'
+  toolType?: 'tool_use' | 'tool_result' | 'thinking' | 'claude_json' | 'pi_json'
   name?: string
   input?: Record<string, unknown> | string
   output?: string
