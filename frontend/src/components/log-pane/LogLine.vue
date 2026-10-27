@@ -15,23 +15,33 @@
     </div>
     <div v-if="isExpandable && expanded" class="log-detail">
       <template v-if="log.detail.toolType === 'tool_use'">
-        <template v-if="log.detail.name === 'Edit'">
+        <template v-if="toolName === 'edit'">
           <div class="log-detail-label">OLD</div>
           <pre class="log-detail-body log-detail-old">{{
-            inputRecord(log.detail.input).old_string
+            inputRecord(log.detail.input).old_string ?? inputRecord(log.detail.input).oldText
           }}</pre>
           <div class="log-detail-label log-detail-label--new">NEW</div>
           <pre class="log-detail-body log-detail-new">{{
-            inputRecord(log.detail.input).new_string
+            inputRecord(log.detail.input).new_string ?? inputRecord(log.detail.input).newText
           }}</pre>
         </template>
-        <template v-else-if="log.detail.name === 'Write'">
-          <div class="log-detail-label">{{ inputRecord(log.detail.input).file_path }}</div>
+        <template v-else-if="toolName === 'write'">
+          <div class="log-detail-label">
+            {{ inputRecord(log.detail.input).file_path ?? inputRecord(log.detail.input).path }}
+          </div>
           <pre class="log-detail-body">{{ inputRecord(log.detail.input).content }}</pre>
         </template>
-        <template v-else-if="log.detail.name === 'Bash'">
+        <template v-else-if="toolName === 'bash'">
           <div class="log-detail-label">COMMAND</div>
           <pre class="log-detail-body">{{ inputRecord(log.detail.input).command }}</pre>
+        </template>
+        <template v-else-if="toolName === 'read'">
+          <div class="log-detail-label">FILE</div>
+          <pre class="log-detail-body">{{
+            inputRecord(log.detail.input).path ?? inputRecord(log.detail.input).file_path
+          }}</pre>
+          <div class="log-detail-label">OPTIONS</div>
+          <pre class="log-detail-body">{{ JSON.stringify(log.detail.input, null, 2) }}</pre>
         </template>
         <template v-else>
           <div class="log-detail-label">{{ log.detail.name }}</div>
@@ -59,19 +69,24 @@
 import { computed } from 'vue'
 import { renderMarkdown } from '../../utils/markdown'
 import { formatClock } from '../../utils/format'
+import { claudeEventSummary } from '../../utils/claudeEventSummary'
+import { piEventSummary } from '../../utils/piEventSummary'
 import type { LogEntry } from '../../types'
 
 const props = defineProps<{ log: LogEntry; expanded: boolean }>()
 
 defineEmits<{ toggle: [] }>()
 
+const toolName = computed(() => props.log.detail?.name?.toLowerCase())
+
 const isExpandable = computed(() => {
   const log = props.log
   if (!log.detail?.toolType) return false
   if (log.detail.toolType === 'thinking') return log.detail.input !== log.detail.summary
   if (log.detail.toolType === 'tool_result') {
-    // _summarize_lines shows all lines when count <= 4; only expand when output is truncated
-    return (log.detail.output?.trim().split('\n').length ?? 0) > 4
+    // Pi truncates even short results and long single lines; compare against the preview.
+    const output = log.detail.output?.trim()
+    return Boolean(output && !log.line.includes(output))
   }
   // Known tool types are expandable (tool_use rules above). Unknown types also expand
   // to show their raw JSON payload.
@@ -92,7 +107,12 @@ function linkify(text: string): string {
   )
 }
 
+const eventSummary = computed(
+  () => claudeEventSummary(props.log.detail) ?? piEventSummary(props.log.detail),
+)
+
 const isMarkdownLine = computed(() => {
+  if (eventSummary.value !== undefined) return false
   const log = props.log
   const line = log.line
   if (!line) return false
@@ -115,7 +135,7 @@ const isMarkdownLine = computed(() => {
 
 const renderedLine = computed(() => {
   if (isMarkdownLine.value) return renderMarkdown(props.log.line)
-  return linkify(props.log.line)
+  return linkify(eventSummary.value ?? props.log.line)
 })
 
 function inputRecord(input: Record<string, unknown> | string | undefined): Record<string, unknown> {
@@ -128,8 +148,8 @@ function formatDetailJson(log: LogEntry): string {
   if (!detail) {
     return JSON.stringify({ line: log.line, timestamp: log.timestamp }, null, 2)
   }
-  // Extract the raw event if it's a claude_json entry
-  if (detail.toolType === 'claude_json' && detail.event) {
+  // Runner event entries keep their original payload under event.
+  if ((detail.toolType === 'claude_json' || detail.toolType === 'pi_json') && detail.event) {
     return JSON.stringify(detail.event, null, 2)
   }
   // Otherwise show full detail object

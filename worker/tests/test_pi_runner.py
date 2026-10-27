@@ -270,10 +270,47 @@ def test_parse_tool_execution_start_preserves_full_input_in_detail():
     assert detail == {"toolType": "tool_use", "name": "bash", "input": {"command": "ls -la"}}
 
 
-def test_parse_unknown_event_returns_none():
-    text, _, last = parse_pi_event({"type": "unknown_type"}, "existing")
-    assert text is None
+def test_parse_unknown_event_preserves_payload():
+    event = {"type": "unknown_type", "custom": "value"}
+    text, detail, last = parse_pi_event(event, "existing")
+    assert text == "[pi-json] unknown_type"
+    assert detail == {"toolType": "pi_json", "event": event}
     assert last == "existing"
+
+
+def test_parse_tool_progress_preserves_partial_result():
+    event = {
+        "type": "tool_execution_update",
+        "toolName": "bash",
+        "toolCallId": "call-1",
+        "partialResult": {"content": [{"type": "text", "text": "Running tests"}]},
+    }
+    text, detail, last = parse_pi_event(event, "answer")
+    assert text == "[pi] bash running"
+    assert detail == {"toolType": "pi_json", "event": event, "output": "Running tests"}
+    assert last == "answer"
+
+
+def test_parse_thinking_end_preserves_full_thought_without_changing_answer():
+    thinking = "Consider the edge cases. " * 20
+    text, detail, last = parse_pi_event(
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "thinking_end", "content": thinking},
+        },
+        "answer",
+    )
+    assert text.startswith("[thinking] ")
+    assert detail["toolType"] == "thinking"
+    assert detail["fullText"] == thinking.strip()
+    assert last == "answer"
+
+
+@pytest.mark.parametrize(
+    "event_type", ["turn_start", "turn_end", "message_start", "agent_end", "response"]
+)
+def test_parse_bookkeeping_stays_quiet(event_type):
+    assert parse_pi_event({"type": event_type}, "answer") == (None, None, "answer")
 
 
 def test_parse_empty_event_returns_none():
@@ -318,6 +355,52 @@ sys.exit(0)
     assert session_id is None  # no session event emitted by this fake
     for line in emitted:
         assert not line.endswith("\n"), f"trailing newline in emitted line: {line!r}"
+
+
+async def test_run_pi_auto_emits_thinking_and_progress_details(tmp_path) -> None:
+    events = [
+        {"type": "agent_start"},
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "text_delta", "delta": "Answer"},
+        },
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "thinking_end", "content": "Check edge cases"},
+        },
+        {
+            "type": "tool_execution_update",
+            "toolName": "bash",
+            "partialResult": {"content": [{"type": "text", "text": "Tests running"}]},
+        },
+        {"type": "auto_retry_start", "attempt": 1, "maxAttempts": 3},
+        {"type": "agent_end"},
+    ]
+    fake_pi = tmp_path / "fake-pi"
+    fake_pi.write_text(
+        f"#!{sys.executable}\nimport json\n"
+        + f"events = json.loads({json.dumps(events)!r})\n"
+        + "for event in events:\n    print(json.dumps(event), flush=True)\n",
+        encoding="utf-8",
+    )
+    fake_pi.chmod(0o755)
+    emitted = []
+
+    async def emit(line, detail=None):
+        emitted.append((line, detail))
+
+    success, _, last_text, _ = await run_pi_auto(
+        "work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi)
+    )
+    assert success
+    assert last_text == "Answer"
+    thinking_index = next(
+        i for i, (_, d) in enumerate(emitted) if d and d.get("toolType") == "thinking"
+    )
+    assert emitted[thinking_index - 1] == ("Answer", None)
+    assert emitted[thinking_index][1]["fullText"] == "Check edge cases"
+    assert any(d and d.get("output") == "Tests running" for _, d in emitted)
+    assert any(d and d.get("event", {}).get("type") == "auto_retry_start" for _, d in emitted)
 
 
 async def test_run_pi_auto_current_rpc_text_delta_success(tmp_path) -> None:
