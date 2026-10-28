@@ -1,14 +1,14 @@
 /**
  * The frontend counterpart to backend/spawn_config.py: one place that layers
- * guild defaults under this user's saved settings under their this-launch
- * edits, and one place that serialises the result for the wire.
+ * guild defaults under this user's saved settings to seed editable forms,
+ * and one place that serialises their edits for the wire.
  *
  * Before this module existed the override chain was rebuilt by hand in every
  * consumer and the three copies of the wire-serialisation block disagreed on
  * what an empty value meant, so blanking an env var did something different in
  * User Preferences, the Launch form and Guild Settings (issue #1240).
  *
- * Precedence, low -> high: guild defaults < user settings < this-launch draft.
+ * Precedence, low -> high: guild defaults < user settings.
  * Merge rules mirror `spawn_config.merge_layers` exactly:
  *   - lists (repos, tools): the highest layer with a NON-EMPTY list wins
  *     (replace, not concatenate).
@@ -33,7 +33,6 @@ import {
   type SpawnSettings,
   type ToolDefault,
 } from './useSpawnPipeline'
-import { api } from '../utils/api'
 
 /** The effective launch config: what this user would actually launch with. */
 export interface ResolvedSpawn {
@@ -51,7 +50,6 @@ export type SpawnDraft = Partial<ResolvedSpawn>
 export interface SpawnLayers {
   guild: GuildSpawnDefaults | null
   user: SpawnSettings | null
-  draft: SpawnDraft | null
 }
 
 /** Which layer the resolved config came from — drives the "showing guild
@@ -176,7 +174,6 @@ export function resolveSpawnLayers(layers: SpawnLayers): {
     'guild',
   )
   apply(layers.user, 'saved')
-  apply(layers.draft, 'custom')
   return { resolved: r, source }
 }
 
@@ -230,7 +227,6 @@ export function useSpawnSettings(guildId: Ref<string | undefined>) {
   const guild = ref<GuildSpawnDefaults | null>(null)
   const user = ref<SpawnSettings | null>(null)
   const credentials = ref<SpawnCredentials | null>(null)
-  const draft = ref<SpawnDraft | null>(null)
   // Set by resetToGuild(): suppress the user layer so the guild baseline shows
   // through. restoreSaved() puts it back — nothing is deleted server-side.
   const ignoreUserLayer = ref(false)
@@ -245,14 +241,12 @@ export function useSpawnSettings(guildId: Ref<string | undefined>) {
     // so resetting the launch shape must not silently drop them.
     user:
       ignoreUserLayer.value && user.value ? { ...user.value, repos: [], tools: [] } : user.value,
-    draft: draft.value,
   }))
   const resolution = computed(() => resolveSpawnLayers(layers.value))
   const resolved = computed(() => resolution.value.resolved)
   const source = computed<SpawnSource>(() => {
     // An explicit reset shows the guild baseline even when the user's env vars
     // are still layered underneath the form.
-    if (draft.value) return 'custom'
     return ignoreUserLayer.value ? 'guild' : resolution.value.source
   })
 
@@ -285,7 +279,6 @@ export function useSpawnSettings(guildId: Ref<string | undefined>) {
       guild.value = pipeline.defaults
       user.value = pipeline.settings
       credentials.value = pipeline.credentials
-      draft.value = null
       ignoreUserLayer.value = false
       loaded.value = true
     } finally {
@@ -293,43 +286,21 @@ export function useSpawnSettings(guildId: Ref<string | undefined>) {
     }
   }
 
-  /** Record this-launch edits. Passing null clears them. */
-  function setDraft(next: SpawnDraft | null) {
-    draft.value = next
-  }
-
   /** Show the guild's launch shape (repos/tools/agent count) instead of this
    *  user's. Nothing is deleted server-side; restoreSaved() undoes it. */
   function resetToGuild() {
     ignoreUserLayer.value = true
-    draft.value = null
   }
 
   function restoreSaved() {
     ignoreUserLayer.value = false
-    draft.value = null
   }
 
-  /**
-   * Persist `settings` to the user's row ('user') or the guild baseline
-   * ('guild'). Both scopes serialise identically; only the endpoint differs.
-   */
-  async function save(settings: SpawnDraft, scope: 'user' | 'guild' = 'user') {
+  /** Persist the form's edits to this user's saved settings. */
+  async function save(settings: SpawnDraft) {
     if (!guildId.value) return
-    const body = serializeSpawnSettings(settings)
-    if (scope === 'user') {
-      user.value = await saveSpawnSettings(guildId.value, body)
-      ignoreUserLayer.value = false
-    } else {
-      guild.value = await api<GuildSpawnDefaults>(
-        `/guilds/${encodeURIComponent(guildId.value)}/spawn-defaults`,
-        {
-          method: 'PUT',
-          json: { repos: body.repos, tools: body.tools, agent_count: settings.agentCount ?? null },
-        },
-      )
-    }
-    draft.value = null
+    user.value = await saveSpawnSettings(guildId.value, serializeSpawnSettings(settings))
+    ignoreUserLayer.value = false
   }
 
   return {
@@ -342,7 +313,6 @@ export function useSpawnSettings(guildId: Ref<string | undefined>) {
     hasGuildDefaults,
     hasSavedSettings,
     load,
-    setDraft,
     resetToGuild,
     restoreSaved,
     save,

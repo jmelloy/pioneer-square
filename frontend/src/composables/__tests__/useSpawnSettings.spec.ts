@@ -17,7 +17,7 @@ function user(over: Partial<SpawnSettings> = {}): SpawnSettings {
 }
 
 function layers(over: Partial<SpawnLayers> = {}): SpawnLayers {
-  return { guild: null, user: null, draft: null, ...over }
+  return { guild: null, user: null, ...over }
 }
 
 describe('resolveSpawnLayers — precedence', () => {
@@ -70,59 +70,26 @@ describe('resolveSpawnLayers — precedence', () => {
     expect(resolved.agentCount).toBe(4)
   })
 
-  it('puts this-launch edits on top of both', () => {
-    const { resolved, source } = resolveSpawnLayers(
+  it('preserves user tool defaults and normalizes shared and per-tool env vars', () => {
+    const { resolved } = resolveSpawnLayers(
       layers({
         guild: guild({ repos: ['a/b'] }),
-        user: user({ repos: ['x/y'] }),
-        draft: { repos: ['draft/repo'] },
-      }),
-    )
-    expect(resolved.repos).toEqual(['draft/repo'])
-    expect(source).toBe('custom')
-  })
-
-  it('overlays env vars key-by-key rather than replacing the map', () => {
-    const { resolved } = resolveSpawnLayers(
-      layers({
         user: user({
           envVars: [
-            { key: 'SHARED', value: 'user' },
-            { key: 'ONLY_USER', value: 'u' },
+            { key: ' TOKEN ', value: 'real' },
+            { key: 'TOKEN', value: '' },
           ],
+          toolDefaults: { pi: { provider: 'bedrock', model: 'arn:x' } },
+          toolEnvVars: {
+            claude: [
+              { key: ' CLAUDE_TOK ', value: 'real' },
+              { key: 'CLAUDE_TOK', value: '' },
+            ],
+          },
         }),
-        draft: { envVars: [{ key: 'SHARED', value: 'draft' }] },
-      }),
-    )
-    expect(resolved.envVars).toEqual([
-      { key: 'SHARED', value: 'draft' },
-      { key: 'ONLY_USER', value: 'u' },
-    ])
-  })
-
-  it('never lets an empty value from a higher layer blank a real one below', () => {
-    const { resolved } = resolveSpawnLayers(
-      layers({
-        user: user({ envVars: [{ key: 'TOKEN', value: 'real' }] }),
-        draft: { envVars: [{ key: 'TOKEN', value: '' }] },
       }),
     )
     expect(resolved.envVars).toEqual([{ key: 'TOKEN', value: 'real' }])
-  })
-
-  it('applies the same guard to per-tool env and tool defaults', () => {
-    const { resolved } = resolveSpawnLayers(
-      layers({
-        user: user({
-          toolDefaults: { pi: { provider: 'bedrock', model: 'arn:x' } },
-          toolEnvVars: { claude: [{ key: 'CLAUDE_TOK', value: 'real' }] },
-        }),
-        draft: {
-          toolDefaults: { pi: { model: '' } },
-          toolEnvVars: { claude: [{ key: 'CLAUDE_TOK', value: '' }] },
-        },
-      }),
-    )
     expect(resolved.toolDefaults.pi).toEqual({ provider: 'bedrock', model: 'arn:x' })
     expect(resolved.toolEnvVars.claude).toEqual([{ key: 'CLAUDE_TOK', value: 'real' }])
   })

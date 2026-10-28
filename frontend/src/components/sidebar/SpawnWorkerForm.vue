@@ -418,9 +418,8 @@ const AVAILABLE_TOOLS = SPAWN_TOOLS
 
 const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
 
-// One resolver for the whole override chain: guild defaults < this user's saved
-// settings < their edits for this launch. The precedence rules are a pure
-// function in useSpawnSettings, not logic buried in this component (#1240).
+// Seed the editable form from guild defaults < this user's saved settings.
+// The precedence rules live in useSpawnSettings (#1240).
 const spawn = useSpawnSettings(computed(() => guildStore.currentGuild?.id))
 const { hasGuildDefaults, hasSavedSettings } = spawn
 const guildDefaults = computed(() => spawn.layers.value.guild)
@@ -586,20 +585,17 @@ async function saveSettings(): Promise<boolean> {
   try {
     // Save before spawning so clearing a Pi provider override affects this launch,
     // not just the next one.
-    await spawn.save(
-      {
-        repos: selectedRepos.value,
-        tools: selectedTools.value,
-        envVars: envVars.value,
-        toolDefaults: toolDefaultsFrom({
-          piProvider: piDefaultProvider.value,
-          piModel: piDefaultModel.value,
-          codexModel: codexDefaultModel.value,
-        }),
-        toolEnvVars,
-      },
-      'user',
-    )
+    await spawn.save({
+      repos: selectedRepos.value,
+      tools: selectedTools.value,
+      envVars: envVars.value,
+      toolDefaults: toolDefaultsFrom({
+        piProvider: piDefaultProvider.value,
+        piModel: piDefaultModel.value,
+        codexModel: codexDefaultModel.value,
+      }),
+      toolEnvVars,
+    })
     return true
   } catch {
     return false

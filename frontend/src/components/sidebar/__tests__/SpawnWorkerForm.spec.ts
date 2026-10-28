@@ -274,8 +274,10 @@ describe('SpawnWorkerForm guild defaults and saved settings', () => {
     expect(keys).toContain('mine')
   })
 
-  it('marks the form as customised once a repo is toggled by hand', async () => {
-    mockFetch({ defaults: { repos: ['org/alpha'], tools: [], agent_count: null } })
+  it('marks repo edits as customised and saves them to user settings before launching', async () => {
+    const fetchSpy = mockFetch({
+      defaults: { repos: ['org/alpha'], tools: [], agent_count: null },
+    })
     const wrapper = mountForm(TWO_REPOS)
     await flushPromises()
 
@@ -285,5 +287,18 @@ describe('SpawnWorkerForm guild defaults and saved settings', () => {
     expect(checkedRepos(wrapper)).toEqual(['alpha', 'beta'])
     expect(wrapper.text()).toContain('Showing your edits for this launch.')
     expect(wrapper.text()).toContain('Use guild defaults')
+
+    await wrapper.find('.spawn-launch-btn').trigger('click')
+    await flushPromises()
+
+    const writes = fetchSpy.mock.calls.filter(([, init]) => init?.method === 'PUT')
+    expect(writes).toHaveLength(1)
+    expect(String(writes[0][0])).toContain('/guilds/g1/spawn-settings')
+    expect(JSON.parse(String(writes[0][1]?.body)).repos).toEqual(['org/alpha', 'org/beta'])
+    const saveIndex = fetchSpy.mock.calls.indexOf(writes[0])
+    const launchIndex = fetchSpy.mock.calls.findIndex(([url]) =>
+      String(url).includes('/spawn-worker'),
+    )
+    expect(launchIndex).toBeGreaterThan(saveIndex)
   })
 })
