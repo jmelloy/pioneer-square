@@ -133,7 +133,10 @@ class Agent(SQLModel, table=True):
 
 class Message(SQLModel, table=True):
     __tablename__ = "messages"  # type: ignore[assignment]
-    __table_args__ = (Index("ix_messages_guild_id_created_at", "guild_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_messages_guild_id_created_at", "guild_id", "created_at"),
+        Index("ix_messages_conversation_id_created_at_id", "conversation_id", "created_at", "id"),
+    )
 
     id: int | None = Field(default=None, primary_key=True)
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
@@ -158,7 +161,7 @@ class Message(SQLModel, table=True):
     # linking or that aren't scoped to any conversation (e.g. GitHub webhook
     # notices). Resolved best-effort, read-only, at persist time — see
     # ``foreman.conversation_service.resolve_conversation_id``.
-    conversation_id: int | None = Field(default=None, foreign_key="conversations.id", index=True)
+    conversation_id: int | None = Field(default=None, foreign_key="conversations.id")
 
 
 # Valid Conversation.status values. "active" conversations accept new

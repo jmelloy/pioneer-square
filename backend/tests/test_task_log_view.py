@@ -2,7 +2,7 @@
 
 Guild-less by design (a commit can link to /task/t-abc123/log without knowing
 the guild), so the guild is resolved from the task and membership enforced
-after the fact. Covers the happy path, 404 for unknown/soft-deleted tasks, and
+after the fact. Covers live/archived tasks, 404 for unknown tasks, and
 the auth/membership gates.
 """
 
@@ -92,10 +92,11 @@ def test_unknown_task_is_404(client):
     assert resp.status_code == 404
 
 
-def test_soft_deleted_task_is_404(client):
+def test_archived_task_logs_remain_accessible(client):
     test_client, db_url = client
     insert_guild(db_url, "gtl04")
-    task_id, _ = _create_task(test_client, "gtl04", db_url)
+    task_id, worker_id = _create_task(test_client, "gtl04", db_url)
+    _add_logs(db_url, task_id, worker_id)
     with _sync_session(db_url) as session:
         session.execute(
             update(Task)
@@ -105,7 +106,13 @@ def test_soft_deleted_task_is_404(client):
         session.commit()
 
     resp = test_client.get(f"/api/task/{task_id}/log", headers=_auth(db_url))
-    assert resp.status_code == 404
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["task"]["id"] == task_id
+    assert [log["line"] for log in resp.json()["logs"]] == ["first line", "second line"]
+    # Archival must not weaken authentication or guild membership checks.
+    assert test_client.get(f"/api/task/{task_id}/log").status_code == 401
+    outsider = _auth(db_url, user_id="gh-archived-outsider", username="outsider")
+    assert test_client.get(f"/api/task/{task_id}/log", headers=outsider).status_code == 403
 
 
 def test_requires_authentication(client):

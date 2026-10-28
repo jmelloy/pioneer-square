@@ -132,7 +132,7 @@ async def get_task_logs(
     github_user_id: str = Depends(require_member()),
     db: AsyncSession = Depends(get_db_dep),
 ):
-    """Get all saved log lines for a task."""
+    """Get saved log lines, including archived tasks, for guild members."""
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")
@@ -140,7 +140,6 @@ async def get_task_logs(
         select(col(Task.id)).where(
             col(Task.id) == task_id,
             col(Task.guild_id) == guild_pk,
-            live_tasks_filter(),
         )
     )
     if not result.one_or_none():
@@ -568,13 +567,13 @@ async def get_task_log_page(
     Guild-less on purpose: task ids are globally unique, so a commit message can
     link straight to ``/task/t-abc123/log`` without knowing the guild. Membership
     is still enforced — the guild is resolved from the task, then checked.
-    Read-only; there is no mutating counterpart.
+    Read-only; archival hides tasks from live lists, not from stable log links.
     """
     row = (
         await db.exec(
             select(Task, col(Guild.slug))
             .join(Guild, col(Task.guild_id) == col(Guild.id))
-            .where(col(Task.id) == task_id, live_tasks_filter())
+            .where(col(Task.id) == task_id)
         )
     ).one_or_none()
     if row is None:
