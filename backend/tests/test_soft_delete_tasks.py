@@ -142,7 +142,7 @@ def test_list_hides_tasks_deleted_before_grace_window(client):
     assert t_dead not in ids
 
 
-def test_get_task_logs_404_after_grace_window(client):
+def test_get_task_logs_accessible_after_grace_window(client):
     test_client, db_url = client
     insert_guild(db_url, "gsd03")
     worker_id = _create_worker(test_client, "gsd03")
@@ -150,7 +150,23 @@ def test_get_task_logs_404_after_grace_window(client):
     _set_deleted_at(db_url, task_id, datetime.now(UTC) - SOFT_DELETE_GRACE - timedelta(minutes=1))
 
     resp = test_client.get(f"/guilds/gsd03/tasks/{task_id}/logs", headers=_auth(db_url))
-    assert resp.status_code == 404
+    assert resp.status_code == 200
+    assert resp.json() == []
+    insert_guild(db_url, "gsd03-other")
+    assert (
+        test_client.get(
+            f"/guilds/gsd03-other/tasks/{task_id}/logs", headers=_auth(db_url)
+        ).status_code
+        == 404
+    )
+    assert test_client.get(f"/guilds/gsd03/tasks/{task_id}/logs").status_code == 401
+    outsider = {
+        "Authorization": "Bearer "
+        + make_auth_token(db_url, user_id="gh-archived-logs-outsider", username="outsider")
+    }
+    assert (
+        test_client.get(f"/guilds/gsd03/tasks/{task_id}/logs", headers=outsider).status_code == 403
+    )
 
 
 # ---------------------------------------------------------------------------

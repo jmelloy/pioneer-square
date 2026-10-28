@@ -340,8 +340,9 @@ messages and PR bodies can link to the run that produced them
 (`see foreman session: https://pioneer.example.com/task/t-abc123/log`). Task ids are globally
 unique, so the guild is resolved from the task rather than the URL. It is read-only and renders
 via `frontend/src/views/TaskLogView.vue`, backed by `GET /api/task/{task_id}/log`
-(`routes/tasks.py`), which requires a login token and membership of the task's guild. Unknown or
-soft-deleted tasks return 404. Keep the path stable — links to it live in git history.
+(`routes/tasks.py`), which requires a login token and membership of the task's guild. Archived
+(soft-deleted) tasks remain readable; unknown tasks return 404. Keep the path stable — links to
+it live in git history.
 
 ### Frontend stores
 
