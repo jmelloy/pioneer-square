@@ -34,16 +34,19 @@ export const useConversationsStore = defineStore('conversations', () => {
     }
   }
 
-  async function fetchConversations(guildId: string, status?: ConversationStatus) {
+  async function fetchConversations(guildId: string) {
     if (!guildId) return
     try {
-      const query = status ? `?status=${encodeURIComponent(status)}` : ''
-      conversations.value = await api<Conversation[]>(
-        `/api/guilds/${guildId}/conversations${query}`,
-      )
+      conversations.value = await api<Conversation[]>(`/api/guilds/${guildId}/conversations`)
     } catch (e) {
       console.error('Failed to fetch conversations', e)
     }
+  }
+
+  async function searchConversations(guildId: string, query: string) {
+    return api<Conversation[]>(
+      `/api/guilds/${guildId}/conversations?q=${encodeURIComponent(query)}`,
+    )
   }
 
   async function fetchConversation(guildId: string, conversationId: number) {
@@ -164,6 +167,7 @@ export const useConversationsStore = defineStore('conversations', () => {
   return {
     conversations,
     fetchConversations,
+    searchConversations,
     fetchConversation,
     fetchConversationMessages,
     closeConversation,

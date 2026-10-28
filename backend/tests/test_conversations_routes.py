@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -26,7 +27,7 @@ from auth_deps import get_guild_pk
 from foreman import triggers
 from foreman.conversation_service import close_conversation, get_or_create_active_conversation
 from helpers import create_db, insert_conversation, insert_guild, truncate_all
-from models import Conversation
+from models import Conversation, Message
 from routes.conversations import (
     ConversationMessageCreate,
     ConversationRename,
@@ -187,6 +188,88 @@ class TestListConversationsRoute:
             out = await list_conversations("g-conv-list-b", None, "user-1", db)
 
         assert out == []
+
+
+class TestSearchConversationsRoute:
+    @pytest.mark.parametrize(
+        ("query", "status", "matches"),
+        [
+            (" PIPELINE ", None, True),
+            ("needle", None, True),
+            ("100%_", None, True),
+            ("needle", "archived", True),
+            ("needle", "active", False),
+            ("missing", None, False),
+        ],
+    )
+    async def test_searches_names_and_messages_within_guild(
+        self, db_session, query, status, matches
+    ):
+        insert_guild(db_session, "g-search")
+        insert_guild(db_session, "g-other")
+        guild_pk = await _guild_pk("g-search")
+        now = datetime.now(UTC)
+        async with database_module.AsyncSessionLocal() as db:
+            conversation = Conversation(
+                guild_id=guild_pk,
+                name="Deploy pipeline",
+                status="archived",
+                created_at=now,
+                updated_at=now,
+            )
+            other = Conversation(
+                guild_id=await _guild_pk("g-other"),
+                name="Deploy pipeline",
+                created_at=now,
+                updated_at=now,
+            )
+            nonmatch = Conversation(
+                guild_id=guild_pk,
+                name="100xx",
+                created_at=now,
+                updated_at=now,
+            )
+            db.add_all([conversation, other, nonmatch])
+            await db.flush()
+            for owner in (conversation, other):
+                for _ in range(2):
+                    db.add(
+                        Message(
+                            guild_id=owner.guild_id,
+                            conversation_id=owner.id,
+                            content="A needle at 100%_ completion",
+                            message_type="chat",
+                            created_at=now,
+                        )
+                    )
+            await db.commit()
+            out = await list_conversations("g-search", status, "user-1", db, q=query)
+
+        assert [c.id for c in out] == ([conversation.id] if matches else [])
+
+    async def test_searches_before_applying_result_limit(self, db_session):
+        insert_guild(db_session, "g-search-old")
+        guild_pk = await _guild_pk("g-search-old")
+        now = datetime.now(UTC)
+        async with database_module.AsyncSessionLocal() as db:
+            older = Conversation(
+                guild_id=guild_pk,
+                name="Old needle",
+                created_at=now - timedelta(days=1),
+                updated_at=now - timedelta(days=1),
+            )
+            db.add(older)
+            db.add_all(
+                [
+                    Conversation(guild_id=guild_pk, name="Recent", created_at=now, updated_at=now)
+                    for _ in range(200)
+                ]
+            )
+            await db.commit()
+            out = await list_conversations("g-search-old", None, "user-1", db)
+            assert older.id not in [c.id for c in out]
+            out = await list_conversations("g-search-old", None, "user-1", db, q="needle")
+            assert [c.id for c in out] == [older.id]
 
 
 class TestListConversationMessagesRoute:

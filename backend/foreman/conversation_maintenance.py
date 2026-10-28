@@ -5,7 +5,8 @@
 ``_refresh_stale_github_links``):
 
 1. Auto-archive ``active`` conversations that have had no activity
-   (``updated_at``) for ``THREAD_AUTO_ARCHIVE_AFTER_SECONDS``.
+   (``updated_at``) for ``THREAD_AUTO_ARCHIVE_AFTER_SECONDS`` and have no
+   live non-terminal tasks.
 2. Auto-close ``archived`` conversations that have sat archived for
    ``THREAD_AUTO_CLOSE_AFTER_SECONDS``.
 
@@ -21,15 +22,16 @@ from datetime import UTC, datetime, timedelta
 
 from database import get_db
 from foreman.conversation_service import set_conversation_status
-from models import Conversation
+from models import Conversation, Task, live_tasks_filter
 from sqlmodel import col, select
+from task_lifecycle import TERMINAL_STATES
 
 logger = logging.getLogger(__name__)
 
 # How long an "active" conversation can go without activity before it's
-# auto-archived. Configurable for tests/tuning; defaults to 3 days.
+# auto-archived when no unfinished tasks remain; defaults to 24 hours.
 CONVERSATION_AUTO_ARCHIVE_AFTER_SECONDS = float(
-    os.environ.get("THREAD_AUTO_ARCHIVE_AFTER_SECONDS", str(3 * 24 * 3600))
+    os.environ.get("THREAD_AUTO_ARCHIVE_AFTER_SECONDS", str(24 * 3600))
 )
 # How long an "archived" conversation stays archived before it's auto-closed.
 # Defaults to 14 days.
@@ -75,6 +77,13 @@ async def _sweep_conversations_once(guild_id: str) -> dict[str, int]:
                     col(Conversation.guild_id) == guild_pk,
                     col(Conversation.status) == "active",
                     col(Conversation.updated_at) < archive_cutoff,
+                    ~select(Task.id)
+                    .where(
+                        col(Task.conversation_id) == col(Conversation.id),
+                        ~col(Task.state).in_(list(TERMINAL_STATES)),
+                        live_tasks_filter(),
+                    )
+                    .exists(),
                 )
             )
         ).all()

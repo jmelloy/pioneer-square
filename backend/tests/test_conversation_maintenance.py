@@ -26,7 +26,7 @@ import foreman.conversation_maintenance as conversation_maintenance
 from _test_config import TEST_DATABASE_URL
 from auth_deps import get_guild_pk
 from foreman.conversation_service import get_or_create_active_conversation
-from helpers import create_db, insert_guild, truncate_all
+from helpers import create_db, insert_guild, insert_task, truncate_all
 from models import Conversation
 
 
@@ -40,7 +40,7 @@ def db_session(monkeypatch):
     # Keep the sweep from actually archiving/closing anything unless a test
     # explicitly lowers these below zero — real defaults are days-long.
     monkeypatch.setattr(
-        conversation_maintenance, "CONVERSATION_AUTO_ARCHIVE_AFTER_SECONDS", 3 * 24 * 3600.0
+        conversation_maintenance, "CONVERSATION_AUTO_ARCHIVE_AFTER_SECONDS", 24 * 3600.0
     )
     monkeypatch.setattr(
         conversation_maintenance, "CONVERSATION_AUTO_CLOSE_AFTER_SECONDS", 14 * 24 * 3600.0
@@ -98,13 +98,35 @@ class TestSweepConversations:
     async def test_archives_stale_active_conversation(self, db_session):
         insert_guild(db_session, "g-sweep-archive")
         conv_id = await _new_conversation("g-sweep-archive")
-        await _backdate(conv_id, datetime.now(UTC) - timedelta(days=4))
+        await _backdate(conv_id, datetime.now(UTC) - timedelta(hours=25))
 
         with patch("discord_notifier.is_configured", return_value=False):
             summary = await conversation_maintenance.sweep_conversations("g-sweep-archive")
 
         assert summary == {"archived": 1, "closed": 0}
         assert await _status(conv_id) == "archived"
+
+    @pytest.mark.parametrize("state", ["pending", "working", "awaiting-review", "done", "failed"])
+    async def test_unfinished_tasks_prevent_archiving(self, db_session, state):
+        insert_guild(db_session, "g-sweep-tasks")
+        conv_id = await _new_conversation("g-sweep-tasks")
+        await _backdate(conv_id, datetime.now(UTC) - timedelta(hours=25))
+        insert_task(db_session, "g-sweep-tasks", "t-sweep", state=state, conversation_id=conv_id)
+
+        with patch("discord_notifier.is_configured", return_value=False):
+            summary = await conversation_maintenance.sweep_conversations("g-sweep-tasks")
+
+        should_archive = state in {"done", "failed"}
+        assert summary == {"archived": int(should_archive), "closed": 0}
+        assert await _status(conv_id) == ("archived" if should_archive else "active")
+
+    async def test_keeps_conversation_idle_less_than_24_hours(self, db_session):
+        insert_guild(db_session, "g-sweep-recent")
+        conv_id = await _new_conversation("g-sweep-recent")
+        await _backdate(conv_id, datetime.now(UTC) - timedelta(hours=23))
+
+        assert await conversation_maintenance.sweep_conversations("g-sweep-recent") == ZERO
+        assert await _status(conv_id) == "active"
 
     async def test_closes_stale_archived_conversation(self, db_session):
         insert_guild(db_session, "g-sweep-close")
