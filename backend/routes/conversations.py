@@ -34,6 +34,7 @@ from foreman.runner import reset_foreman_poll
 from models import THREAD_STATUSES, Conversation, Message
 from pydantic import BaseModel
 from routes.guilds import _message_dict
+from sqlalchemy import or_
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from ws_types import ChatMsg
@@ -258,6 +259,7 @@ async def list_conversations(
     status: str | None = None,
     github_user_id: str = Depends(require_member()),
     db: AsyncSession = Depends(get_db_dep),
+    q: str | None = None,
 ):
     """List a guild's conversations, most recently active first (#1298).
 
@@ -279,6 +281,19 @@ async def list_conversations(
         if status not in THREAD_STATUSES:
             raise HTTPException(status_code=400, detail=f"Invalid status: {status!r}")
         stmt = stmt.where(col(Conversation.status) == status)
+    if q and (query := q.strip()):
+        matching_message = (
+            select(Message.id)
+            .where(
+                col(Message.conversation_id) == col(Conversation.id),
+                col(Message.guild_id) == guild_pk,
+                col(Message.content).icontains(query, autoescape=True),
+            )
+            .exists()
+        )
+        stmt = stmt.where(
+            or_(col(Conversation.name).icontains(query, autoescape=True), matching_message)
+        )
     result = await db.exec(stmt.limit(200))
     return [_to_out(c) for c in result.all()]
 

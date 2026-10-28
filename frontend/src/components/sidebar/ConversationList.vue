@@ -12,17 +12,27 @@
           {{ opt.label }}
         </button>
       </div>
+      <input
+        v-model="search"
+        class="conversation-search"
+        type="search"
+        aria-label="Search conversation names and messages"
+        placeholder="Search names and messages…"
+      />
     </div>
 
     <div class="rows">
-      <div v-if="loading && conversationsStore.conversations.length === 0" class="empty-state">
-        Loading…
-      </div>
-      <div v-else-if="conversationsStore.conversations.length === 0" class="empty-state">
-        No conversations yet. Send a message to the Foreman to start one.
+      <div v-if="loading || searching" class="empty-state">Loading…</div>
+      <div v-else-if="searchError" class="empty-state" role="alert">{{ searchError }}</div>
+      <div v-else-if="filteredConversations.length === 0" class="empty-state">
+        {{
+          search.trim() || conversationsStore.conversations.length
+            ? 'No matching conversations.'
+            : 'No conversations yet. Send a message to the Foreman to start one.'
+        }}
       </div>
       <ConversationListRow
-        v-for="conversation in conversationsStore.conversations"
+        v-for="conversation in filteredConversations"
         :key="conversation.id"
         :conversation="conversation"
       />
@@ -31,10 +41,10 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useGuildStore } from '../../stores/guild'
 import { useConversationsStore } from '../../stores/conversations'
-import type { ConversationStatus } from '../../types'
+import type { Conversation, ConversationStatus } from '../../types'
 import ConversationListRow from './ConversationListRow.vue'
 
 const FILTER_OPTIONS: Array<{ value: ConversationStatus | undefined; label: string }> = [
@@ -48,13 +58,53 @@ const guildStore = useGuildStore()
 const conversationsStore = useConversationsStore()
 const loading = ref(false)
 const statusFilter = ref<ConversationStatus | undefined>(undefined)
+const search = ref('')
+
+const searchResults = ref<Conversation[] | null>(null)
+const searching = ref(false)
+const searchError = ref('')
+
+const filteredConversations = computed(() =>
+  (searchResults.value ?? conversationsStore.conversations)
+    .map((result) => conversationsStore.conversations.find((c) => c.id === result.id) ?? result)
+    .filter((conversation) => !statusFilter.value || conversation.status === statusFilter.value),
+)
+
+watch([search, () => guildStore.currentGuild?.id], ([value, guildId], _, onCleanup) => {
+  searchResults.value = null
+  searching.value = false
+  searchError.value = ''
+  const query = value.trim()
+  if (!query || !guildId) return
+
+  searching.value = true
+  searchResults.value = []
+  let cancelled = false
+  const timer = setTimeout(async () => {
+    try {
+      const results = await conversationsStore.searchConversations(guildId, query)
+      if (!cancelled) searchResults.value = results
+    } catch (error) {
+      if (!cancelled) {
+        searchError.value = 'Search failed. Please try again.'
+        console.error('Failed to search conversations', error)
+      }
+    } finally {
+      if (!cancelled) searching.value = false
+    }
+  }, 250)
+  onCleanup(() => {
+    cancelled = true
+    clearTimeout(timer)
+  })
+})
 
 async function load() {
   const guildId = guildStore.currentGuild?.id
   if (!guildId) return
   loading.value = true
   try {
-    await conversationsStore.fetchConversations(guildId, statusFilter.value)
+    await conversationsStore.fetchConversations(guildId)
   } finally {
     loading.value = false
   }
@@ -62,7 +112,6 @@ async function load() {
 
 function setFilter(value: ConversationStatus | undefined) {
   statusFilter.value = value
-  load()
 }
 
 onMounted(load)
@@ -80,12 +129,20 @@ watch(() => guildStore.currentGuild?.id, load)
 
 .list-toolbar {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
   gap: 8px;
   padding: 8px 10px;
   border-bottom: 1px solid var(--color-brass-dark);
   flex-shrink: 0;
+}
+
+.conversation-search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-brass-dark);
+  color: var(--color-text);
 }
 
 .status-filter {
