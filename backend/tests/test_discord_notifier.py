@@ -1374,6 +1374,18 @@ async def test_notify_task_stream_noop_for_blank_line(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("line", ["[pi] bash running", "Bash running · 42s", "bash running"])
+async def test_notify_task_stream_skips_running_status(monkeypatch, line):
+    """Tool "running" heartbeat lines are not mirrored to Discord."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_STREAM_TASKS", "1")
+
+    await discord_notifier.notify_task_stream("guild-1", "t-1", line)
+
+    assert "t-1" not in discord_notifier._stream_buffers
+
+
+@pytest.mark.asyncio
 async def test_notify_task_stream_buffers_short_line(monkeypatch):
     """A short line is buffered and a delayed flush is armed (no immediate POST)."""
     monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)

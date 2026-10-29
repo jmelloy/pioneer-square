@@ -1351,6 +1351,11 @@ async def _delayed_flush(task_id: str) -> None:
     await _flush_task_stream(task_id)
 
 
+# Tool heartbeat lines ("[pi] bash running", "Bash running · 42s") are status
+# noise, not output worth mirroring into Discord.
+_RUNNING_STATUS_RE = re.compile(r"^(?:\[pi\]\s*)?\w+ running\b", re.IGNORECASE)
+
+
 async def notify_task_stream(
     guild_id: str, task_id: str, line: str, detail: dict | None = None
 ) -> None:
@@ -1369,6 +1374,8 @@ async def notify_task_stream(
     if not _stream_enabled():
         return
     if not task_id or not line or not line.strip():
+        return
+    if _RUNNING_STATUS_RE.match(line.strip()):
         return
 
     buf = _stream_buffers.get(task_id)
