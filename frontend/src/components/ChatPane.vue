@@ -23,17 +23,15 @@
         </button>
         <button
           class="pane-tab"
-          :class="{ active: activeTab === 'conversations' }"
-          @click="activeTab = 'conversations'"
+          :class="{ active: activeTab === 'workers' }"
+          @click="activeTab = 'workers'"
         >
-          Conversations
-          <span v-if="activeConversationCount" class="tab-count">{{
-            activeConversationCount
-          }}</span>
+          Workers
+          <span v-if="workerCount" class="tab-count">{{ workerCount }}</span>
         </button>
       </div>
       <ChatTab v-if="activeTab === 'chat'" ref="chatTabRef" />
-      <ConversationList v-else />
+      <WorkerList v-else />
     </div>
   </div>
 </template>
@@ -42,22 +40,18 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useGuildStore } from '../stores/guild'
 import { useAgentsStore } from '../stores/agents'
-import { useConversationsStore } from '../stores/conversations'
 import ChatTab from './chat-pane/ChatTab.vue'
-import ConversationList from './sidebar/ConversationList.vue'
+import WorkerList from './sidebar/WorkerList.vue'
 
 const guildStore = useGuildStore()
 const agentsStore = useAgentsStore()
-const conversationsStore = useConversationsStore()
 
 const minimized = ref(false)
-const activeTab = ref<'chat' | 'conversations'>('chat')
+const activeTab = ref<'chat' | 'workers'>('chat')
 const chatTabRef = ref<InstanceType<typeof ChatTab> | null>(null)
 
 const foreman = computed(() => agentsStore.agents.find((a) => a.type === 'foreman'))
-const activeConversationCount = computed(
-  () => conversationsStore.conversations.filter((c) => c.status === 'active').length,
-)
+const workerCount = computed(() => agentsStore.workers.filter((w) => w.state !== 'offline').length)
 
 // Poll countdown: guildStore.nextPollAt holds the epoch ms when the next foreman
 // check fires (set from foreman-poll-status WS frames); pollTick forces this
@@ -237,6 +231,14 @@ onUnmounted(() => {
   font-family: var(--font-mono);
   font-size: 9px;
   font-weight: bold;
+}
+
+/* WorkerList: remove its top border and let it fill the tab */
+.chat-body :deep(.workers-section) {
+  border-top: none;
+  flex: 1;
+  max-height: none;
+  overflow-y: auto;
 }
 
 @media (max-width: 1024px) {
