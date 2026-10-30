@@ -93,17 +93,17 @@ export interface TaskTreeNode extends Task {
   children: TaskTreeNode[]
 }
 
-export interface TreeGroupNode {
-  type: 'issue' | 'pr'
-  repo: string
-  number: number
-  title: string
-  state: 'open' | 'closed' | 'merged'
+export interface ConversationGroupNode {
+  id: number
+  name: string | null
+  status: 'active' | 'archived' | 'closed'
+  created_at: string
+  updated_at: string
   tasks: TaskTreeNode[]
 }
 
 export interface TaskTreeData {
-  nodes: TreeGroupNode[]
+  conversations: ConversationGroupNode[]
   ungrouped: TaskTreeNode[]
 }
 

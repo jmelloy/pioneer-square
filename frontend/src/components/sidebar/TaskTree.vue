@@ -4,13 +4,12 @@
     <div v-else-if="isEmpty" class="empty-state">No tasks yet</div>
 
     <template v-else>
-      <!-- Issue / PR nodes -->
-      <div v-for="node in activeNodes" :key="nodeKey(node)" class="tree-group">
+      <!-- Conversation groups -->
+      <div v-for="node in activeConversations" :key="nodeKey(node)" class="tree-group">
         <div class="group-header" @click="toggle(nodeKey(node))">
           <span class="collapse-icon">{{ isExpanded(nodeKey(node)) ? '▾' : '▸' }}</span>
-          <span class="issue-ref">{{ node.type === 'pr' ? 'PR' : '' }}#{{ node.number }}</span>
-          <span class="issue-title">{{ node.title }}</span>
-          <span class="state-badge" :class="'badge-' + node.state">{{ node.state }}</span>
+          <span class="conversation-name">{{ node.name || `Conversation #${node.id}` }}</span>
+          <span class="state-badge" :class="'badge-' + node.status">{{ node.status }}</span>
           <span class="group-count">{{ countTasks(node.tasks) }}</span>
         </div>
 
@@ -23,7 +22,7 @@
       <div v-if="treeData!.ungrouped.length" class="tree-group">
         <div class="group-header" @click="toggle('__ungrouped__')">
           <span class="collapse-icon">{{ isExpanded('__ungrouped__') ? '▾' : '▸' }}</span>
-          <span class="issue-title ungrouped-label">Ungrouped</span>
+          <span class="conversation-name ungrouped-label">Ungrouped</span>
           <span class="group-count">{{ countTasks(treeData!.ungrouped) }}</span>
         </div>
         <div v-if="isExpanded('__ungrouped__')" class="group-tasks">
@@ -39,14 +38,14 @@ import { computed, ref, watch } from 'vue'
 import { useGuildStore } from '../../stores/guild'
 import { useTasksStore } from '../../stores/tasks'
 import { api } from '../../utils/api'
-import type { TaskTreeData, TaskTreeNode, TreeGroupNode } from '../../types'
+import type { TaskTreeData, ConversationGroupNode, TaskTreeNode } from '../../types'
 import TaskTreeRow from './TaskTreeRow.vue'
 
 const guildStore = useGuildStore()
 const tasksStore = useTasksStore()
 
-function nodeKey(node: TreeGroupNode): string {
-  return `${node.type}:${node.repo}#${node.number}`
+function nodeKey(node: ConversationGroupNode): string {
+  return `conv:${node.id}`
 }
 
 const treeData = ref<TaskTreeData | null>(null)
@@ -152,8 +151,13 @@ function countTasks(tasks: TaskTreeNode[]): number {
   return n
 }
 
-const activeNodes = computed(
-  () => treeData.value?.nodes.filter((n) => n.state === 'open' || hasActiveTasks(n.tasks)) ?? [],
+// Conversations with live work, active ones first, then most recently updated.
+const activeConversations = computed(() =>
+  (treeData.value?.conversations.filter((c) => hasActiveTasks(c.tasks)) ?? []).sort(
+    (a, b) =>
+      Number(b.status === 'active') - Number(a.status === 'active') ||
+      b.updated_at.localeCompare(a.updated_at),
+  ),
 )
 
 // Also true when treeData is null (fetch failed / no guild yet) so the
@@ -161,7 +165,7 @@ const activeNodes = computed(
 const isEmpty = computed(
   () =>
     !loading.value &&
-    (!treeData.value || (activeNodes.value.length === 0 && treeData.value.ungrouped.length === 0)),
+    (!treeData.value || (activeConversations.value.length === 0 && treeData.value.ungrouped.length === 0)),
 )
 </script>
 
@@ -210,15 +214,7 @@ const isEmpty = computed(
   user-select: none;
 }
 
-.issue-ref {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  color: var(--color-brass);
-  letter-spacing: 0.5px;
-  flex-shrink: 0;
-}
-
-.issue-title {
+.conversation-name {
   font-size: 11px;
   color: var(--color-text);
   white-space: nowrap;
@@ -243,19 +239,19 @@ const isEmpty = computed(
   flex-shrink: 0;
 }
 
-.badge-open {
+.badge-active {
   background: rgba(80, 200, 120, 0.2);
   color: var(--color-green);
+}
+
+.badge-archived {
+  background: rgba(150, 150, 150, 0.2);
+  color: var(--color-text-dim);
 }
 
 .badge-closed {
   background: rgba(200, 80, 80, 0.2);
   color: var(--color-red);
-}
-
-.badge-merged {
-  background: rgba(130, 80, 200, 0.2);
-  color: #a07de0;
 }
 
 .group-count {
