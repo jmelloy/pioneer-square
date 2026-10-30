@@ -137,6 +137,61 @@ def test_terminal_state_vocabulary_is_not_respelled():
 
 
 # ---------------------------------------------------------------------------
+# Worker task-update
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("state", "issue_number", "archived"),
+    [
+        ("failed", 42, True),
+        ("error", 42, True),
+        ("cancelled", 42, True),
+        ("done", None, True),
+        ("done", 42, False),
+        ("working", None, False),
+    ],
+)
+async def test_worker_update_applies_archival_policy(
+    db_url, monkeypatch, state, issue_number, archived
+):
+    from unittest.mock import AsyncMock, Mock
+
+    import ws_handlers
+    from ws_types import TaskUpdateMsg
+
+    _seed(db_url, "g-worker-archive", "t-worker-archive", issue_number=issue_number)
+    _hold_lock(db_url, "t-worker-archive")
+    _queue_event(db_url, "t-worker-archive")
+    monkeypatch.setattr(ws_handlers, "broadcast_msg", AsyncMock())
+    monkeypatch.setattr(ws_handlers, "ensure_poll_loop", Mock())
+    monkeypatch.setattr(ws_handlers.triggers, "trigger_foreman", AsyncMock())
+    monkeypatch.setattr(ws_handlers, "spawn", lambda coro, **kwargs: coro.close())
+
+    db = await get_db()
+    try:
+        guild_pk = await get_guild_pk(db, "g-worker-archive")
+        ctx = ws_handlers.WSContext(
+            websocket=Mock(), guild_id="g-worker-archive", guild_pk=guild_pk, db=db
+        )
+        await ws_handlers.handle_task_update(
+            ctx, TaskUpdateMsg(taskId="t-worker-archive", workerId="w-1", state=state)
+        )
+    finally:
+        await db.close()
+
+    saved_state, deleted_at = _read(db_url, "t-worker-archive")
+    assert saved_state == state
+    assert (deleted_at is not None) == archived
+    assert _counts(db_url, "t-worker-archive") == ((1, 1) if state == "working" else (0, 0))
+    update = ws_handlers.broadcast_msg.call_args.args[1]
+    assert update.deletedAt == (deleted_at.isoformat() if deleted_at else None)
+    if state == "error":
+        message = ws_handlers.triggers.trigger_foreman.call_args.args[2]
+        assert "later" in message
+
+
+# ---------------------------------------------------------------------------
 # finalize_task
 # ---------------------------------------------------------------------------
 

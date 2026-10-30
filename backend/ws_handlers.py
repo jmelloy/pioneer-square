@@ -43,7 +43,7 @@ from sqlalchemy import delete, func, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
-from task_lifecycle import TERMINAL_STATES
+from task_lifecycle import TERMINAL_STATES, finalize_task
 from util.tasks import spawn
 from utils import worker_display_name
 from worker_lifecycle import signal_stale_worker_on_join
@@ -848,12 +848,39 @@ async def handle_task_update(ctx: WSContext, msg: TaskUpdateMsg) -> None:
         pr_number, pr_repo = _parse_pr_url(msg.prUrl)
         update_values["pr_number"] = pr_number
         update_values["pr_repo"] = pr_repo
+    queued_payloads: list[dict] = []
+    if update_values.get("state") == "error":
+        # Preserve follow-up context before finalization purges queued events.
+        result = await ctx.db.exec(
+            select(col(TaskEvent.payload_json))
+            .where(TaskEvent.task_id == task_id, TaskEvent.event_type == "pending-followup")
+            .order_by(col(TaskEvent.id))
+        )
+        queued_payloads = [_load_event_payload(payload) for payload in result.all()]
     if update_values:
-        await ctx.db.exec(update(Task).where(col(Task.id) == task_id).values(**update_values))
-        if update_values.get("state") in TERMINAL_STATES:
-            await LockService(ctx.db).release(f"task:{task_id}")
+        terminal_state = update_values.get("state") in TERMINAL_STATES
+        persisted_values = {
+            key: value
+            for key, value in update_values.items()
+            if key != "state" or not terminal_state
+        }
+        if persisted_values:
+            await ctx.db.exec(
+                update(Task).where(col(Task.id) == task_id).values(**persisted_values)
+            )
         if "prUrl" in fields_set:
             await link_task_context(ctx.db, task_id)
+        if terminal_state:
+            res = await finalize_task(
+                ctx.db,
+                guild_pk=ctx.guild_pk,
+                guild_id=ctx.guild_id,
+                task_id=task_id,
+                outcome=update_values["state"],
+            )
+            msg.deletedAt = res.deleted_at.isoformat() if res.deleted_at else None
+            if res.task is not None:
+                msg.state = res.task.state
         await ctx.db.commit()
     await broadcast_msg(ctx.guild_id, msg, exclude=ctx.websocket)
     if "state" in update_values:
@@ -867,9 +894,8 @@ async def handle_task_update(ctx: WSContext, msg: TaskUpdateMsg) -> None:
             name=f"discord.stream-flush:{task_id}",
         )
     # Worker-reported terminal failures (bad tool config, unresolvable PR
-    # branch, push errors, an agent run that didn't succeed, etc.) bypass the
-    # foreman's finalize_task/cancel_task tools entirely — the worker sets
-    # state directly via this task-update message. Unlike the success path
+    # branch, push errors, an agent run that didn't succeed, etc.) arrive via
+    # task-update rather than the foreman's tools. Unlike the success path
     # (handle_task_complete's "task-complete" notification below), nothing
     # else notifies Discord for these, so they were silently dropped (#920,
     # #1171). Mirrors task-complete's routing: post into the task's existing
@@ -928,18 +954,6 @@ async def handle_task_update(ctx: WSContext, msg: TaskUpdateMsg) -> None:
     # Drain any pending-followup events queued while the task was locked, and
     # notify the foreman so it can decide how to handle them.
     if update_values.get("state") == "error" and task_id:
-        queued_payloads: list[dict] = []
-        result = await ctx.db.exec(
-            select(col(TaskEvent.id), col(TaskEvent.payload_json))
-            .where(TaskEvent.task_id == task_id, TaskEvent.event_type == "pending-followup")
-            .order_by(col(TaskEvent.id))
-        )
-        rows = result.all()
-        if rows:
-            event_ids = [r[0] for r in rows if r[0] is not None]
-            queued_payloads = [_load_event_payload(r[1]) for r in rows]
-            await ctx.db.exec(delete(TaskEvent).where(col(TaskEvent.id).in_(event_ids)))
-            await ctx.db.commit()
         worker_id_upd = msg.workerId or "a worker"
         task_uid = await _task_user_id(ctx.db, task_id)
         human_msg = triggers.format_task_error_message(
