@@ -1,15 +1,11 @@
 """Tests for the GET /guilds/{guild_id}/tasks/tree endpoint.
 
-The tree groups tasks under coalesce(linked issue, issue its PR closes, its PR),
-reading node metadata from the github_issues / github_pull_requests DB caches
-with the denormalized issue_title/issue_state task columns as fallback. No
-GitHub API calls happen in the request path.
+The tree groups tasks by conversation_id, propagated through parent_task_id
+links in both directions; conversation metadata comes from the conversations table.
 
 Covers:
-- Node metadata from the github_issues cache, and task-column fallback.
-- PR-only tasks grouping under a PR node (cache metadata + pr_url parse).
-- PR bodies with a closes-reference grouping under the referenced issue.
-- Group-key propagation through parent_task_id links, both directions.
+- Grouping, propagation, sorting and ungrouped handling.
+- conversation_id on the flat task list.
 - GitHub `issues` webhook events keep issue_state and issue_title current on linked tasks.
 """
 
@@ -20,20 +16,21 @@ import hmac
 import json
 import os
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
 from helpers import (  # noqa: E402
     _sync_session,
+    insert_conversation,
     insert_guild,
     insert_member,
     insert_task,
     insert_worker,
     make_auth_token,
 )
-from models import GithubIssue, GithubPullRequest, Guild, Task  # noqa: E402
+from models import Conversation, GithubIssue, GithubPullRequest, Guild, Task  # noqa: E402
 from sqlalchemy import insert, select, update  # noqa: E402
 from sqlmodel import col  # noqa: E402
 
@@ -151,346 +148,132 @@ def _get_tree(test_client, db_url: str, guild_id: str) -> dict:
     return resp.json()
 
 
-# ---------------------------------------------------------------------------
-# Issue node metadata — github_issues cache, then task-column fallback
-# ---------------------------------------------------------------------------
-
-
-def test_tree_issue_metadata_from_cache(client):
-    """Node title/state come from the github_issues cache when a row exists."""
-    test_client, db_url = client
-    guild_id = "tr-cache1"
-    _make_guild(db_url, guild_id)
-    _insert_gh_issue(db_url, "org/repo", 42, title="Cached title", state="closed")
-
-    insert_worker(db_url, guild_id, "w-tr1", state="online")
-    insert_task(
-        db_url,
-        guild_id,
-        "task-tr1",
-        worker_id="w-tr1",
-        state="done",
-        issue_number=42,
-        issue_repo="org/repo",
-        # Stale denormalized values must lose to the cache row.
-        issue_state="open",
-        issue_title="Stale title",
-    )
-
-    nodes = _get_tree(test_client, db_url, guild_id)["nodes"]
-    assert len(nodes) == 1
-    node = nodes[0]
-    assert node["type"] == "issue"
-    assert node["number"] == 42
-    assert node["repo"] == "org/repo"
-    assert node["title"] == "Cached title"
-    assert node["state"] == "closed"
-
-
-def test_tree_falls_back_to_task_columns_without_cache_row(client):
-    """Without a github_issues row, denormalized task columns supply title/state."""
-    test_client, db_url = client
-    guild_id = "tr-fall1"
-    _make_guild(db_url, guild_id)
-
-    insert_worker(db_url, guild_id, "w-fall1", state="online")
-    insert_task(
-        db_url,
-        guild_id,
-        "task-fall1",
-        worker_id="w-fall1",
-        state="done",
-        issue_number=55,
-        issue_repo="org/repo",
-        issue_state="closed",
-        issue_title="Fix the login bug",
-    )
-
-    nodes = _get_tree(test_client, db_url, guild_id)["nodes"]
-    assert len(nodes) == 1
-    assert nodes[0]["title"] == "Fix the login bug"
-    assert nodes[0]["state"] == "closed"
-
-
-def test_tree_defaults_when_nothing_cached(client):
-    """No cache row and no denormalized columns → '#<number>' and 'open'."""
-    test_client, db_url = client
-    guild_id = "tr-fall2"
-    _make_guild(db_url, guild_id)
-
-    insert_worker(db_url, guild_id, "w-fall2", state="online")
-    insert_task(
-        db_url,
-        guild_id,
-        "task-fall2",
-        worker_id="w-fall2",
-        state="pending",
-        issue_number=77,
-        issue_repo="org/repo",
-    )
-
-    nodes = _get_tree(test_client, db_url, guild_id)["nodes"]
-    assert len(nodes) == 1
-    assert nodes[0]["title"] == "#77"
-    assert nodes[0]["state"] == "open"
-
-
-def test_tree_open_and_closed_issues_sorted_correctly(client):
-    """Open issues appear before closed issues in the response."""
-    test_client, db_url = client
-    guild_id = "tr-sort1"
-    _make_guild(db_url, guild_id)
-
-    insert_worker(db_url, guild_id, "w-sort1", state="online")
-    insert_task(
-        db_url,
-        guild_id,
-        "task-sort-open",
-        worker_id="w-sort1",
-        state="pending",
-        issue_number=10,
-        issue_repo="org/repo",
-        issue_state="open",
-    )
-    insert_task(
-        db_url,
-        guild_id,
-        "task-sort-closed",
-        worker_id="w-sort1",
-        state="done",
-        issue_number=5,
-        issue_repo="org/repo",
-        issue_state="closed",
-    )
-
-    nodes = _get_tree(test_client, db_url, guild_id)["nodes"]
-    assert len(nodes) == 2
-    assert nodes[0]["state"] == "open"
-    assert nodes[1]["state"] == "closed"
+def _set_conv(db_url: str, conv_id: int, **values) -> None:
+    with _sync_session(db_url) as session:
+        session.execute(
+            update(Conversation).where(col(Conversation.id) == conv_id).values(**values)
+        )
+        session.commit()
 
 
 # ---------------------------------------------------------------------------
-# PR grouping — coalesce(issue, issue closed by PR, PR)
+# Conversation grouping
 # ---------------------------------------------------------------------------
 
 
-def test_tree_pr_only_task_groups_under_pr_node(client):
-    """A task with only PR linkage groups under a type='pr' node with cache metadata."""
+def test_tree_groups_tasks_by_conversation(client):
     test_client, db_url = client
-    guild_id = "tr-pr1"
+    guild_id = "tr-conv1"
     _make_guild(db_url, guild_id)
-    _insert_gh_pr(db_url, "org/repo", 300, title="Add dark mode", state="merged", merged=True)
+    insert_worker(db_url, guild_id, "w-conv1", state="online")
+    conv = insert_conversation(db_url, guild_id)
+    _set_conv(db_url, conv, name="My thread")
+    insert_task(db_url, guild_id, "task-c1", worker_id="w-conv1", conversation_id=conv)
+    insert_task(db_url, guild_id, "task-c2", worker_id="w-conv1", conversation_id=conv)
 
-    insert_worker(db_url, guild_id, "w-pr1", state="online")
-    insert_task(
-        db_url,
-        guild_id,
-        "task-pr1",
-        worker_id="w-pr1",
-        state="done",
-        phase="review",
-        pr_number=300,
-        pr_repo="org/repo",
-    )
-
-    nodes = _get_tree(test_client, db_url, guild_id)["nodes"]
-    assert len(nodes) == 1
-    node = nodes[0]
-    assert node["type"] == "pr"
-    assert node["number"] == 300
-    assert node["title"] == "Add dark mode"
-    assert node["state"] == "merged"
+    data = _get_tree(test_client, db_url, guild_id)
+    assert "nodes" not in data
+    assert data["ungrouped"] == []
+    [c] = data["conversations"]
+    assert c["id"] == conv
+    assert c["name"] == "My thread"
+    assert c["status"] == "active"
+    assert c["created_at"] and c["updated_at"]
+    assert {t["id"] for t in c["tasks"]} == {"task-c1", "task-c2"}
 
 
-def test_tree_pr_closes_ref_groups_under_issue(client):
-    """A PR whose cached body closes an issue groups its task under that issue."""
+def test_tree_propagates_conversation_through_parent_links(client):
+    """Tasks without a conversation join their parent's/children's conversation."""
     test_client, db_url = client
-    guild_id = "tr-pr2"
+    guild_id = "tr-conv2"
     _make_guild(db_url, guild_id)
-    _insert_gh_pr(db_url, "org/repo", 301, title="Fix crash", body="Fixes #12")
-    _insert_gh_issue(db_url, "org/repo", 12, title="Crash on save", state="open")
-
-    insert_worker(db_url, guild_id, "w-pr2", state="online")
+    insert_worker(db_url, guild_id, "w-conv2", state="online")
+    conv = insert_conversation(db_url, guild_id)
+    # Unlinked root with a linked child (upward), plus an unlinked grandchild (downward).
+    insert_task(db_url, guild_id, "task-root", worker_id="w-conv2", phase="issue")
     insert_task(
         db_url,
         guild_id,
-        "task-pr2",
-        worker_id="w-pr2",
-        state="working",
-        pr_number=301,
-        pr_repo="org/repo",
+        "task-mid",
+        worker_id="w-conv2",
+        parent_task_id="task-root",
+        conversation_id=conv,
     )
-
-    nodes = _get_tree(test_client, db_url, guild_id)["nodes"]
-    assert len(nodes) == 1
-    node = nodes[0]
-    assert node["type"] == "issue"
-    assert node["number"] == 12
-    assert node["title"] == "Crash on save"
-
-
-def test_tree_pr_url_parsed_when_no_pr_columns(client):
-    """pr_url is parsed for the PR key when pr_repo/pr_number are unset."""
-    test_client, db_url = client
-    guild_id = "tr-pr3"
-    _make_guild(db_url, guild_id)
-
-    insert_worker(db_url, guild_id, "w-pr3", state="online")
-    insert_task(
-        db_url,
-        guild_id,
-        "task-pr3",
-        worker_id="w-pr3",
-        state="done",
-        pr_url="https://github.com/org/repo/pull/302",
-    )
-
-    nodes = _get_tree(test_client, db_url, guild_id)["nodes"]
-    assert len(nodes) == 1
-    node = nodes[0]
-    assert node["type"] == "pr"
-    assert node["number"] == 302
-    assert node["title"] == "PR #302"  # no cache row → fallback title
-    assert node["state"] == "open"
-
-
-# ---------------------------------------------------------------------------
-# Group-key propagation through parent links (issue #861 lineage)
-# ---------------------------------------------------------------------------
-
-
-def test_tree_nests_execute_task_under_issue_root_via_parent_task_id(client):
-    """A phase='issue' root with a child (parent_task_id set) renders one root."""
-    test_client, db_url = client
-    guild_id = "tr-issroot1"
-    _make_guild(db_url, guild_id)
-
-    insert_worker(db_url, guild_id, "w-issroot1", state="online")
-    insert_task(
-        db_url,
-        guild_id,
-        "task-issroot1-root",
-        phase="issue",
-        state="pending",
-        issue_number=61,
-        issue_repo="org/repo",
-        issue_state="open",
-    )
-    insert_task(
-        db_url,
-        guild_id,
-        "task-issroot1-exec",
-        worker_id="w-issroot1",
-        phase="execute",
-        state="working",
-        issue_number=61,
-        issue_repo="org/repo",
-        issue_state="open",
-        parent_task_id="task-issroot1-root",
-    )
-
-    nodes = _get_tree(test_client, db_url, guild_id)["nodes"]
-    assert len(nodes) == 1
-    tasks = nodes[0]["tasks"]
-    assert len(tasks) == 1, f"expected a single root task, got {len(tasks)}: {tasks}"
-    assert tasks[0]["id"] == "task-issroot1-root"
-    assert tasks[0]["phase"] == "issue"
-    assert len(tasks[0]["children"]) == 1
-    assert tasks[0]["children"][0]["id"] == "task-issroot1-exec"
-
-
-def test_tree_nests_orphan_task_under_issue_root_when_parent_unset(client):
-    """A task in the same issue group without parent_task_id is still nested
-    under the phase='issue' root rather than appearing as a second root."""
-    test_client, db_url = client
-    guild_id = "tr-issroot2"
-    _make_guild(db_url, guild_id)
-
-    insert_worker(db_url, guild_id, "w-issroot2", state="online")
-    insert_task(
-        db_url,
-        guild_id,
-        "task-issroot2-root",
-        phase="issue",
-        state="pending",
-        issue_number=62,
-        issue_repo="org/repo",
-        issue_state="open",
-    )
-    # parent_task_id intentionally left unset — this is the bug scenario.
-    insert_task(
-        db_url,
-        guild_id,
-        "task-issroot2-exec",
-        worker_id="w-issroot2",
-        phase="execute",
-        state="working",
-        issue_number=62,
-        issue_repo="org/repo",
-        issue_state="open",
-    )
-
-    nodes = _get_tree(test_client, db_url, guild_id)["nodes"]
-    assert len(nodes) == 1
-    tasks = nodes[0]["tasks"]
-    assert len(tasks) == 1, f"expected a single root task, got {len(tasks)}: {tasks}"
-    assert tasks[0]["id"] == "task-issroot2-root"
-    child_ids = {c["id"] for c in tasks[0]["children"]}
-    assert child_ids == {"task-issroot2-exec"}
-
-
-def test_tree_unlinked_root_joins_childrens_group(client):
-    """A legacy phase='issue' root with NO issue linkage of its own inherits the
-    group key upward from its linked children instead of landing in ungrouped."""
-    test_client, db_url = client
-    guild_id = "tr-upprop1"
-    _make_guild(db_url, guild_id)
-
-    insert_worker(db_url, guild_id, "w-upprop1", state="online")
-    # Legacy root: no issue_number/issue_repo (pre-linkage create_task).
-    insert_task(
-        db_url,
-        guild_id,
-        "task-upprop1-root",
-        phase="issue",
-        state="pending",
-        description="Issue root for #63",
-    )
-    insert_task(
-        db_url,
-        guild_id,
-        "task-upprop1-exec",
-        worker_id="w-upprop1",
-        phase="execute",
-        state="working",
-        issue_number=63,
-        issue_repo="org/repo",
-        parent_task_id="task-upprop1-root",
-    )
+    insert_task(db_url, guild_id, "task-leaf", worker_id="w-conv2", parent_task_id="task-mid")
 
     data = _get_tree(test_client, db_url, guild_id)
     assert data["ungrouped"] == []
-    nodes = data["nodes"]
-    assert len(nodes) == 1
-    assert nodes[0]["number"] == 63
-    tasks = nodes[0]["tasks"]
-    assert len(tasks) == 1
-    assert tasks[0]["id"] == "task-upprop1-root"
-    assert tasks[0]["children"][0]["id"] == "task-upprop1-exec"
+    [c] = data["conversations"]
+    [root] = c["tasks"]
+    assert root["id"] == "task-root"
+    assert root["conversation_id"] == conv
+    [mid] = root["children"]
+    assert mid["id"] == "task-mid"
+    assert [t["id"] for t in mid["children"]] == ["task-leaf"]
+    assert mid["children"][0]["conversation_id"] == conv
+
+
+def test_tree_sorts_active_with_live_tasks_first_then_recent(client):
+    test_client, db_url = client
+    guild_id = "tr-conv3"
+    _make_guild(db_url, guild_id)
+    insert_worker(db_url, guild_id, "w-conv3", state="online")
+    now = datetime.now(UTC)
+    old_live = insert_conversation(db_url, guild_id)
+    new_done = insert_conversation(db_url, guild_id)
+    newer_done = insert_conversation(db_url, guild_id)
+    archived_live = insert_conversation(db_url, guild_id)
+    _set_conv(db_url, old_live, updated_at=now - timedelta(days=5))
+    _set_conv(db_url, new_done, updated_at=now - timedelta(hours=2))
+    _set_conv(db_url, newer_done, updated_at=now - timedelta(hours=1))
+    _set_conv(db_url, archived_live, updated_at=now, status="archived")
+    for i, (conv, state) in enumerate(
+        [
+            (old_live, "working"),
+            (new_done, "done"),
+            (newer_done, "done"),
+            (archived_live, "working"),
+        ]
+    ):
+        insert_task(
+            db_url, guild_id, f"task-s{i}", worker_id="w-conv3", state=state, conversation_id=conv
+        )
+
+    data = _get_tree(test_client, db_url, guild_id)
+    assert [c["id"] for c in data["conversations"]] == [
+        old_live,
+        archived_live,
+        newer_done,
+        new_done,
+    ]
 
 
 def test_tree_unlinked_task_stays_ungrouped(client):
-    """A task with no linkage anywhere in its tree lands in ungrouped."""
     test_client, db_url = client
     guild_id = "tr-ungr1"
     _make_guild(db_url, guild_id)
-
     insert_worker(db_url, guild_id, "w-ungr1", state="online")
     insert_task(db_url, guild_id, "task-ungr1", worker_id="w-ungr1", state="working")
 
     data = _get_tree(test_client, db_url, guild_id)
-    assert data["nodes"] == []
+    assert data["conversations"] == []
     assert [t["id"] for t in data["ungrouped"]] == ["task-ungr1"]
+
+
+def test_list_tasks_includes_conversation_id(client):
+    test_client, db_url = client
+    guild_id = "tr-list1"
+    _make_guild(db_url, guild_id)
+    insert_worker(db_url, guild_id, "w-list1", state="online")
+    conv = insert_conversation(db_url, guild_id)
+    insert_task(db_url, guild_id, "task-l1", worker_id="w-list1", conversation_id=conv)
+    insert_task(db_url, guild_id, "task-l2", worker_id="w-list1")
+
+    resp = test_client.get(f"/guilds/{guild_id}/tasks", headers=_auth(db_url))
+    assert resp.status_code == 200
+    by_id = {t["id"]: t for t in resp.json()}
+    assert by_id["task-l1"]["conversation_id"] == conv
+    assert by_id["task-l2"]["conversation_id"] is None
 
 
 # ---------------------------------------------------------------------------

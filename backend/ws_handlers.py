@@ -406,6 +406,7 @@ async def handle_join(ctx: WSContext, msg: JoinMsg) -> None:
                         provider=pt.provider,
                         phase=pt.phase,
                         parentTaskId=pt.parent_task_id,
+                        conversationId=pt.conversation_id,
                         issueNumber=pt.issue_number,
                         issueRepo=pt.issue_repo,
                         prNumber=pt.pr_number,
