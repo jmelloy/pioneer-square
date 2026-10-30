@@ -261,7 +261,7 @@ async def list_conversations(
     db: AsyncSession = Depends(get_db_dep),
     q: str | None = None,
 ):
-    """List a guild's conversations, most recently active first (#1298).
+    """List a guild's conversations, newest created first (#1298, #1380).
 
     The Conversations UI/API surface's list endpoint — mirrors
     ``routes.threads.list_threads`` (same ``status`` filter, same 200-row
@@ -275,7 +275,7 @@ async def list_conversations(
     stmt = (
         select(Conversation)
         .where(col(Conversation.guild_id) == guild_pk)
-        .order_by(col(Conversation.updated_at).desc())
+        .order_by(col(Conversation.created_at).desc())
     )
     if status is not None:
         if status not in THREAD_STATUSES:
