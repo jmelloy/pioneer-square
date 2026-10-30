@@ -75,15 +75,17 @@ export const useTasksStore = defineStore('tasks', () => {
     _expiryTimers.set(taskId, timer)
   }
 
-  async function fetchTasks(guildId: string) {
-    if (!guildId) return
+  async function fetchTasks(guildId: string): Promise<boolean> {
+    if (!guildId) return false
     try {
       tasks.value = await api<Task[]>(`/guilds/${guildId}/tasks`)
       for (const t of tasks.value) {
         if (t.deleted_at) _scheduleExpiry(t.id, t.deleted_at)
       }
+      return true
     } catch (e) {
       console.error('Failed to fetch tasks', e)
+      return false
     }
   }
 

@@ -30,6 +30,7 @@ function mountPanel() {
   conversationsStore.conversations = [{ ...CONVERSATION }]
 
   apiMock.mockResolvedValueOnce([]) // fetchConversationMessages on mount
+  apiMock.mockResolvedValueOnce([]) // fetchTasks on mount
 
   const wrapper = mount(ConversationDetailPanel, { props: { id: 42 } })
   return { wrapper, guildStore, conversationsStore }
@@ -92,10 +93,52 @@ describe('ConversationDetailPanel reply', () => {
     const conversationsStore = useConversationsStore()
     conversationsStore.conversations = [{ ...CONVERSATION, status: 'closed' }]
     apiMock.mockResolvedValueOnce([])
+    apiMock.mockResolvedValueOnce([])
 
     const wrapper = mount(ConversationDetailPanel, { props: { id: 42 } })
     await flushPromises()
 
     expect(wrapper.find('.reply-row').exists()).toBe(false)
+  })
+})
+
+describe('ConversationDetailPanel linked task', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('shows name, status and PR link for tasks linked to the conversation', async () => {
+    const guildStore = useGuildStore()
+    guildStore.currentGuild = { id: 'g1', name: 'Guild 1' }
+    useConversationsStore().conversations = [{ ...CONVERSATION }]
+    apiMock.mockResolvedValueOnce([])
+    apiMock.mockResolvedValueOnce([
+      {
+        id: 't1',
+        name: 'Fix bug',
+        state: 'working',
+        pr_url: 'https://x/pr/1',
+        conversation_id: 42,
+      },
+      { id: 't2', name: 'Other', state: 'done', conversation_id: 7 },
+    ])
+    const wrapper = mount(ConversationDetailPanel, { props: { id: 42 } })
+    await flushPromises()
+    const text = wrapper.find('.pane-tasks').text()
+    expect(text).toContain('Fix bug')
+    expect(text).toContain('working')
+    expect(text).not.toContain('Other')
+    expect(wrapper.find('.linked-task-pr').attributes('href')).toBe('https://x/pr/1')
+  })
+
+  it('shows an error note when tasks fail to load', async () => {
+    const guildStore = useGuildStore()
+    guildStore.currentGuild = { id: 'g1', name: 'Guild 1' }
+    useConversationsStore().conversations = [{ ...CONVERSATION }]
+    apiMock.mockResolvedValueOnce([])
+    apiMock.mockRejectedValueOnce(new Error('boom'))
+    const wrapper = mount(ConversationDetailPanel, { props: { id: 42 } })
+    await flushPromises()
+    expect(wrapper.find('.pane-tasks-error').exists()).toBe(true)
   })
 })

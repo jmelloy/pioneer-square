@@ -110,6 +110,7 @@ async def list_guild_tasks(
             col(Task.pr_url),
             col(Task.issue_number),
             col(Task.issue_repo),
+            col(Task.conversation_id),
             col(Task.created_at),
             col(Task.deleted_at),
         )
