@@ -85,7 +85,6 @@ export interface Task {
   worktree_path?: string
   issue_number?: number | null
   issue_repo?: string | null
-  conversation_id?: number | null
   created_at?: string
   deleted_at?: string | null
 }
