@@ -605,8 +605,7 @@ def test_followup_done_max_turns_caps_last_text_at_4000_chars(client):
 def test_task_update_failed_notifies_discord(client):
     """A worker-reported task-update with state=failed must post a Discord
     notification (#920) — this path (bad tool config, unresolvable PR branch,
-    push errors) bypasses finalize_task/cancel_task entirely, and previously
-    notified nobody."""
+    push errors) previously bypassed finalization and notified nobody."""
     test_client, db_url = client
     guild_id = "nfy020"
     worker_id = "w-nfy020"
@@ -644,12 +643,9 @@ def test_task_update_failed_notifies_discord(client):
                     "state": "failed",
                 }
             )
-            # No receive here: handle_task_update's broadcast excludes the
-            # sender's own connection (it's the worker reporting its own
-            # state), so this single-connection test never gets it back.
-            # The ping/pong round-trip below is what proves the handler ran.
             ws.send_json({"type": "ping"})
-            ws.receive_json()  # pong — ensures handler is done
+            while ws.receive_json()["type"] != "pong":
+                pass  # Drain finalization broadcasts before the handler-complete barrier.
 
     mock_notify.assert_called_once()
     args, kwargs = mock_notify.call_args
@@ -696,12 +692,9 @@ def test_task_update_cancelled_notifies_discord(client):
                     "state": "cancelled",
                 }
             )
-            # No receive here: handle_task_update's broadcast excludes the
-            # sender's own connection (it's the worker reporting its own
-            # state), so this single-connection test never gets it back.
-            # The ping/pong round-trip below is what proves the handler ran.
             ws.send_json({"type": "ping"})
-            ws.receive_json()  # pong — ensures handler is done
+            while ws.receive_json()["type"] != "pong":
+                pass  # Drain finalization broadcasts before the handler-complete barrier.
 
     mock_notify.assert_called_once()
     args, kwargs = mock_notify.call_args
@@ -767,11 +760,9 @@ def test_task_update_error_notifies_discord_and_foreman(client):
                     "lastText": "Ran out of turns before finishing.",
                 }
             )
-            # No receive here: handle_task_update's broadcast excludes the
-            # sender's own connection. The ping/pong round-trip below proves
-            # the (async) handler has finished.
             ws.send_json({"type": "ping"})
-            ws.receive_json()  # pong — ensures handler is done
+            while ws.receive_json()["type"] != "pong":
+                pass  # Drain finalization broadcasts before the handler-complete barrier.
 
     mock_notify.assert_called_once()
     args, kwargs = mock_notify.call_args
