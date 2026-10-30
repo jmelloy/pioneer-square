@@ -7,7 +7,6 @@ Soft-delete is a single ``deleted_at`` stamp (see ``models.finalize_soft_delete_
 from __future__ import annotations
 
 import json
-import re
 from collections import defaultdict
 from datetime import UTC, datetime
 
@@ -18,15 +17,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from foreman import triggers
 from lock_service import LockService
 from models import (
-    GithubIssue,
-    GithubPullRequest,
+    Conversation,
     Guild,
     Task,
     TaskLog,
     live_tasks_filter,
 )
 from pydantic import BaseModel
-from sqlalchemy import tuple_, update
+from sqlalchemy import update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from task_lifecycle import TERMINAL_STATES, finalize_task
@@ -340,9 +338,6 @@ async def cancel_task_endpoint(
 # Task tree endpoint helpers
 # ---------------------------------------------------------------------------
 
-_CLOSES_RE = re.compile(r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)", re.IGNORECASE)
-_GH_PR_URL_RE = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)")
-
 
 def _nest_tasks(tasks: list[dict]) -> list[dict]:
     """Build a parent/child tree from a flat task list using parent_task_id.
@@ -378,14 +373,13 @@ async def get_guild_tasks_tree(
     github_user_id: str = Depends(require_member()),
     db: AsyncSession = Depends(get_db_dep),
 ):
-    """Return tasks grouped under their GitHub issue or PR.
+    """Return tasks grouped by conversation.
 
-    Each task's group key is ``coalesce(linked issue, issue its PR closes, its
-    PR)``, propagated through parent_task_id links in both directions so an
-    unlinked root joins its children's group. Node title/state come from the
-    ``github_issues`` / ``github_pull_requests`` DB caches (webhook-fed, seeded
-    by scripts/backfill_github_cache.py), falling back to the denormalized
-    issue_title/issue_state task columns. No GitHub API calls in this path.
+    Each task's ``conversation_id`` is propagated through parent_task_id links
+    in both directions so a task without a conversation joins its relatives'
+    conversation. Tasks that still have none are returned in ``ungrouped``.
+    Conversations with active status and non-terminal tasks sort first, then
+    by most recent activity.
     """
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
@@ -408,6 +402,7 @@ async def get_guild_tasks_tree(
             col(Task.issue_repo),
             col(Task.issue_state),
             col(Task.issue_title),
+            col(Task.conversation_id),
             col(Task.created_at),
             col(Task.deleted_at),
         )
@@ -417,109 +412,77 @@ async def get_guild_tasks_tree(
     )
     raw_tasks = [dict(r._mapping) for r in result.all()]
 
-    # --- Each task's PR, from structured columns or pr_url parse ---
-    task_pr: dict[str, tuple[str, int]] = {}
-    for task in raw_tasks:
-        if task["pr_repo"] and task["pr_number"]:
-            task_pr[task["id"]] = (task["pr_repo"], task["pr_number"])
-        elif task["pr_url"] and (m := _GH_PR_URL_RE.match(task["pr_url"])):
-            task_pr[task["id"]] = (m.group(1), int(m.group(2)))
-
-    # --- Cached PR rows: closes-ref resolution + PR-node metadata ---
-    pr_rows: dict[tuple[str, int], GithubPullRequest] = {}
-    if task_pr:
-        pr_result = await db.exec(
-            select(GithubPullRequest).where(
-                tuple_(col(GithubPullRequest.repo), col(GithubPullRequest.number)).in_(
-                    set(task_pr.values())
-                )
-            )
-        )
-        pr_rows = {(p.repo, p.number): p for p in pr_result.all()}
-
-    # --- Group key per task: coalesce(issue, issue closed by PR, PR) ---
-    task_key: dict[str, tuple[str, str, int]] = {}
-    for task in raw_tasks:
-        if task["issue_repo"] and task["issue_number"]:
-            task_key[task["id"]] = ("issue", task["issue_repo"], task["issue_number"])
-            continue
-        pr = task_pr.get(task["id"])
-        if not pr:
-            continue
-        pr_row = pr_rows.get(pr)
-        m = _CLOSES_RE.search(pr_row.body or "") if pr_row else None
-        task_key[task["id"]] = ("issue", pr[0], int(m.group(1))) if m else ("pr", pr[0], pr[1])
-
-    # --- Propagate keys through parent links, both directions, so an unlinked
-    # parent (e.g. a legacy phase='issue' root with no issue_number) joins its
-    # children's group instead of surfacing separately. Keys never change once
-    # set, so each pass assigns at least one new key and the loop terminates. ---
+    # --- Propagate conversation_id through parent links, both directions.
+    # Values never change once set, so each pass assigns at least one new
+    # task and the loop terminates. ---
+    task_conv: dict[str, int] = {
+        t["id"]: t["conversation_id"] for t in raw_tasks if t["conversation_id"] is not None
+    }
     ids = {t["id"] for t in raw_tasks}
     links = [(t["id"], t["parent_task_id"]) for t in raw_tasks if t["parent_task_id"] in ids]
     changed = True
     while changed:
         changed = False
         for tid, pid in links:
-            if tid in task_key and pid not in task_key:
-                task_key[pid] = task_key[tid]
+            if tid in task_conv and pid not in task_conv:
+                task_conv[pid] = task_conv[tid]
                 changed = True
-            elif pid in task_key and tid not in task_key:
-                task_key[tid] = task_key[pid]
+            elif pid in task_conv and tid not in task_conv:
+                task_conv[tid] = task_conv[pid]
                 changed = True
 
-    groups: dict[tuple[str, str, int], list[dict]] = defaultdict(list)
+    groups: dict[int, list[dict]] = defaultdict(list)
     ungrouped: list[dict] = []
     for task in raw_tasks:
-        key = task_key.get(task["id"])
-        if key:
-            groups[key].append(task)
+        conv_id = task_conv.get(task["id"])
+        if conv_id is not None:
+            task["conversation_id"] = conv_id
+            groups[conv_id].append(task)
         else:
             ungrouped.append(task)
 
-    # --- Issue metadata: github_issues cache, then denormalized task columns ---
-    issue_keys = {(repo, num) for kind, repo, num in groups if kind == "issue"}
-    issue_rows: dict[tuple[str, int], GithubIssue] = {}
-    if issue_keys:
-        issue_result = await db.exec(
-            select(GithubIssue).where(
-                tuple_(col(GithubIssue.repo), col(GithubIssue.number)).in_(issue_keys)
+    convs: dict[int, Conversation] = {}
+    if groups:
+        conv_result = await db.exec(
+            select(Conversation).where(
+                col(Conversation.id).in_(groups.keys()),
+                col(Conversation.guild_id) == guild_pk,
             )
         )
-        issue_rows = {(i.repo, i.number): i for i in issue_result.all()}
+        convs = {c.id: c for c in conv_result.all() if c.id is not None}
 
-    nodes = []
-    for (kind, repo, num), group_tasks in groups.items():
-        if kind == "issue":
-            cached = issue_rows.get((repo, num))
-            title = (
-                cached.title
-                if cached
-                else next((t["issue_title"] for t in group_tasks if t.get("issue_title")), None)
-            ) or f"#{num}"
-            state = (
-                cached.state
-                if cached
-                else next((t["issue_state"] for t in group_tasks if t.get("issue_state")), None)
-            ) or "open"
-        else:
-            cached_pr = pr_rows.get((repo, num))
-            title = cached_pr.title if cached_pr else f"PR #{num}"
-            state = (cached_pr.state if cached_pr else None) or "open"
-        nodes.append(
-            {
-                "type": kind,
-                "repo": repo,
-                "number": num,
-                "title": title,
-                "state": state,
-                "tasks": _nest_tasks(group_tasks),
-            }
+    entries = []
+    for conv_id, group_tasks in groups.items():
+        conv = convs.get(conv_id)
+        if conv is None:
+            # Conversation missing or in another guild: don't leak it.
+            for t in group_tasks:
+                t["conversation_id"] = None
+            ungrouped.extend(group_tasks)
+            continue
+        has_live = any(t["state"] not in TERMINAL_STATES for t in group_tasks)
+        activity = conv.updated_at or conv.created_at
+        entries.append(
+            (
+                conv.status == "active" and has_live,
+                activity,
+                {
+                    "id": conv.id,
+                    "name": conv.name,
+                    "status": conv.status,
+                    "created_at": conv.created_at,
+                    "updated_at": conv.updated_at,
+                    "tasks": _nest_tasks(group_tasks),
+                },
+            )
         )
 
-    # Sort: open first, then by number descending (newest first)
-    nodes.sort(key=lambda n: (0 if n["state"] == "open" else 1, -n["number"]))
+    # Active-with-live-tasks first, then most recent activity first.
+    entries.sort(key=lambda e: e[1], reverse=True)
+    entries.sort(key=lambda e: not e[0])
+    ungrouped.sort(key=lambda t: t["created_at"])
 
-    return {"nodes": nodes, "ungrouped": _nest_tasks(ungrouped)}
+    return {"conversations": [e[2] for e in entries], "ungrouped": _nest_tasks(ungrouped)}
 
 
 @router.post("/guilds/{guild_id}/tasks/{task_id}/redirect")

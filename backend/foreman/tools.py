@@ -1610,6 +1610,7 @@ async def _handle_create_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
             phase=phase,
             state="pending",
             createdAt=created_at.isoformat(),
+            conversationId=conversation_id,
         ).model_dump(by_alias=True, exclude_none=True),
     )
     return (
@@ -1875,10 +1876,13 @@ async def _handle_assign_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
                 )
                 await db.commit()
                 name_result = await db.exec(
-                    select(col(Task.name)).where(col(Task.id) == existing_task_id)
+                    select(col(Task.name), col(Task.conversation_id)).where(
+                        col(Task.id) == existing_task_id
+                    )
                 )
                 name_row = name_result.first()
                 task_name = (name_row[0] if name_row else None) or desc[:60]
+                existing_conversation_id = name_row[1] if name_row else None
                 task_id = existing_task_id
                 logger.info(
                     "assign_task enqueue guild=%s task=%s worker=%s phase=%s "
@@ -1907,6 +1911,7 @@ async def _handle_assign_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
                         modelTier=model_tier,
                         provider=provider,
                         phase=phase,
+                        conversationId=existing_conversation_id,
                         parentTaskId=parent_task_id,
                         issueNumber=effective_issue_number,
                         issueRepo=effective_issue_repo,
@@ -1999,6 +2004,7 @@ async def _handle_assign_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
                         modelTier=model_tier,
                         provider=provider,
                         phase=phase,
+                        conversationId=conversation_id,
                         parentTaskId=parent_task_id,
                         issueNumber=effective_issue_number,
                         issueRepo=effective_issue_repo,

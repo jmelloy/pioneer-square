@@ -79,6 +79,7 @@ export interface Task {
   state: TaskState
   worker_id?: string
   parent_task_id?: string | null
+  conversation_id?: number | null
   branch?: string
   pr_url?: string
   worktree_path?: string
