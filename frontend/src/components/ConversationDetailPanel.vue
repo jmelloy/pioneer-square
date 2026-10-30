@@ -26,6 +26,34 @@
         </span>
       </div>
 
+      <div v-if="linkedTasks.length" class="pane-tasks">
+        <div v-for="task in linkedTasks" :key="task.id" class="linked-task">
+          <span class="linked-task-label">TASK</span>
+          <a
+            href="#"
+            class="linked-task-name"
+            :title="'Open task ' + task.id"
+            @click.prevent="openTask(task.id)"
+            >{{ task.name || task.id }}</a
+          >
+          <span
+            class="linked-task-state"
+            :class="'task-color-' + tasksStore.stateColor(task.state)"
+            >{{ tasksStore.stateLabel(task.state) }}</span
+          >
+          <code v-if="task.branch" class="linked-task-branch">{{ task.branch }}</code>
+          <a
+            v-if="task.pr_url"
+            :href="task.pr_url"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="linked-task-pr"
+            >PR ↗</a
+          >
+        </div>
+      </div>
+      <div v-else-if="tasksError" class="pane-tasks pane-tasks-error">Task details unavailable</div>
+
       <div class="body chat-messages" ref="messagesEl">
         <div v-if="loadingMessages" class="chat-empty">Loading messages…</div>
         <div v-else-if="groupedMessages.length === 0" class="chat-empty">
@@ -131,6 +159,8 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useGuildStore } from '../stores/guild'
 import { useConversationsStore } from '../stores/conversations'
+import { useTasksStore } from '../stores/tasks'
+import { useUiStore } from '../stores/ui'
 import { formatClock, formatRelative } from '../utils/format'
 import { renderMarkdown } from '../utils/markdown'
 import { ApiError } from '../utils/api'
@@ -144,6 +174,8 @@ const props = defineProps<{
 
 const guildStore = useGuildStore()
 const conversationsStore = useConversationsStore()
+const tasksStore = useTasksStore()
+const uiStore = useUiStore()
 
 const acting = ref(false)
 const loadingMessages = ref(false)
@@ -153,6 +185,16 @@ const sending = ref(false)
 const replyError = ref<string | null>(null)
 
 const conversation = computed(() => conversationsStore.conversations.find((c) => c.id === props.id))
+
+const tasksError = ref(false)
+
+// Tasks spawned from / linked to this conversation (tasks.conversation_id).
+const linkedTasks = computed(() => tasksStore.tasks.filter((t) => t.conversation_id === props.id))
+
+function openTask(taskId: string) {
+  uiStore.selectTask(taskId)
+  uiStore.openTaskTab(taskId)
+}
 
 // History fetched once per conversation (#1298) — separate from the live WS
 // feed below since the guild-wide `guildStore.messages` window is capped and
@@ -240,6 +282,9 @@ async function load() {
     history.value = await conversationsStore.fetchConversationMessages(guildId, props.id)
   } finally {
     loadingMessages.value = false
+  }
+  if (!tasksStore.tasks.length) {
+    tasksError.value = !(await tasksStore.fetchTasks(guildId))
   }
 }
 
@@ -394,6 +439,90 @@ watch(
   display: flex;
   gap: 10px;
   margin-left: auto;
+}
+
+.pane-tasks {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 16px;
+  background: var(--color-bg-tertiary);
+  border-bottom: 1px solid var(--color-brass-dark);
+  flex-shrink: 0;
+  font-size: 11px;
+}
+
+.pane-tasks-error {
+  color: var(--color-text-dim);
+  font-style: italic;
+}
+
+.linked-task {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.linked-task-label {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  letter-spacing: 1px;
+  color: var(--color-amber);
+}
+
+.linked-task-name {
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.linked-task-state {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--color-text-dim);
+  flex-shrink: 0;
+}
+.task-color-green {
+  color: var(--color-green);
+}
+.task-color-teal {
+  color: var(--color-teal);
+}
+.task-color-amber {
+  color: var(--color-amber);
+}
+.task-color-red {
+  color: var(--color-red);
+}
+.task-color-blue {
+  color: var(--color-blue, var(--color-teal));
+}
+.task-color-orange {
+  color: var(--color-orange, var(--color-amber));
+}
+
+.linked-task-branch {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.linked-task-pr {
+  color: var(--color-teal);
+  font-size: 10px;
+  flex-shrink: 0;
 }
 
 .sub-time {
