@@ -132,6 +132,7 @@ class TaskAssignedMsg(_WS):
     provider: str | None = None
     phase: str | None = None
     parentTaskId: str | None = None
+    conversationId: int | None = None
     issueNumber: int | None = None
     issueRepo: str | None = None
     prNumber: int | None = None
@@ -151,6 +152,7 @@ class TaskCreatedMsg(_WS):
     taskType: str | None = None
     state: str
     createdAt: str
+    conversationId: int | None = None
 
 
 class TaskUpdateMsg(_WS):
