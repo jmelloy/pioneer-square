@@ -1,7 +1,7 @@
 """Foreman trigger dispatch and message-formatting policy.
 
 Centralizes what used to be ``ws_handlers._trigger_foreman`` — the single
-entry point every worker/websocket/Discord/A2A event goes through to hand a
+entry point every worker/websocket/web console/Discord/A2A event goes through to hand a
 message to the embedded Foreman runner — plus the per-event message builders
 that were duplicated as inline f-string blocks across ``ws_handlers.py``,
 ``discord/router.py``, ``routes/a2a.py``, ``routes/websocket.py``, and
@@ -83,8 +83,8 @@ async def trigger_foreman(
     # Foreman-owned conversation lifecycle (#1167): a brand-new human message with
     # no task_id yet is the start (or continuation) of a conversation — the
     # Foreman creates/reuses that conversation here, as a side
-    # effect of handling the message, never something Discord or the
-    # frontend originates. Worker-driven events (task-complete, etc.) already
+    # effect of handling the message, never something the web console or
+    # Discord originates. Worker-driven events (task-complete, etc.) already
     # carry an existing task_id whose conversation was stamped at task-creation
     # time (see foreman.tools' create_task/assign_task), so nothing to do here.
     if (
@@ -121,7 +121,7 @@ def format_last_output(text: str, max_chars: int = 4000) -> str:
 
     Foreman messages are delivered over the WebSocket and fed into the LLM's
     context, so we still cap length — just far more generously than the old
-    200-char slice, which was cutting off Discord message content.
+    200-char slice, which was cutting off long chat message content.
     """
     if len(text) <= max_chars:
         return text

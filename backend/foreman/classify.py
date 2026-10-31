@@ -1,6 +1,6 @@
 """Shared classification of foreman trigger events by origin (human vs. automated).
 
-Human-originated triggers (Discord/web UI chat, user-requested follow-ups) are
+Human-originated triggers (web console/Discord chat, user-requested follow-ups) are
 queued rather than dropped when the foreman is busy — see
 ``foreman.runner.run_foreman_ai``'s ``is_human`` param. Two call sites need to
 agree on this classification, so it lives here as a single source of truth:

@@ -93,7 +93,7 @@ _poll_tasks: dict[str, "asyncio.Task[None]"] = {}
 # queuing) keeps memory bounded and avoids stale snapshots piling up under load.
 # Entries are popped in the finally block after each run so the dict stays small.
 #
-# Human-originated messages (Discord/web UI chat, user-requested follow-ups)
+# Human-originated messages (web console/Discord chat, user-requested follow-ups)
 # are the one exception: they are never silently dropped. When the entry for
 # their key is busy, they are appended to ``_human_queues`` instead, and
 # drained (FIFO) once the in-flight run finishes — see ``run_foreman_ai``.
@@ -1261,7 +1261,7 @@ async def run_foreman_ai(
     Dropping is preferred over queuing for these to avoid unbounded build-up
     of stale automated snapshots.
 
-    Human-originated invocations (``is_human=True`` — Discord/web UI chat,
+    Human-originated invocations (``is_human=True`` — web console/Discord chat,
     user-requested follow-ups) and GitHub batches, which may contain reviewer
     instructions, use the bounded FIFO rather than being discarded when busy.
     They are appended to ``_human_queues`` and drained in order once

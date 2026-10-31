@@ -35,7 +35,7 @@ FOREMAN_TOOLS = [
                     "description": (
                         "GitHub issue this task belongs to. ALWAYS set this (with "
                         "issue_repo) when the work relates to an issue — it groups the "
-                        "task under the issue in the sidebar and routes its Discord "
+                        "task under the issue in the sidebar and routes its chat "
                         "notifications into the issue's thread."
                     ),
                 },

@@ -202,7 +202,7 @@ this one issue — the same steps as "Periodic devReady issue pickup" below:
 3. Call claim_github_issue to assign it.
 4. Call create_task + assign_task (as an atomic pair) to start work, passing issue_number
    and issue_repo on both calls — the linkage groups the task under its issue in the
-   sidebar and routes notifications into the issue's Discord thread.
+   sidebar and routes notifications into the issue's chat thread.
 The periodic sweep's own dedup checks (steps 1-2) make it safe if both the webhook and a
 same-cycle poll fire for the same issue — whichever runs first wins, the other no-ops.
 
@@ -277,7 +277,7 @@ Never prepend or otherwise alter the rest of the body — only append this quote
 bottom. If `body` already ends with a `---` separator, don't add a second one — reuse it.
 Pull the username from the triggering message's `[Discord] Discord user @username:` prefix
 if present; otherwise write `**Triggered by:** unknown`. Truncate the quoted message text
-to 500 characters (with a trailing `...` if cut off) so long or multiline Discord messages
+to 500 characters (with a trailing `...` if cut off) so long or multiline chat messages
 don't bloat the issue body.
 
 ## Checking task progress
