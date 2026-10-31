@@ -965,6 +965,28 @@ async def mention_or_login(github_login: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 
+_SUMMARY_MAX_LINES = 3
+
+
+def truncate_summary(text: str | None, max_lines: int = _SUMMARY_MAX_LINES) -> str:
+    """Keep only the first *max_lines* lines of *text*, appending ``...`` if cut.
+
+    Mirrors how bash output is truncated: long multi-line summaries (e.g. an
+    agent's code change with embedded file content) would otherwise flood the
+    Discord thread.
+    """
+    if not text:
+        return ""
+    lines = text.split("\n")
+    if len(lines) <= max_lines:
+        return text
+    return "\n".join(lines[:max_lines]).rstrip() + "\n..."
+
+
+def _is_task_event(event_type: str) -> bool:
+    return event_type.startswith("task-")
+
+
 async def notify_event(
     event_type: str,
     title: str,
@@ -1010,6 +1032,8 @@ async def notify_event(
     operations fail. Silent no-op when the bot token is not configured.
     Never raises.
     """
+    if _is_task_event(event_type):
+        description = truncate_summary(description)
     if bot_token():
         coords = await _canonical_coords(issue_repo, issue_number, kind=kind, task_id=task_id)
         if coords:
@@ -1206,6 +1230,8 @@ async def notify_task_stream_event(
     """
     if not bot_token():
         return
+    if _is_task_event(event_type):
+        description = truncate_summary(description)
     channel = await _resolve_channel_for_guild(guild_id)
     if not channel:
         return
