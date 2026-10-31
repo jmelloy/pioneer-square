@@ -8,9 +8,17 @@
       <div v-for="node in activeConversations" :key="nodeKey(node)" class="tree-group">
         <div class="group-header" @click="toggle(nodeKey(node))">
           <span class="collapse-icon">{{ isExpanded(nodeKey(node)) ? '▾' : '▸' }}</span>
-          <span class="conversation-name">{{ node.name || `Conversation #${node.id}` }}</span>
+          <span class="conversation-icon">💬</span>
+          <span class="conversation-name">{{ node.name || 'Unnamed conversation' }}</span>
           <span class="state-badge" :class="'badge-' + node.status">{{ node.status }}</span>
           <span class="group-count">{{ countTasks(node.tasks) }}</span>
+          <button
+            class="open-btn"
+            title="Open conversation"
+            @click.stop="uiStore.selectConversation(node.id)"
+          >
+            ↗
+          </button>
         </div>
 
         <div v-if="isExpanded(nodeKey(node))" class="group-tasks">
@@ -37,12 +45,14 @@
 import { computed, ref, watch } from 'vue'
 import { useGuildStore } from '../../stores/guild'
 import { useTasksStore } from '../../stores/tasks'
+import { useUiStore } from '../../stores/ui'
 import { api } from '../../utils/api'
 import type { TaskTreeData, ConversationGroupNode, TaskTreeNode } from '../../types'
 import TaskTreeRow from './TaskTreeRow.vue'
 
 const guildStore = useGuildStore()
 const tasksStore = useTasksStore()
+const uiStore = useUiStore()
 
 function nodeKey(node: ConversationGroupNode): string {
   return `conv:${node.id}`
@@ -222,6 +232,25 @@ const isEmpty = computed(
   text-overflow: ellipsis;
   flex: 1;
   min-width: 0;
+}
+
+.conversation-icon {
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.open-btn {
+  background: none;
+  border: none;
+  color: var(--color-text-dim);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+
+.open-btn:hover {
+  color: var(--color-brass);
 }
 
 .ungrouped-label {
