@@ -1871,3 +1871,34 @@ async def test_post_to_thread_includes_flags_when_given(monkeypatch):
 
     body = mock_client.post.call_args[1]["json"]
     assert body["flags"] == 4096
+
+
+# ---------------------------------------------------------------------------
+# truncate_summary
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("text", ["", "one line", "a\nb", "a\nb\nc"])
+def test_truncate_summary_short_unchanged(text):
+    assert discord_notifier.truncate_summary(text) == text
+
+
+def test_truncate_summary_none_is_empty():
+    assert discord_notifier.truncate_summary(None) == ""
+
+
+def test_truncate_summary_long_is_cut_with_indicator():
+    assert discord_notifier.truncate_summary("a\nb\nc\nd\ne") == "a\nb\nc\n..."
+
+
+@pytest.mark.asyncio
+async def test_notify_event_truncates_task_summary_only():
+    long = "1\n2\n3\n4\n5"
+    with (
+        patch.object(discord_notifier, "bot_token", return_value=None),
+        patch.object(discord_notifier, "notify", new=AsyncMock()) as n,
+    ):
+        await discord_notifier.notify_event("task-complete", "t", long)
+        assert n.call_args.args[2] == "1\n2\n3\n..."
+        await discord_notifier.notify_event("pr-opened", "t", long)
+        assert n.call_args.args[2] == long
