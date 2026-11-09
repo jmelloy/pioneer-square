@@ -94,6 +94,22 @@ The worker stays running, reconnecting if the backend restarts.
 6. Reports state changes (`working`, `done`, `failed`, branch, PR url) back
    to the backend via `task-update` WebSocket messages.
 
+### Repository toolchains (mise)
+
+Before starting the agent, the worker runs `mise install` in each acquired task
+worktree containing `mise.toml`, `.mise.toml`, `.config/mise/config.toml`, or
+`.mise/config.toml`. Reused worktrees are checked again on follow-ups; mise reuses
+already-installed tools. Repos without these files are unaffected.
+
+The worker host must have mise on PATH and any required config trust established
+by the operator. Setup is non-interactive and never grants trust automatically.
+Installer output is added to the task log after installation completes. A missing
+mise binary, rejected config, installation failure, or 10-minute timeout fails the
+task before the agent starts. Cancellation terminates the installer process group.
+
+This installs tools only: it does not activate the agent's environment, install
+application dependencies, run setup tasks, or start services.
+
 ## Control API (drive a live worker without a frontend)
 
 Enable the optional HTTP control API to inject tasks straight into the
