@@ -137,6 +137,24 @@ The external Foreman process is only an LLM API proxy. The backend still owns tr
 conversation history, tool execution, task state, and polling. If the proxy disconnects, the backend
 falls back to its direct provider configuration.
 
+## Agent checkpoints and optional signing
+
+Coding agents publish checkpoints with `pioneer publish -m "Describe the change"`,
+not `git commit` / `git push`. Claude, Pi, and Codex receive these instructions
+and task credentials automatically; the worker uses the same publisher for its
+final checkpoint. With App signing configured, each checkpoint combines unpublished
+local commits into one GitHub-signed commit authored by the Pioneer GitHub App.
+If App signing is unavailable, the worker logs a warning and uses ordinary
+unsigned commits/pushes with its existing GitHub credentials.
+
+For signing, configure the backend's GitHub App credentials,
+[install Pioneer Square](https://github.com/apps/pioneer-square/installations/new)
+on each target repository with Contents write access, and set **GitHub App
+Installation ID** in the guild's General settings. Signature verification,
+authorization, and branch-conflict errors still stop publication. No personal
+signing keys are needed in Docker or ECS. Rebuild/restart the backend and worker
+images together when upgrading. See [setup, limitations, and verification](docs/agent-commit-signing.md).
+
 ## Testing and formatting
 
 ```bash

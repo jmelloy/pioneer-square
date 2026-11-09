@@ -92,6 +92,14 @@ def _run_worker(argv: list[str]) -> int:
     return worker_main(argv)
 
 
+def _run_publish(argv: list[str]) -> int:
+    """Publish a verified App checkpoint inside an assigned worker worktree."""
+    _prepend_path(_resolve_root() / "worker")
+    from pioneer_worker.publish import main as publish_main  # noqa: PLC0415
+
+    return publish_main(argv)
+
+
 def _run_foreman(argv: list[str]) -> int:
     """Launch the standalone Foreman API proxy (delegates to pioneer_foreman.cli.main)."""
     root = _resolve_root()
@@ -115,6 +123,7 @@ _MODES = {
     "serve": _run_serve,
     "worker": _run_worker,
     "foreman": _run_foreman,
+    "publish": _run_publish,
 }
 
 
@@ -122,10 +131,11 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help"):
         print(
-            "usage: pioneer {serve|foreman|worker} [args...]\n\n"
+            "usage: pioneer {serve|foreman|worker|publish} [args...]\n\n"
             "  serve     run the HTTP backend (FastAPI)\n"
             "  foreman   run the standalone Foreman API proxy\n"
-            "  worker    run a worker agent\n\n"
+            "  worker    run a worker agent\n"
+            "  publish   publish a verified App checkpoint\n\n"
             "Run 'pioneer <mode> --help' for mode-specific options.",
             file=sys.stderr,
         )

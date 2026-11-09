@@ -117,6 +117,7 @@ async def test_worker_prepares_only_acquired_repos_before_agent(tmp_path, setup_
                 )
             ),
         ),
+        patch("pioneer_worker.worker.publish.check_access", new=AsyncMock()),
         patch("pioneer_worker.worker.repo_setup.install_mise", side_effect=install),
         patch("pioneer_worker.worker.pi_runner.run_pi_auto", side_effect=run) as runner,
         patch("pioneer_worker.worker.github_pr.push_branch", new=AsyncMock(return_value="pushed")),

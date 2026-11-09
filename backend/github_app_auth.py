@@ -52,6 +52,8 @@ DEFAULT_APP_SLUG = "github-app[bot]"
 # installations — one per guild/account — so tokens must be cached per id.
 _token_cache: dict[str, dict[str, Any]] = {}
 
+_publish_token_cache: dict[tuple[str, str], dict[str, Any]] = {}
+
 # Cached (git_name, git_email) for the App's bot, keyed by slug. The bot's
 # numeric user id (needed for the commit-attribution noreply email) is fetched
 # once from the GitHub API and never changes for a given App.
@@ -170,6 +172,49 @@ def get_app_installation_token(installation_id: str | None = None) -> str | None
         expires_at = datetime.fromisoformat(data["expires_at"].replace("Z", "+00:00"))
         _token_cache[installation_id] = {"token": data["token"], "expires_at": expires_at}
         return data["token"]
+
+
+def get_app_publish_credentials(repo: str, installation_id: str) -> dict[str, str]:
+    """Mint repository-scoped publication credentials; never fall back to a user token."""
+    creds = _app_key_credentials()
+    if creds is None:
+        raise ValueError("GitHub App is not configured")
+    app_id, private_key = creds
+    cache_key = (installation_id, repo.casefold())
+    with _cache_lock:
+        cached = _publish_token_cache.get(cache_key)
+        if cached and cached["expires_at"] - datetime.now(UTC) > timedelta(minutes=5):
+            return cached["credentials"].copy()
+        jwt = generate_jwt(app_id, private_key)
+        headers = {"Authorization": f"Bearer {jwt}", "Accept": "application/vnd.github+json"}
+        response = httpx.get(
+            f"https://api.github.com/repos/{repo}/installation", headers=headers, timeout=15
+        )
+        response.raise_for_status()
+        installation = response.json()
+        if str(installation["id"]) != installation_id:
+            raise ValueError("Repository belongs to a different GitHub App installation")
+        permissions = {"contents": "write"}
+        if installation.get("permissions", {}).get("workflows") == "write":
+            permissions["workflows"] = "write"
+        response = httpx.post(
+            f"https://api.github.com/app/installations/{installation_id}/access_tokens",
+            headers=headers,
+            json={"repositories": [repo.split("/")[1]], "permissions": permissions},
+            timeout=15,
+        )
+        response.raise_for_status()
+        data = response.json()
+        credentials = {
+            "access_token": data["token"],
+            "username": f"{installation['app_slug']}[bot]",
+            "expires_at": data["expires_at"],
+        }
+        _publish_token_cache[cache_key] = {
+            "credentials": credentials,
+            "expires_at": datetime.fromisoformat(data["expires_at"].replace("Z", "+00:00")),
+        }
+        return credentials.copy()
 
 
 def get_app_bot_identity() -> tuple[str, str] | None:

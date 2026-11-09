@@ -34,15 +34,20 @@
   <div class="settings-field">
     <label class="settings-label">GitHub App Installation ID</label>
     <p class="settings-hint">
-      From github.com/settings/installations/&lt;id&gt;. Attributes comments and commits to the app
-      bot. Blank uses the server default.
+      <a
+        href="https://github.com/apps/pioneer-square/installations/new"
+        target="_blank"
+        rel="noopener noreferrer"
+        >Install Pioneer Square</a
+      >, then copy the ID from github.com/settings/installations/&lt;id&gt;. If App signing is
+      unavailable, agents log a warning and publish unsigned commits.
     </p>
     <div class="settings-row">
       <input
         v-model="githubAppInstallationId"
         type="text"
         inputmode="numeric"
-        placeholder="e.g. 149025614"
+        placeholder="Optional installation ID"
         class="settings-input"
         @keydown.enter="saveGithubAppInstallation"
       />

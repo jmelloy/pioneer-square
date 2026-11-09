@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Awaitable, Callable
 
-from . import git_ops
+from . import git_ops, publish
 
 # emit(line, detail=None, level=...) — the worker's task/worker emit closures
 # accept an optional ``level`` kwarg that types the line for the frontend.
@@ -78,82 +78,28 @@ async def fetch_accessible_repos(token: str) -> list[str]:
 
 async def push_branch(
     *,
-    branch: str,
     worktree_path: str,
-    token: str | None,
+    context: publish.PublishContext,
     emit: EmitFn,
+    token: str | None = None,
 ) -> str:
-    """Push *branch* to origin using *token*.
-
-    Returns one of: ``"pushed"`` (commits published), ``"nothing"`` (no commits
-    beyond the base — nothing to push, not a failure), or ``"failed"`` (a real
-    error, e.g. git permission denied).
-
-    The token is passed in an explicit push URL rather than baked into the
-    shared ``origin`` remote, so concurrent agents can push as different users
-    and a stale clone-time token can never be reused."""
-    # Stage and commit any uncommitted work so it isn't silently lost on push
-    # (can happen on max-turns, plan-phase completion, or normal task end).
-    rc_status, status_out, _ = await git_ops.run_git(["status", "--porcelain"], cwd=worktree_path)
-    if rc_status == 0 and status_out.strip():
-        await emit("Uncommitted changes detected — auto-committing before push", level=_LEVEL)
-        await git_ops.run_git(["add", "-A"], cwd=worktree_path)
-        rc_commit, _, commit_err = await git_ops.run_git(
-            ["commit", "-m", "chore: save uncommitted work before push [auto-commit]"],
-            cwd=worktree_path,
+    """Share the agent publisher, including its logged unsigned availability fallback."""
+    await emit(f"Publishing checkpoint on {context.branch}...", level=_LEVEL)
+    try:
+        result = await publish.publish_checkpoint(
+            worktree_path,
+            context,
+            "chore: save task progress [auto-checkpoint]",
+            fallback_token=token,
         )
-        if rc_commit != 0:
-            await emit(
-                f"✗ Auto-commit failed on {branch}: {commit_err.strip()[:120]}", level=_LEVEL
-            )
-            return "failed"
-
-    # Skip the push when the branch has no commits beyond what's already
-    # published — avoids creating empty remote branches / PRs when the agent
-    # did nothing (e.g. bailed on a permission prompt). Compare against the
-    # upstream if one exists, else origin/<branch> (detached follow-up), else
-    # the base (new branch).
-    rc_up, upstream, _ = await git_ops.run_git(
-        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
-        cwd=worktree_path,
-    )
-    if rc_up == 0 and upstream.strip():
-        base_ref = upstream.strip()
-    else:
-        remote_branch = f"origin/{branch}"
-        rc_ref, _, _ = await git_ops.run_git(
-            ["rev-parse", "--verify", remote_branch], cwd=worktree_path
-        )
-        base_ref = remote_branch if rc_ref == 0 else "origin/HEAD"
-    rc_cnt, ahead, _ = await git_ops.run_git(
-        ["rev-list", "--count", f"{base_ref}..HEAD"], cwd=worktree_path
-    )
-    if rc_cnt == 0 and ahead.strip() == "0":
-        await emit(f"No new commits on {branch} — skipping push", level=_LEVEL)
-        return "nothing"
-
-    await emit(f"Pushing {branch}...", level=_LEVEL)
-    # ponytail: token in argv is visible via `ps`/DEBUG logs; acceptable for a
-    # single-tenant worker. Upgrade to a stdin credential helper if that changes.
-    push_args = ["push", "-u", "origin", f"HEAD:{branch}"]
-    if token:
-        rc_u, origin_url, _ = await git_ops.run_git(
-            ["remote", "get-url", "origin"], cwd=worktree_path
-        )
-        m = (
-            re.search(r"github\.com[:/](.+?/[^/\s]+?)(?:\.git)?$", origin_url.strip())
-            if rc_u == 0
-            else None
-        )
-        if m:
-            authed = f"https://x-access-token:{token}@github.com/{m.group(1)}.git"
-            push_args = ["push", authed, f"HEAD:{branch}"]
-    rc, _, err = await git_ops.run_git(push_args, cwd=worktree_path)
-    if rc != 0:
-        await emit(f"✗ Push failed for {branch}: {err.strip()[:120]}", level=_LEVEL)
+    except (publish.PublishError, OSError) as exc:
+        await emit(f"✗ App publication failed: {exc}", level=_LEVEL)
         return "failed"
-    await emit(f"✓ Pushed {branch}", level=_LEVEL)
-    return "pushed"
+    await emit(
+        "✓ Checkpoint published" if result == "pushed" else "No changes to publish",
+        level=_LEVEL,
+    )
+    return result
 
 
 async def find_existing_pr(
