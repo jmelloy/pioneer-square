@@ -15,6 +15,12 @@ from pioneer_worker.config import Config
 from pioneer_worker.worker import Worker
 
 
+@pytest.fixture(autouse=True)
+def app_publication_available():
+    with patch("pioneer_worker.worker.publish.check_access", new=AsyncMock()):
+        yield
+
+
 def _make_cfg(**kwargs) -> Config:
     return Config(
         backend_url="ws://localhost:8000",

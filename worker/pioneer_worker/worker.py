@@ -23,6 +23,7 @@ from . import (  # noqa: F401 - test patch compatibility
     git_ops,
     github_pr,
     pi_runner,
+    publish,
     repo_setup,
     s3_uploader,
     task_worktree,
@@ -1993,6 +1994,26 @@ class Worker:
             return
 
         await self._task_update(task_id, agent=agent, branch=branch, worktreePath=primary_wt)
+        publish_context = publish.PublishContext(
+            self.cfg.http_url, self.cfg.guild_id, task_id, self.cfg.auth_token or "", branch
+        )
+        if not is_review:
+            for entry in acquired.entries:
+                try:
+                    await publish.check_access(entry.wt_path, publish_context)
+                except publish.SigningUnavailable as exc:
+                    await emit(
+                        f"⚠ {entry.repo_full}: {exc}; checkpoints will use unsigned Git.",
+                        level=LEVEL_WORKER,
+                    )
+                except (publish.PublishError, OSError) as exc:
+                    await emit(f"✗ App publication rejected: {exc}", level=LEVEL_WORKER)
+                    await self._task_update(
+                        task_id, agent=agent, state="failed", finishedAt=_now_iso()
+                    )
+                    await self._set_state("error", agent)
+                    await self._set_state("idle", agent)
+                    return
 
         for entry in acquired.entries:
             if not await repo_setup.install_mise(entry.wt_path, emit):
@@ -2069,13 +2090,7 @@ class Worker:
                         "it without checking the issue first. Use assertive language in commit messages "
                         'and PR replies ("Keeping X as required by issue #NNN"), not apologetic '
                         'language ("I\'ve decided not to change this").\n\n'
-                        "Commit and push often as you go — after each meaningful chunk of "
-                        "progress, not just at the very end:\n"
-                        f'  git add -A && git commit -m "<concise commit message>"\n'
-                        f"  git push origin {branch}\n"
-                        "This keeps partial work visible and safe even if the task is "
-                        "interrupted. If a PR already exists for this branch, no new PR is "
-                        "needed."
+                        "If a PR already exists for this branch, no new PR is needed."
                     )
             else:
                 current_desc = desc
@@ -2109,18 +2124,17 @@ class Worker:
                         "        -f 'comments[][body]=inline comment'\n"
                         "Do NOT push any commits or open a PR as part of this review.\n"
                     )
-                elif phase == "execute":
-                    current_desc = (
-                        f"{desc}\n\n"
-                        "IMPORTANT — commit and push your work often as you go, not just at "
-                        "the very end:\n"
-                        f'  git add -A && git commit -m "<concise commit message>"\n'
-                        f"  git push origin {branch}\n"
-                        "This keeps partial work visible and safe even if the task is "
-                        "interrupted or runs out of turns."
-                    )
-
-                # plan / ephemeral / automation phases: leave current_desc = desc unchanged
+            if not is_review:
+                current_desc += (
+                    "\n\nIMPORTANT — publish progress after each meaningful checkpoint, "
+                    "from each repository you change:\n"
+                    '  pioneer publish -m "<concise checkpoint message>"\n'
+                    "This stages all non-ignored work. When App signing is configured, "
+                    "it publishes one verified checkpoint combining unpublished local commits. "
+                    "If App signing is unavailable, it logs a warning and uses normal unsigned Git. "
+                    "Do NOT use git commit or git push directly to publish task work. "
+                    "Report authorization, verification, or branch-conflict errors; do not bypass them."
+                )
             result = RunResult(False, StopReason.NO_EVENTS)
             success = result.success
             stop_reason = result.stop_reason
@@ -2132,6 +2146,8 @@ class Worker:
             # Pin gh (and anything reading GITHUB_TOKEN) in the agent subprocess
             # to this task's token, not the process-wide ambient one.
             tool_env.update(git_ops.gh_token_env(token))
+            if not is_review:
+                tool_env.update(publish_context.environment())
 
             async def _run_current_desc() -> RunResult:
                 return await runner.run(
@@ -2284,8 +2300,7 @@ class Worker:
                     records=usage_records,
                 )
 
-            # Push/PR are attributed to the human who triggered the task (their
-            # OAuth token), falling back to the App token — see _task_github_token.
+            # PR authentication remains task-user scoped; checkpoint publication is App-only.
             push_token = await self._task_github_token(task_id)
             if is_review:
                 # Review tasks only read the PR and post a `gh pr review` —
@@ -2305,11 +2320,19 @@ class Worker:
             else:
                 # Push the branch so partial work is visible and a follow-up can
                 # build on it. push_branch returns "pushed" | "nothing" | "failed".
-                push_result = await github_pr.push_branch(
-                    branch=branch,
-                    worktree_path=primary_wt,
-                    token=push_token,
-                    emit=emit,
+                publication_results = {
+                    entry.wt_path: await github_pr.push_branch(
+                        worktree_path=entry.wt_path,
+                        context=publish_context,
+                        emit=emit,
+                        token=push_token,
+                    )
+                    for entry in acquired.entries
+                }
+                push_result = (
+                    "failed"
+                    if "failed" in publication_results.values()
+                    else publication_results[primary_wt]
                 )
                 if push_result == "failed" and success:
                     # A genuine push failure (e.g. git permission denied) after an

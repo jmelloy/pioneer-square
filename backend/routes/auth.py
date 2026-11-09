@@ -6,21 +6,29 @@ Covers GitHub OAuth (login/exchange/callback/token), the ``/auth/me`` +
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import secrets
 import urllib.parse
 from datetime import UTC, datetime
 
+import httpx
 from auth_deps import (
     http_bearer,
     require_user,
     require_worker_or_member,
 )
 from database import get_db_dep
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials
-from github_app_auth import get_app_bot_identity, get_app_installation_token, get_app_slug
+from github_app_auth import (
+    get_app_bot_identity,
+    get_app_installation_token,
+    get_app_publish_credentials,
+    get_app_slug,
+)
 from models import (
     GithubToken,
     Guild,
@@ -28,6 +36,7 @@ from models import (
     Task,
     User,
     UserSession,
+    Worker,
 )
 from oauth import FRONTEND_URL, GITHUB_CLIENT_ID, create_session, get_return_to, make_authorize_url
 from pydantic import BaseModel
@@ -35,6 +44,7 @@ from sqlalchemy import delete, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from task_lifecycle import TERMINAL_STATES
 from utils import generate_guild_id
 
 router = APIRouter()
@@ -144,6 +154,50 @@ async def get_github_token(
     if not token_row:
         raise HTTPException(status_code=404, detail="GitHub token not found")
     return {"access_token": token_row.access_token, "username": token_row.github_username}
+
+
+@router.get("/auth/github/publish-token")
+async def get_publish_token(
+    response: Response,
+    guild_id: str = Query(...),
+    task_id: str = Query(...),
+    repo: str = Query(..., pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9_.-]+$"),
+    principal: str = Depends(require_worker_or_member),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Give only the assigned worker an App token for an allowed task repository."""
+    response.headers["Cache-Control"] = "no-store"
+    guild = (await db.exec(select(Guild).where(col(Guild.slug) == guild_id))).one_or_none()
+    task = await db.get(Task, task_id)
+    if not guild or not task or task.guild_id != guild.id or task.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Task not found in this guild")
+    if not task.worker_id or principal != f"worker:{task.worker_id}":
+        raise HTTPException(status_code=403, detail="Only the assigned worker may publish")
+    if task.state in TERMINAL_STATES:
+        raise HTTPException(status_code=409, detail="Cannot publish a terminal task")
+    if task.phase == "review":
+        raise HTTPException(status_code=403, detail="Review tasks cannot publish commits")
+    worker = await db.get(Worker, task.worker_id)
+    allowed = {r.casefold() for r in json.loads(worker.repos)} if worker else set()
+    allowed.update(r.casefold() for r in (task.issue_repo, task.pr_repo) if r)
+    in_org = worker and worker.org and repo.split("/")[0].casefold() == worker.org.casefold()
+    if repo.casefold() not in allowed and not in_org:
+        raise HTTPException(status_code=403, detail="Repository is not available to this task")
+    if repo.split("/")[1] in (".", ".."):
+        raise HTTPException(status_code=422, detail="Invalid repository")
+    if not guild.github_app_installation_id:
+        raise HTTPException(
+            status_code=503, detail="Configure this guild's GitHub App installation"
+        )
+    try:
+        return await asyncio.to_thread(
+            get_app_publish_credentials, repo, guild.github_app_installation_id
+        )
+    except (ValueError, httpx.HTTPError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="GitHub App publication is unavailable; check installation access",
+        ) from exc
 
 
 @router.get("/auth/me")

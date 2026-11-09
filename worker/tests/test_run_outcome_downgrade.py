@@ -48,6 +48,7 @@ async def _run_with_push(tmp_path, push_result: str, *, dirty: bool = False) -> 
             new=AsyncMock(return_value=str(tmp_path / "repo")),
         ),
         patch("pioneer_worker.worker.git_ops.create_worktree", new=AsyncMock(return_value=True)),
+        patch("pioneer_worker.worker.publish.check_access", new=AsyncMock()),
         patch(
             "pioneer_worker.worker.claude_runner.run_claude_auto",
             new=AsyncMock(return_value=(True, "success", "all done", "sess-1")),
