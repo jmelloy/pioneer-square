@@ -138,7 +138,7 @@ describe('ConversationDetailPanel linked task', () => {
     const ui = useUiStore()
     const openTask = vi.spyOn(ui, 'openTaskTab')
     for (const message of [
-      { from: 'a-1', source: 'worker', taskId: 't1', content: 'Running <tests>\nnext line' },
+      { from: 'a-1', source: 'worker', taskId: 't1', content: '▶ Running <tests>\nnext line' },
       {
         from: 'github',
         source: 'github',
@@ -162,11 +162,54 @@ describe('ConversationDetailPanel linked task', () => {
     })
     await flushPromises()
     expect(wrapper.findAll('.chat-message')).toHaveLength(3)
-    expect(wrapper.find('.from-worker .msg-content').text()).toBe('Running <tests>\nnext line')
+    expect(wrapper.find('.from-worker .log-text').text()).toBe('▶ Running <tests>\nnext line')
+    expect(wrapper.find('.from-github').exists()).toBe(true)
     expect(wrapper.find('.msg-content--markdown strong').text()).toBe('pytest: success')
     expect(wrapper.text()).not.toContain('Unrelated work')
     await wrapper.findAll('.msg-task-badge')[1].trigger('click')
     expect(openTask).toHaveBeenCalledWith('t2')
+  })
+
+  it('renders worker tool details and links like the task pane without repeated headers', async () => {
+    const { wrapper, guildStore } = mountPanel()
+    await flushPromises()
+    for (const message of [
+      {
+        content: '▶ bash: run tests',
+        detail: { toolType: 'tool_use' as const, name: 'bash', input: { command: 'npm test' } },
+      },
+      { content: 'PR: https://github.com/org/repo/pull/1', level: 'worker' as const },
+    ]) {
+      guildStore.handleWebSocketMessage({
+        type: 'chat',
+        from: 'a-1',
+        source: 'worker',
+        taskId: 't1',
+        conversationId: 42,
+        createdAt: '2026-01-02T00:00:00Z',
+        ...message,
+      })
+    }
+    await flushPromises()
+    expect(wrapper.findAll('.from-worker .msg-header')).toHaveLength(1)
+    expect(wrapper.findAll('.worker-continuation')).toHaveLength(1)
+    await wrapper.find('.log-line--expandable').trigger('click')
+    expect(wrapper.find('.log-detail-body').text()).toBe('npm test')
+    expect(wrapper.find('a.terminal-link').attributes('href')).toBe(
+      'https://github.com/org/repo/pull/1',
+    )
+    await wrapper.find('.log-line--expandable').trigger('click')
+    expect(wrapper.find('.log-detail').exists()).toBe(false)
+    guildStore.handleWebSocketMessage({
+      type: 'chat',
+      from: 'a-1',
+      source: 'worker',
+      taskId: 't2',
+      conversationId: 42,
+      content: 'Other task',
+    })
+    await flushPromises()
+    expect(wrapper.findAll('.from-worker .msg-header')).toHaveLength(2)
   })
 
   it('loads earlier activity before the current page', async () => {

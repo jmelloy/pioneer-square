@@ -66,11 +66,12 @@
           v-for="(msg, i) in groupedMessages"
           :key="i"
           class="chat-message"
-          :class="
-            isToolUseGroup(msg) ? 'from-foreman msg-tool' : messageClasses(msg as ChatMessage)
-          "
+          :class="[
+            isToolUseGroup(msg) ? 'from-foreman msg-tool' : messageClasses(msg as ChatMessage),
+            { 'worker-continuation': isWorkerContinuation(msg, i) },
+          ]"
         >
-          <div class="msg-header">
+          <div v-if="!isWorkerContinuation(msg, i)" class="msg-header">
             <span
               class="msg-from"
               :class="
@@ -89,7 +90,7 @@
             <span v-if="!isToolUseGroup(msg) && sourceLabel(msg as ChatMessage)" class="msg-source">
               via {{ sourceLabel(msg as ChatMessage) }}
             </span>
-            <span class="msg-time">{{
+            <span v-if="(msg as ChatMessage).source !== 'worker'" class="msg-time">{{
               formatTime(
                 isToolUseGroup(msg)
                   ? msg.createdAt || msg.created_at
@@ -110,10 +111,16 @@
             </span>
           </template>
 
+          <LogLine
+            v-else-if="(msg as ChatMessage).source === 'worker'"
+            :log="workerLog(msg as ChatMessage)"
+            :expanded="expandedWorkerMessage === _msgKey(msg as ChatMessage)"
+            @toggle="toggleWorkerMessage(msg as ChatMessage)"
+          />
+
           <template v-else>
             <span
               v-if="
-                (msg as ChatMessage).source !== 'worker' &&
                 msgSender(msg as ChatMessage) !== 'user' &&
                 msgSender(msg as ChatMessage) !== 'system'
               "
@@ -171,7 +178,8 @@ import { renderMarkdown } from '../utils/markdown'
 import { ApiError } from '../utils/api'
 import { useChatGrouping, isToolUseGroup } from '../composables/useChatGrouping'
 import type { GroupedMessage } from '../composables/useChatGrouping'
-import type { ChatMessage } from '../types'
+import LogLine from './log-pane/LogLine.vue'
+import type { ChatMessage, LogEntry } from '../types'
 
 const props = defineProps<{
   id: number
@@ -265,6 +273,32 @@ const messages = computed<ChatMessage[]>(() => {
 })
 
 const groupedMessages = useChatGrouping(messages)
+const expandedWorkerMessage = ref<string | null>(null)
+
+function workerLog(msg: ChatMessage): LogEntry {
+  return {
+    line: msg.content,
+    timestamp: msg.createdAt || msg.created_at || '',
+    detail: msg.detail,
+    level: msg.level,
+  }
+}
+
+function toggleWorkerMessage(msg: ChatMessage) {
+  const key = _msgKey(msg)
+  expandedWorkerMessage.value = expandedWorkerMessage.value === key ? null : key
+}
+
+function isWorkerContinuation(msg: GroupedMessage, index: number): boolean {
+  const previous = groupedMessages.value[index - 1]
+  if (isToolUseGroup(msg) || !previous || isToolUseGroup(previous)) return false
+  return (
+    msg.source === 'worker' &&
+    previous.source === 'worker' &&
+    msgSender(msg) === msgSender(previous) &&
+    msg.taskId === previous.taskId
+  )
+}
 
 function msgSender(msg: ChatMessage): string {
   return (msg.from || msg.from_agent || 'unknown') as string
@@ -276,6 +310,7 @@ function messageClasses(msg: ChatMessage) {
     'from-user': sender === 'user',
     'from-system': sender === 'system',
     'from-worker': msg.source === 'worker',
+    'from-github': sender === 'github',
     'from-foreman': sender === 'foreman',
     'from-agent': sender !== 'user' && sender !== 'system',
   }
@@ -703,10 +738,30 @@ watch(
   word-break: break-word;
 }
 
-.from-worker .msg-content {
-  white-space: pre-wrap;
-  font-family: var(--font-mono);
-  font-size: 11px;
+.chat-message.from-worker {
+  align-self: stretch;
+  max-width: 100%;
+  border: none;
+  border-left: 2px solid var(--color-teal);
+  border-radius: 0;
+  background: none;
+  padding: 2px 10px;
+}
+
+.worker-continuation {
+  margin-top: -6px;
+}
+
+.chat-message.from-github {
+  border-left-color: var(--color-blue);
+  border-top-color: rgba(68, 170, 238, 0.2);
+  border-right-color: rgba(68, 170, 238, 0.2);
+  border-bottom-color: rgba(68, 170, 238, 0.2);
+  background: rgba(68, 170, 238, 0.06);
+}
+
+.msg-from--github {
+  color: var(--color-blue);
 }
 
 .msg-content--markdown :deep(p) {

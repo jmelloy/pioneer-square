@@ -167,6 +167,8 @@ export interface ChatMessage {
   // ConversationDetailPanel filter the shared message stream down to one
   // conversation's own history.
   conversationId?: number | null
+  detail?: LogDetail | null
+  level?: LogLevel | null
   [key: string]: unknown
 }
 
@@ -425,6 +427,8 @@ export const WS_INBOUND_FIELDS: { [K in WSInbound['type']]: readonly string[] } 
     'source',
     'taskId',
     'conversationId',
+    'detail',
+    'level',
   ],
   'guild-updated': ['id', 'name'],
   'agent-joined': [
