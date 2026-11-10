@@ -48,6 +48,19 @@ describe('live factory state', () => {
     )
   })
 
+  it('assigns the expanded colourways deterministically from agent IDs', () => {
+    const floor = new FactoryState(scene)
+    const agents = Array.from({ length: 48 }, (_, i) => ({ ...worker, id: `palette-${i}` }))
+    floor.sync(agents, [task])
+    expect(new Set(floor.robots.map((b) => b.cw)).size).toBe(8)
+    const before = floor.robots.map((b) => [b.agentId, b.cw])
+    floor.sync(
+      agents.map((agent) => ({ ...agent, state: 'idle' })),
+      [task],
+    )
+    expect(floor.robots.map((b) => [b.agentId, b.cw])).toEqual(before)
+  })
+
   it('fills the least-used type on join without changing existing appearances', () => {
     const floor = new FactoryState(scene)
     const agents = ['a-0', 'a-3', 'a-6'].map((id) => ({ ...worker, id }))

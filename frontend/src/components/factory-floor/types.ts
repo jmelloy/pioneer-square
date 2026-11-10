@@ -74,7 +74,7 @@ export interface Robot {
   actT: number
   /** Body type: 0 boiler-bot, 1 lanky bot, 2 cart-bot. */
   type: number
-  /** Colourway 0 or 1. */
+  /** Colourway 0–7: two atlas originals, then six runtime palette swaps. */
   cw: number
   seed: number
   yaw: Yaw
