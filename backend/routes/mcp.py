@@ -31,7 +31,7 @@ from auth_deps import authorize_worker_or_member, check_debug_token, get_guild_p
 from database import get_db
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
-from models import Task
+from models import Task, live_tasks_filter
 from routes.debug_query import execute_readonly_query
 from sqlmodel import col, select
 
@@ -134,7 +134,7 @@ async def _list_tasks(args: dict, _principal: str) -> Any:
     db = await get_db()
     try:
         pk = await get_guild_pk(db, args["guild_id"])
-        q = select(Task).where(col(Task.guild_id) == pk, col(Task.deleted_at).is_(None))
+        q = select(Task).where(col(Task.guild_id) == pk, live_tasks_filter())
         if args.get("state"):
             q = q.where(col(Task.state) == args["state"])
         rows = (await db.exec(q.order_by(col(Task.created_at).desc()).limit(limit))).all()

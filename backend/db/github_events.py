@@ -7,7 +7,7 @@ module reads the append-only per-delivery ``GithubEvent`` rows written by
 
 from __future__ import annotations
 
-from models import GithubEvent, GithubIssue, GithubPullRequest, Task
+from models import GithubEvent, GithubIssue, GithubPullRequest, Task, live_tasks_filter
 from sqlalchemy import and_, update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -26,7 +26,7 @@ def conversation_event_filter(conversation_id: int):
                 col(Task.pr_number) == col(GithubEvent.pr_number),
             ),
         )
-        .where(col(Task.conversation_id) == conversation_id, col(Task.deleted_at).is_(None))
+        .where(col(Task.conversation_id) == conversation_id, live_tasks_filter())
     )
     # Separate indexed branches avoid a correlated scan of the entire delivery log.
     return col(GithubEvent.id).in_(stamped.correlate(None).union(linked.correlate(None)))
@@ -38,8 +38,8 @@ async def link_task_context(db: AsyncSession, task_id: str) -> None:
     Never overwrites an existing owner or replays historical automated actions.
     The caller commits this with its task update.
     """
-    task = (await db.exec(select(Task).where(col(Task.id) == task_id))).first()
-    if task is None or task.conversation_id is None or task.deleted_at is not None:
+    task = (await db.exec(select(Task).where(col(Task.id) == task_id, live_tasks_filter()))).first()
+    if task is None or task.conversation_id is None:
         return
     for model, repo, number in (
         (GithubIssue, task.issue_repo, task.issue_number),

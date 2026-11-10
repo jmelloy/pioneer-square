@@ -227,3 +227,23 @@ def test_foreman_prompt_drops_expiry_knob():
     from foreman.prompt import FOREMAN_SYSTEM
 
     assert "expires_in_seconds" not in FOREMAN_SYSTEM
+
+
+def test_mcp_list_tasks_respects_grace_window(client):
+    import asyncio
+
+    import routes.mcp as mcp
+
+    test_client, db_url = client
+    insert_guild(db_url, "gsd09")
+    worker_id = _create_worker(test_client, "gsd09")
+    t_recent = _create_task(test_client, "gsd09", worker_id, "recent", db_url)
+    t_dead = _create_task(test_client, "gsd09", worker_id, "dead", db_url)
+    now = datetime.now(UTC)
+    _set_deleted_at(db_url, t_recent, now - timedelta(hours=3, minutes=59))
+    _set_deleted_at(db_url, t_dead, now - timedelta(hours=4, minutes=1))
+
+    rows = asyncio.run(mcp._list_tasks({"guild_id": "gsd09"}, "p"))
+    text = str(rows)
+    assert t_recent in text
+    assert t_dead not in text
