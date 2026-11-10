@@ -259,6 +259,7 @@ export interface TaskCreatedWS {
   taskType?: TaskType
   state: TaskState
   createdAt?: string
+  conversationId?: number | null
 }
 
 export interface TaskAssignedWS {
@@ -274,6 +275,7 @@ export interface TaskAssignedWS {
   provider?: string | null
   phase?: TaskPhase
   parentTaskId?: string | null
+  conversationId?: number | null
 }
 
 export interface TaskUpdateWS {
