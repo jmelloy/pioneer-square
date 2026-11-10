@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-# Task worktrees live at .../<guild_id>/<worker_id>/t-<taskid>/<repo_name>/...
+# Task worktrees live at .../<guild_id>/t-<taskid>/<repo_name>/...
 # Strip everything up to and including the task worktree segment so logs show
 # only the repo-relative path, not the host's absolute filesystem layout.
 _TASK_WORKTREE_RE = re.compile(r"/t-[a-z0-9]+/")

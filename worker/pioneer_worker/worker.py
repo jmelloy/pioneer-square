@@ -86,7 +86,7 @@ _PR_PHASES = frozenset({"execute", "followup"})
 # Worktrees are kept around after a task completes so the foreman can send
 # follow-ups without paying for a re-clone. They're swept at startup and on a
 # steady cadence; anything older than this is fair game to remove.
-WORKTREE_TTL_SECONDS = 24 * 60 * 60
+WORKTREE_TTL_SECONDS = 72 * 60 * 60
 WORKTREE_SWEEP_INTERVAL_SECONDS = 60 * 60
 
 # How often to re-query the GitHub API for accessible repos. Keeps the worker's
@@ -197,11 +197,11 @@ class Worker:
         # Worktrees materialised for each task, kept alive within the TTL window
         # so follow-ups can reuse the existing checkout without a re-clone. See
         # task_worktree.TaskWorktree for the on-disk layout, reuse heuristic,
-        # and TTL/reclamation policy. base_dir is resolved lazily because a
-        # self-registered worker only learns its worker_id (and therefore its
-        # work directory) after _register() runs, post-__init__.
+        # and TTL/reclamation policy. The path deliberately excludes the
+        # worker_id so a task's worktree can be reused when it moves between
+        # workers on the same host.
         self.worktrees = task_worktree.TaskWorktree(
-            base_dir=lambda: os.path.join(self.cfg.work_dir, self.cfg.guild_id, self.cfg.worker_id),
+            base_dir=lambda: os.path.join(self.cfg.work_dir, self.cfg.guild_id),
             ttl_seconds=WORKTREE_TTL_SECONDS,
         )
 
@@ -1608,7 +1608,7 @@ class Worker:
 
         The previous process may have died mid-task; nothing in memory tracks
         those worktrees, so self.worktrees walks the work directory and
-        removes anything attributable to this worker_id that's older than
+        removes anything under the shared guild work dir that's older than
         the TTL, re-registering anything still fresh.
         """
         try:

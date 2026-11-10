@@ -75,10 +75,8 @@ class TaskWorktree:
     the registry tracks a last-used timestamp per task, and ``sweep`` /
     ``reclaim_startup`` apply the TTL policy against it.
 
-    ``base_dir`` is a callable rather than a fixed string because a worker's
-    identity (and therefore its work directory) can still be pending at
-    construction time — self-registered workers only learn their worker_id
-    from the backend after startup.
+    ``base_dir`` is a callable so the directory is resolved lazily. It must
+    not embed the worker_id, so a task's worktree is reusable across workers.
 
     ``clock`` is injectable so TTL/sweep behaviour is directly testable
     without real time passing; it must return a monotonically increasing
