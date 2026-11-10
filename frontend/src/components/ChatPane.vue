@@ -33,6 +33,19 @@
       <ChatTab v-if="activeTab === 'chat'" ref="chatTabRef" />
       <WorkerList v-else />
     </div>
+
+    <button
+      v-else
+      type="button"
+      class="collapsed-handle"
+      title="Expand Foreman Comms"
+      aria-label="Expand Foreman Comms"
+      @click="toggleMinimize"
+    >
+      <span class="grip" aria-hidden="true">⋮</span>
+      <span class="collapsed-label">FOREMAN</span>
+      <span class="grip" aria-hidden="true">⋮</span>
+    </button>
   </div>
 </template>
 
@@ -102,6 +115,56 @@ onUnmounted(() => {
 .chat-pane.minimized {
   width: 44px;
   min-width: 44px;
+}
+
+.chat-pane.minimized {
+  box-shadow: inset 2px 0 0 transparent;
+  transition:
+    width 0.2s ease,
+    min-width 0.2s ease,
+    box-shadow 0.15s ease;
+}
+
+.chat-pane.minimized:hover {
+  box-shadow: inset 3px 0 0 var(--color-brass-light);
+}
+
+.collapsed-handle {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-brass);
+  cursor: col-resize;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.collapsed-handle:hover,
+.collapsed-handle:focus-visible {
+  background: rgba(232, 170, 0, 0.15);
+  color: var(--color-brass-light);
+  box-shadow: inset 0 0 12px rgba(255, 214, 68, 0.25);
+  outline: none;
+}
+
+.grip {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.collapsed-label {
+  writing-mode: vertical-rl;
+  font-family: var(--font-pixel);
+  font-size: 7px;
+  letter-spacing: 3px;
 }
 
 .chat-pane.minimized .chat-title,
