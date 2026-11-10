@@ -424,6 +424,7 @@ async def assign_task(
             provider=data.provider,
             phase=data.phase or "execute",
             parentTaskId=data.parent_task_id,
+            conversationId=conversation_id,
             issueNumber=data.issue_number,
             issueRepo=data.issue_repo,
             prNumber=data.pr_number,

@@ -479,6 +479,7 @@ async def _cmd_pickup(interaction: dict, guild_slug: str, issue_url: str) -> Non
                 phase="execute",
                 state="pending",
                 createdAt=created_at.isoformat(),
+                conversationId=conversation_id,
             ),
         )
 
@@ -566,6 +567,7 @@ async def _cmd_review(interaction: dict, guild_slug: str, pr_url: str) -> None:
                 phase="review",
                 state="pending",
                 createdAt=created_at.isoformat(),
+                conversationId=conversation_id,
             ),
         )
 

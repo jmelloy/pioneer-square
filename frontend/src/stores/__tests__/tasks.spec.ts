@@ -33,6 +33,39 @@ describe('useTasksStore', () => {
       })
     })
 
+    it.each(['task-created', 'task-assigned'] as const)(
+      'keeps the conversation link from %s',
+      (type) => {
+        const store = useTasksStore()
+        store.handleWebSocketMessage({
+          type,
+          taskId: 't-linked',
+          workerId: 'w-abc',
+          name: 'Linked task',
+          description: 'Conversation work',
+          phase: 'execute',
+          state: 'pending',
+          createdAt: '2025-01-01T00:00:00Z',
+          conversationId: 42,
+        })
+
+        expect(store.tasks[0].conversation_id).toBe(42)
+      },
+    )
+
+    it('preserves the conversation link when an assignment omits it', () => {
+      const store = useTasksStore()
+      store.tasks.push({ id: 't-1', state: 'pending', conversation_id: 42 })
+
+      store.handleWebSocketMessage({
+        type: 'task-assigned',
+        taskId: 't-1',
+        workerId: 'w-abc',
+      })
+
+      expect(store.tasks[0].conversation_id).toBe(42)
+    })
+
     it('upserts an existing task on task-assigned without resetting created_at', () => {
       const store = useTasksStore()
       store.tasks.push({

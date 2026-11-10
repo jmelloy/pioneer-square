@@ -486,8 +486,10 @@ async def test_cmd_pickup_linked_account_stamps_conversation_id(monkeypatch):
     async def fake_patch(path, payload):
         pass
 
+    broadcasts = []
+
     async def fake_broadcast(guild_slug, msg):
-        pass
+        broadcasts.append(msg)
 
     async def fake_resolve_conversation_id(db, guild_pk, **kwargs):
         assert kwargs.get("user_id") == "u-123"
@@ -511,6 +513,7 @@ async def test_cmd_pickup_linked_account_stamps_conversation_id(monkeypatch):
     added_task = mock_db.add.call_args[0][0]
     assert added_task.user_id == "u-123"
     assert added_task.conversation_id == 42
+    assert broadcasts[0].conversationId == 42
 
 
 @pytest.mark.asyncio
@@ -600,8 +603,10 @@ async def test_cmd_review_linked_account_stamps_conversation_id(monkeypatch):
     async def fake_patch(path, payload):
         pass
 
+    broadcasts = []
+
     async def fake_broadcast(guild_slug, msg):
-        pass
+        broadcasts.append(msg)
 
     async def fake_resolve_conversation_id(db, guild_pk, **kwargs):
         assert kwargs.get("user_id") == "u-456"
@@ -625,6 +630,7 @@ async def test_cmd_review_linked_account_stamps_conversation_id(monkeypatch):
     added_task = mock_db.add.call_args[0][0]
     assert added_task.user_id == "u-456"
     assert added_task.conversation_id == 77
+    assert broadcasts[0].conversationId == 77
 
 
 @pytest.mark.asyncio
