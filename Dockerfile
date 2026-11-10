@@ -7,9 +7,9 @@
 #   docker build --target foreman -t pioneer-square-foreman .
 #   docker build --target worker  -t pioneer-square-worker  .
 #
-# The `base` stage installs the CLI and the source trees it imports from at
-# runtime (backend/, foreman-proxy/, worker/pioneer_worker/). PIONEER_ROOT=/app tells
-# the launcher where those trees live.
+# The `base` stage installs dependencies only; each target adds source and the
+# unified CLI after its expensive tooling layers. PIONEER_ROOT=/app tells the
+# launcher where the runtime source trees live.
 
 # ---- frontend build stage (for the backend target) ----
 FROM node:24-slim AS frontend-build
@@ -22,22 +22,8 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-# ---- shared base: unified pioneer CLI ----
-FROM python:3.11-slim AS base
-
-# Stamped at build time (e.g. `--build-arg PIONEER_VERSION=$(git rev-parse --short HEAD)`).
-# backend/worker_lifecycle.py compares this across restarts to detect stale
-# worker containers spawned by a previous deploy; without it every restart
-# cannot tell old workers from current ones and conservatively drains all of
-# them. There is no git binary or .git directory in this image, so the
-# build-arg is the only source of truth — it does not fall back to git at runtime.
-ARG PIONEER_VERSION=
-ENV PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIONEER_ROOT=/app \
-    PIONEER_VERSION=${PIONEER_VERSION}
-
+# ---- source and dependency manifest ----
+FROM python:3.11-slim AS source
 WORKDIR /app
 
 # Source trees the launcher puts on sys.path at runtime.
@@ -48,8 +34,22 @@ COPY worker/pioneer_worker/ ./worker/pioneer_worker/
 # Operational scripts (backfills etc.) runnable via `docker compose exec`.
 COPY scripts/ ./scripts/
 
-# Installs pioneer_cli + the union of runtime dependencies.
-RUN pip install -e ./cli
+# Copy only the dependency list into base so source/version changes preserve its cache.
+RUN python - <<'PY'
+import pathlib
+import tomllib
+project = tomllib.loads(pathlib.Path("cli/pyproject.toml").read_text())
+pathlib.Path("/requirements.txt").write_text("\n".join(project["project"]["dependencies"]) + "\n")
+PY
+
+# ---- shared dependencies (no application source or version stamp) ----
+FROM python:3.11-slim AS base
+ENV PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIONEER_ROOT=/app
+WORKDIR /app
+COPY --from=source /requirements.txt /tmp/requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip pip install -r /tmp/requirements.txt
 
 # ---- backend (HTTP server: `pioneer serve`) ----
 FROM base AS backend
@@ -58,15 +58,25 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
+COPY --from=source /app /app
+RUN pip install --no-deps -e ./cli
 # SPA assets served by FastAPI's StaticFiles mount (backend/main.py -> backend/static).
 COPY --from=frontend-build /frontend/dist ./backend/static
 
+# Keep the lifecycle version stamp after dependency/tooling layers in every target.
+ARG PIONEER_VERSION=
+ENV PIONEER_VERSION=${PIONEER_VERSION}
 EXPOSE 8000
 
 CMD ["pioneer", "serve"]
 
 # ---- foreman (`pioneer foreman`) ----
 FROM base AS foreman
+
+COPY --from=source /app /app
+RUN pip install --no-deps -e ./cli
+ARG PIONEER_VERSION=
+ENV PIONEER_VERSION=${PIONEER_VERSION}
 
 CMD ["pioneer", "foreman"]
 
@@ -186,6 +196,11 @@ ENV PIONEER_SKILL_DIR=/home/worker/.claude/skills/debug-query
 # itself is not started here; the agent starts it on demand.
 ENV PGDATA=/tmp/pgdata \
     TEST_DATABASE_URL=postgresql+asyncpg://pioneer:pioneer_password@localhost:5433/pioneer_test
+
+COPY --from=source /app /app
+RUN pip install --no-deps -e ./cli
+ARG PIONEER_VERSION=
+ENV PIONEER_VERSION=${PIONEER_VERSION}
 
 USER worker
 RUN mise --version

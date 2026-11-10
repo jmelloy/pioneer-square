@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: deploy-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   ENVIRONMENT: staging # single tfstate today; wire a workspace/backend-key per env before adding prod.
@@ -20,18 +20,13 @@ jobs:
   # Build + push all three images at the commit SHA. Terraform (below) then
   # points every task definition at ${IMAGE_REPO}:${github.sha}.
   #
-  # Backend and foreman share the expensive Python `base` stage, so build them
-  # serially on one runner to reuse the local BuildKit cache. Worker remains a
-  # separate matrix entry because its target adds many heavy agent-tool layers.
+  # Each image has its own persistent GHA layer cache and builds on native ARM.
   build:
-    runs-on: ubuntu-latest
+    # ECS task definitions are ARM64; build natively instead of emulating with QEMU.
+    runs-on: ubuntu-24.04-arm
     strategy:
       matrix:
-        include:
-          - group: backend-foreman
-            services: "backend foreman"
-          - group: worker
-            services: "worker"
+        service: [backend, foreman, worker]
     steps:
       - uses: actions/checkout@v7
 
@@ -43,24 +38,19 @@ jobs:
       - id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - uses: docker/setup-qemu-action@v4
-
       - uses: docker/setup-buildx-action@v4
 
-      - name: Build and push image(s)
-        run: |
-          for SERVICE in ${{ matrix.services }}; do
-            IMAGE="${{ steps.ecr.outputs.registry }}/pioneer-square-${ENVIRONMENT}/${SERVICE}:${{ github.sha }}"
-            docker buildx build \
-              --platform linux/amd64,linux/arm64 \
-              --target "$SERVICE" \
-              --build-arg "PIONEER_VERSION=${{ github.sha }}" \
-              --cache-from "type=gha,scope=${SERVICE}" \
-              --cache-to "type=gha,mode=max,scope=${SERVICE}" \
-              -t "$IMAGE" \
-              --push \
-              .
-          done
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          target: ${{ matrix.service }}
+          build-args: PIONEER_VERSION=${{ github.sha }}
+          tags: ${{ steps.ecr.outputs.registry }}/pioneer-square-${{ env.ENVIRONMENT }}/${{ matrix.service }}:${{ github.sha }}
+          push: true
+          cache-from: type=gha,scope=${{ matrix.service }}-arm64
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}-arm64
 
   # Run alembic migrations as a one-off ECS task BEFORE terraform rolls the
   # services. The backend container is a plain `pioneer serve` (no startup
