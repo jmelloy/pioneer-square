@@ -95,6 +95,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         unzip \
     && rm -rf /var/lib/apt/lists/*
 
+# Repository toolchains: install globally so the unprivileged worker can run mise.
+RUN curl -fsSL https://mise.run -o /tmp/install-mise.sh \
+    && MISE_INSTALL_PATH=/usr/local/bin/mise sh /tmp/install-mise.sh \
+    && rm /tmp/install-mise.sh
+
 # Node.js 24 + corepack (for repos pinned to pnpm/yarn via `packageManager`).
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
@@ -183,5 +188,6 @@ ENV PGDATA=/tmp/pgdata \
     TEST_DATABASE_URL=postgresql+asyncpg://pioneer:pioneer_password@localhost:5433/pioneer_test
 
 USER worker
+RUN mise --version
 
 CMD ["pioneer", "worker", "--config", "/config/pioneer-worker.toml"]
