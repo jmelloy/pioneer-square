@@ -88,3 +88,61 @@ describe('UserWorkerSettings', () => {
     expect(wrapper.find('.save-status-saved').exists()).toBe(true)
   })
 })
+
+describe('UserWorkerSettings repository setup', () => {
+  beforeEach(() => setActivePinia(createPinia()))
+  afterEach(() => vi.restoreAllMocks())
+
+  function setupFetch(initial: unknown, calls: { method: string; body?: unknown }[]) {
+    return vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = String(input)
+      if (url.includes('/repos/acme/api/setup')) {
+        const method = init?.method ?? 'GET'
+        const body = init?.body ? JSON.parse(init.body as string) : undefined
+        calls.push({ method, body })
+        if (method === 'PUT')
+          return Promise.resolve(
+            jsonResponse({
+              setupCommands: body.setup_commands,
+              timeoutSeconds: body.timeout_seconds,
+            }),
+          )
+        if (method === 'DELETE') return Promise.resolve(jsonResponse({ status: 'deleted' }))
+        return Promise.resolve(jsonResponse(initial))
+      }
+      if (url.includes('/spawn-settings'))
+        return Promise.resolve(jsonResponse({ repos: ['acme/api'] }))
+      return Promise.resolve(jsonResponse([]))
+    })
+  }
+
+  it('loads, saves and clears per-repo setup commands', async () => {
+    const calls: { method: string; body?: unknown }[] = []
+    setupFetch({ setupCommands: ['npm ci'], timeoutSeconds: 90 }, calls)
+    const wrapper = mountAs('u-1')
+    await flushPromises()
+
+    await wrapper.find('[data-testid="setup-repo"]').setValue('acme/api')
+    await flushPromises()
+    const ta = wrapper.find('[data-testid="setup-commands"]')
+    expect((ta.element as HTMLTextAreaElement).value).toBe('npm ci')
+    expect((wrapper.find('[data-testid="setup-timeout"]').element as HTMLInputElement).value).toBe(
+      '90',
+    )
+    expect(wrapper.find('[data-testid="setup-current"]').text()).toContain('1 command')
+
+    await ta.setValue('npm ci\nnpm run build\n')
+    await wrapper.find('[data-testid="setup-save"]').trigger('click')
+    await flushPromises()
+    const put = calls.find((c) => c.method === 'PUT')
+    expect(put?.body).toMatchObject({ timeout_seconds: 90 })
+    expect((put?.body as { setup_commands: string[] }).setup_commands).toContain('npm run build')
+
+    await wrapper.find('[data-testid="setup-clear"]').trigger('click')
+    await flushPromises()
+    expect(calls.some((c) => c.method === 'DELETE')).toBe(true)
+    expect(
+      (wrapper.find('[data-testid="setup-commands"]').element as HTMLTextAreaElement).value,
+    ).toBe('')
+  })
+})

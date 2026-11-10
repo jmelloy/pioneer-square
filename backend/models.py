@@ -1007,6 +1007,38 @@ class SpawnSettings(SQLModel, table=True):
     updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
+class RepositorySetupSettings(SQLModel, table=True):
+    """Per-guild, per-repository setup commands run before a task's agent starts.
+
+    Edited through the UI; executed by workers inside repositories acquired for
+    the task, after automatic mise installation.
+    """
+
+    __tablename__ = "repository_setup_settings"  # type: ignore[assignment]
+    __table_args__ = (
+        Index("uq_repository_setup_settings_guild_repo", "guild_id", "repo", unique=True),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    guild_id: int = Field(foreign_key="guilds.id")
+    # "owner/repo", stored lowercase so lookups are case-insensitive.
+    repo: str = Field(sa_column=Column(Text, nullable=False))
+    # Ordered shell command lines.
+    setup_commands: list = Field(
+        default_factory=list,
+        sa_column=Column(JSON, nullable=False, server_default=text("'[]'")),
+    )
+    timeout_seconds: int = Field(default=600)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
 class PushToken(SQLModel, table=True):
     """APNs (or, in the future, FCM) device token registered by the iOS app.
 

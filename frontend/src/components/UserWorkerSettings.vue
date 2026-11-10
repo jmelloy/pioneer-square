@@ -205,6 +205,77 @@
         </div>
       </div>
 
+      <div class="uws-divider">Repository Setup Commands</div>
+      <p class="uws-field-hint">
+        Shell commands (one per line) workers run in a repository before the agent starts, after
+        mise tools are installed. Shared by everyone in this guild. Output appears in task logs.
+      </p>
+      <div class="uws-field">
+        <label class="uws-field-label" for="uws-setup-repo">Repository</label>
+        <select id="uws-setup-repo" v-model="setupRepo" class="uws-input" data-testid="setup-repo">
+          <option value="">Select a repository…</option>
+          <option v-for="r in setupRepoOptions" :key="r" :value="r">{{ r }}</option>
+        </select>
+      </div>
+      <template v-if="setupRepo">
+        <div v-if="setupLoading" class="uws-hint">Loading setup…</div>
+        <template v-else>
+          <div class="uws-field">
+            <label class="uws-field-label" for="uws-setup-cmds">Commands</label>
+            <textarea
+              id="uws-setup-cmds"
+              v-model="setupText"
+              class="uws-input"
+              rows="5"
+              spellcheck="false"
+              placeholder="npm ci"
+              data-testid="setup-commands"
+            />
+          </div>
+          <div class="uws-field">
+            <label class="uws-field-label" for="uws-setup-timeout">
+              Timeout per command (seconds)
+            </label>
+            <input
+              id="uws-setup-timeout"
+              v-model.number="setupTimeout"
+              type="number"
+              min="1"
+              max="3600"
+              class="uws-input"
+              data-testid="setup-timeout"
+            />
+          </div>
+          <p v-if="setupConfigured" class="uws-field-hint" data-testid="setup-current">
+            Currently configured: {{ setupConfigured }} command(s).
+          </p>
+          <div class="uws-actions">
+            <button
+              class="pixel-btn"
+              :disabled="setupSaving"
+              data-testid="setup-save"
+              @click="saveSetup"
+            >
+              {{ setupSaving ? 'Saving…' : 'Save Setup' }}
+            </button>
+            <button
+              class="pixel-btn"
+              :disabled="setupSaving || !setupConfigured"
+              data-testid="setup-clear"
+              @click="clearSetup"
+            >
+              Clear
+            </button>
+            <span v-if="setupStatus" class="save-status" :class="'save-status-' + setupStatus">
+              {{ setupStatus === 'saved' ? 'Saved' : 'Error' }}
+            </span>
+          </div>
+          <div v-if="setupError" class="uws-error" data-testid="setup-error">
+            {{ setupError }}
+          </div>
+        </template>
+      </template>
+
       <div class="uws-actions">
         <button class="pixel-btn uws-save-btn" :disabled="saving" @click="save">
           {{ saving ? 'Saving…' : 'Save' }}
@@ -220,7 +291,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
-import { ApiError } from '../utils/api'
+import { api, ApiError } from '../utils/api'
 import { useGitHubStore } from '../stores/github'
 import { useRepoSelection } from '../composables/useRepoSelection'
 import { useModels } from '../composables/useModels'
@@ -352,6 +423,99 @@ async function save() {
   }
 }
 
+// ── Per-repository setup commands (guild-scoped, #1397) ──────────────────────
+interface RepoSetup {
+  setupCommands: string[]
+  timeoutSeconds: number
+}
+const DEFAULT_SETUP_TIMEOUT = 600
+const setupRepo = ref('')
+const setupText = ref('')
+const setupTimeout = ref(DEFAULT_SETUP_TIMEOUT)
+const setupConfigured = ref(0)
+const setupLoading = ref(false)
+const setupSaving = ref(false)
+const setupStatus = ref<'' | 'saved' | 'error'>('')
+const setupError = ref('')
+
+const setupRepoOptions = computed(() => {
+  const names = new Set<string>(ghStore.repos.map((r) => r.full_name))
+  for (const r of repos.value) names.add(r)
+  return [...names].sort()
+})
+
+function setupUrl(repo: string) {
+  return `/guilds/${encodeURIComponent(props.guildId ?? '')}/repos/${repo}/setup`
+}
+
+function applySetup(cfg: RepoSetup | undefined) {
+  const cmds = cfg?.setupCommands ?? []
+  setupText.value = cmds.join('\n')
+  setupTimeout.value = cfg?.timeoutSeconds ?? DEFAULT_SETUP_TIMEOUT
+  setupConfigured.value = cmds.length
+}
+
+async function loadSetup() {
+  setupError.value = ''
+  setupStatus.value = ''
+  if (!props.guildId || !setupRepo.value) return
+  const repo = setupRepo.value
+  setupLoading.value = true
+  try {
+    const cfg = await api<RepoSetup>(setupUrl(repo))
+    if (repo === setupRepo.value) applySetup(cfg)
+  } catch (e) {
+    if (repo === setupRepo.value) {
+      applySetup(undefined)
+      setupError.value = e instanceof ApiError ? e.message : 'Failed to load setup'
+    }
+  } finally {
+    if (repo === setupRepo.value) setupLoading.value = false
+  }
+}
+
+async function saveSetup() {
+  if (!props.guildId || !setupRepo.value) return
+  setupSaving.value = true
+  setupStatus.value = ''
+  setupError.value = ''
+  try {
+    const cfg = await api<RepoSetup>(setupUrl(setupRepo.value), {
+      method: 'PUT',
+      json: {
+        setup_commands: setupText.value.split('\n'),
+        timeout_seconds: setupTimeout.value,
+      },
+    })
+    applySetup(cfg)
+    setupStatus.value = 'saved'
+  } catch (e) {
+    setupStatus.value = 'error'
+    setupError.value = e instanceof ApiError ? e.message : 'Failed to save setup'
+  } finally {
+    setupSaving.value = false
+  }
+}
+
+async function clearSetup() {
+  if (!props.guildId || !setupRepo.value) return
+  setupSaving.value = true
+  setupStatus.value = ''
+  setupError.value = ''
+  try {
+    await api(setupUrl(setupRepo.value), { method: 'DELETE' })
+    applySetup(undefined)
+    setupStatus.value = 'saved'
+  } catch (e) {
+    setupStatus.value = 'error'
+    setupError.value = e instanceof ApiError ? e.message : 'Failed to clear setup'
+  } finally {
+    setupSaving.value = false
+  }
+}
+
+watch(setupRepo, () => loadSetup())
+
 onMounted(() => {
   modelsStore.loadModels()
   load()
@@ -359,7 +523,11 @@ onMounted(() => {
 
 watch(
   () => props.guildId,
-  () => load(),
+  () => {
+    setupRepo.value = ''
+    applySetup(undefined)
+    load()
+  },
 )
 
 onBeforeUnmount(() => {
