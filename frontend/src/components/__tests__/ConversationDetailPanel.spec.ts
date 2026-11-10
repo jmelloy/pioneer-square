@@ -141,4 +141,17 @@ describe('ConversationDetailPanel linked task', () => {
     await flushPromises()
     expect(wrapper.find('.pane-tasks-error').exists()).toBe(true)
   })
+
+  it('shows the This Conversation section with an empty message when no tasks', async () => {
+    const guildStore = useGuildStore()
+    guildStore.currentGuild = { id: 'g1', name: 'Guild 1' }
+    useConversationsStore().conversations = [{ ...CONVERSATION }]
+    apiMock.mockResolvedValueOnce([])
+    apiMock.mockResolvedValueOnce([])
+    const wrapper = mount(ConversationDetailPanel, { props: { id: 42 } })
+    await flushPromises()
+    const text = wrapper.find('.pane-tasks').text()
+    expect(text).toContain('This Conversation')
+    expect(text).toContain('No tasks linked')
+  })
 })

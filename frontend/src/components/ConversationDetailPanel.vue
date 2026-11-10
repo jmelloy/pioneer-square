@@ -26,7 +26,19 @@
         </span>
       </div>
 
-      <div v-if="linkedTasks.length" class="pane-tasks">
+      <section class="pane-tasks" aria-label="This Conversation">
+        <h3 class="pane-tasks-heading">This Conversation</h3>
+        <div class="linked-task conversation-info">
+          <span class="linked-task-label">CHAT</span>
+          <span class="linked-task-name">{{
+            conversation.name || 'Conversation ' + conversation.id
+          }}</span>
+          <code class="linked-task-branch">#{{ conversation.id }}</code>
+          <span class="linked-task-state">{{
+            conversationsStore.statusLabel(conversation.status)
+          }}</span>
+        </div>
+        <div class="pane-tasks-subheading">Linked tasks ({{ linkedTasks.length }})</div>
         <div v-for="task in linkedTasks" :key="task.id" class="linked-task">
           <span class="linked-task-label">TASK</span>
           <a
@@ -51,8 +63,11 @@
             >PR ↗</a
           >
         </div>
-      </div>
-      <div v-else-if="tasksError" class="pane-tasks pane-tasks-error">Task details unavailable</div>
+        <div v-if="tasksError" class="pane-tasks-error">Task details unavailable</div>
+        <div v-else-if="!linkedTasks.length" class="pane-tasks-empty">
+          No tasks linked to this conversation yet.
+        </div>
+      </section>
 
       <div class="body chat-messages" ref="messagesEl">
         <div v-if="loadingMessages" class="chat-empty">Loading messages…</div>
@@ -283,9 +298,9 @@ async function load() {
   } finally {
     loadingMessages.value = false
   }
-  if (!tasksStore.tasks.length) {
-    tasksError.value = !(await tasksStore.fetchTasks(guildId))
-  }
+  // Always refresh: the store may hold a stale list that predates this
+  // conversation's tasks.
+  tasksError.value = !(await tasksStore.fetchTasks(guildId))
 }
 
 async function onReply() {
@@ -452,6 +467,21 @@ watch(
   font-size: 11px;
 }
 
+.pane-tasks-heading {
+  margin: 0;
+  font-family: var(--font-pixel);
+  font-size: 8px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--color-brass-light, var(--color-text));
+}
+
+.pane-tasks-subheading {
+  font-size: 10px;
+  color: var(--color-text-dim);
+}
+
+.pane-tasks-empty,
 .pane-tasks-error {
   color: var(--color-text-dim);
   font-style: italic;
