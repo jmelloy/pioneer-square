@@ -2,6 +2,8 @@
 
 ## Source
 
+- `/assets/factory-scene.html`: linkable standalone demo from the supplied
+  `files-3/factory-scene.html`, preserved verbatim under `frontend/public/assets/`.
 - `HANDOFF.md`: supplied standalone handoff, preserved verbatim.
 - `files-2.zip`: supplied archive, preserved verbatim. It contains a nested
   `factory-floor-handoff.zip` with the self-contained reference, generators,
