@@ -4,6 +4,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import ConversationDetailPanel from '../ConversationDetailPanel.vue'
 import { useGuildStore } from '../../stores/guild'
 import { useConversationsStore } from '../../stores/conversations'
+import { useUiStore } from '../../stores/ui'
 import { api, ApiError } from '../../utils/api'
 
 vi.mock('../../utils/api', async () => {
@@ -129,6 +130,77 @@ describe('ConversationDetailPanel linked task', () => {
     expect(text).toContain('working')
     expect(text).not.toContain('Other')
     expect(wrapper.find('.linked-task-pr').attributes('href')).toBe('https://x/pr/1')
+  })
+
+  it('interleaves task output, PR checks and replies without crossing conversations', async () => {
+    const { wrapper, guildStore } = mountPanel()
+    await flushPromises()
+    const ui = useUiStore()
+    const openTask = vi.spyOn(ui, 'openTaskTab')
+    for (const message of [
+      { from: 'a-1', source: 'worker', taskId: 't1', content: 'Running <tests>\nnext line' },
+      {
+        from: 'github',
+        source: 'github',
+        taskId: 't2',
+        content: '**pytest: success**\n\n42 passed',
+      },
+      { from: 'user', source: 'web', content: 'Please focus on lint next' },
+    ]) {
+      guildStore.handleWebSocketMessage({
+        type: 'chat',
+        conversationId: 42,
+        createdAt: '2026-01-02T00:00:00Z',
+        ...message,
+      })
+    }
+    guildStore.handleWebSocketMessage({
+      type: 'chat',
+      from: 'a-2',
+      conversationId: 99,
+      content: 'Unrelated work',
+    })
+    await flushPromises()
+    expect(wrapper.findAll('.chat-message')).toHaveLength(3)
+    expect(wrapper.find('.from-worker .msg-content').text()).toBe('Running <tests>\nnext line')
+    expect(wrapper.find('.msg-content--markdown strong').text()).toBe('pytest: success')
+    expect(wrapper.text()).not.toContain('Unrelated work')
+    await wrapper.findAll('.msg-task-badge')[1].trigger('click')
+    expect(openTask).toHaveBeenCalledWith('t2')
+  })
+
+  it('loads earlier activity before the current page', async () => {
+    const guildStore = useGuildStore()
+    guildStore.currentGuild = { id: 'g1', name: 'Guild 1' }
+    useConversationsStore().conversations = [{ ...CONVERSATION }]
+    apiMock.mockResolvedValueOnce(
+      Array.from({ length: 100 }, (_, i) => ({
+        id: i + 2,
+        from_agent: 'worker',
+        content: `Output ${i}`,
+        conversationId: 42,
+        created_at: '2026-01-02T00:00:00Z',
+        source: 'worker',
+      })),
+    )
+    apiMock.mockResolvedValueOnce([])
+    const wrapper = mount(ConversationDetailPanel, { props: { id: 42 } })
+    await flushPromises()
+    apiMock.mockResolvedValueOnce([
+      {
+        id: 1,
+        from_agent: 'user',
+        content: 'Original request',
+        created_at: '2026-01-01T00:00:00Z',
+      },
+    ])
+    const button = wrapper.find('.body button')
+    expect(button.text()).toBe('Load earlier activity')
+    await button.trigger('click')
+    await flushPromises()
+    expect(apiMock).toHaveBeenLastCalledWith('/api/guilds/g1/conversations/42/messages?before_id=2')
+    expect(wrapper.findAll('.chat-message')[0].text()).toContain('Original request')
+    expect(wrapper.find('.body button').exists()).toBe(false)
   })
 
   it('shows an error note when tasks fail to load', async () => {

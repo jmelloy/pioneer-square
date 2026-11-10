@@ -304,19 +304,26 @@ async def list_conversation_messages(
     conversation_id: int,
     github_user_id: str = Depends(require_member()),
     db: AsyncSession = Depends(get_db_dep),
+    *,
+    before_id: int | None = None,
 ):
     """Return this conversation's message history, oldest first (#1298).
 
-    Mirrors ``routes.threads.list_thread_messages`` — same ``_message_dict``
-    serialization, same 100-row cap — but scoped directly by
-    ``conversation_id`` instead of resolving it via a ``Thread`` row first.
+    Pages contain up to 100 rows, scoped directly by conversation. Pass the
+    oldest row's id as ``before_id`` to read earlier activity.
     """
     conversation = await _get_conversation_in_guild(db, guild_id, conversation_id)
+    query = select(Message).where(col(Message.conversation_id) == conversation.id)
+    if before_id is not None:
+        cursor = (await db.exec(query.where(col(Message.id) == before_id))).one_or_none()
+        if cursor is None:
+            raise HTTPException(status_code=404, detail="Message not found in conversation")
+        query = query.where(
+            (col(Message.created_at) < cursor.created_at)
+            | ((col(Message.created_at) == cursor.created_at) & (col(Message.id) < cursor.id))
+        )
     result = await db.exec(
-        select(Message)
-        .where(col(Message.conversation_id) == conversation.id)
-        .order_by(col(Message.created_at).desc(), col(Message.id).desc())
-        .limit(100)
+        query.order_by(col(Message.created_at).desc(), col(Message.id).desc()).limit(100)
     )
     messages = result.all()
     return [_message_dict(m) for m in reversed(messages)]

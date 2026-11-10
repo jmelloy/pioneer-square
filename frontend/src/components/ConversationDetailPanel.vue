@@ -55,6 +55,9 @@
       <div v-else-if="tasksError" class="pane-tasks pane-tasks-error">Task details unavailable</div>
 
       <div class="body chat-messages" ref="messagesEl">
+        <button v-if="hasOlder" class="pixel-btn" :disabled="loadingOlder" @click="loadOlder">
+          {{ loadingOlder ? 'Loading…' : 'Load earlier activity' }}
+        </button>
         <div v-if="loadingMessages" class="chat-empty">Loading messages…</div>
         <div v-else-if="groupedMessages.length === 0" class="chat-empty">
           No messages in this conversation yet.
@@ -75,13 +78,14 @@
               "
               >{{ isToolUseGroup(msg) ? '⚙ FOREMAN' : senderLabel(msg as ChatMessage) }}</span
             >
-            <span
+            <button
               v-if="taskBadge(msg)"
               class="msg-task-badge"
-              :title="'References task ' + taskBadge(msg)"
+              :title="'Open task ' + taskBadge(msg)"
+              @click="openTask(taskBadge(msg)!)"
             >
               ⛬ {{ taskBadge(msg) }}
-            </span>
+            </button>
             <span v-if="!isToolUseGroup(msg) && sourceLabel(msg as ChatMessage)" class="msg-source">
               via {{ sourceLabel(msg as ChatMessage) }}
             </span>
@@ -109,6 +113,7 @@
           <template v-else>
             <span
               v-if="
+                (msg as ChatMessage).source !== 'worker' &&
                 msgSender(msg as ChatMessage) !== 'user' &&
                 msgSender(msg as ChatMessage) !== 'system'
               "
@@ -200,6 +205,33 @@ function openTask(taskId: string) {
 // feed below since the guild-wide `guildStore.messages` window is capped and
 // may have already scrolled this conversation's older messages out.
 const history = ref<ChatMessage[]>([])
+const hasOlder = ref(false)
+const oldestId = ref<number>()
+const loadingOlder = ref(false)
+
+async function loadOlder() {
+  const guildId = guildStore.currentGuild?.id
+  if (!guildId || oldestId.value == null || loadingOlder.value) return
+  const conversationId = props.id
+  loadingOlder.value = true
+  const el = messagesEl.value
+  const height = el?.scrollHeight || 0
+  try {
+    const page = await conversationsStore.fetchConversationMessages(
+      guildId,
+      conversationId,
+      oldestId.value,
+    )
+    if (props.id !== conversationId) return
+    history.value = [...page, ...history.value]
+    hasOlder.value = page.length === 100
+    oldestId.value = typeof page[0]?.id === 'number' ? page[0].id : undefined
+    await nextTick()
+    if (el) el.scrollTop += el.scrollHeight - height
+  } finally {
+    loadingOlder.value = false
+  }
+}
 
 // Live messages arrive on the shared guild WS connection (see stores/guild.ts)
 // tagged with `conversationId` (backend/foreman/journal.py, routes/conversations.py);
@@ -210,7 +242,8 @@ const liveMessages = computed(() =>
 )
 
 function _msgKey(m: ChatMessage): string {
-  return `${m.createdAt || m.created_at}|${m.from || m.from_agent}|${m.content}`
+  const timestamp = (m.createdAt || m.created_at || '').replace(/\+00:00$/, 'Z')
+  return `${timestamp}|${m.from || m.from_agent}|${m.taskId || ''}|${m.content}`
 }
 
 // Merge fetched history with the live feed, deduping messages the live feed
@@ -225,7 +258,10 @@ const messages = computed<ChatMessage[]>(() => {
       merged.push(m)
     }
   }
-  return merged
+  return merged.sort(
+    (a, b) =>
+      Date.parse(a.createdAt || a.created_at || '') - Date.parse(b.createdAt || b.created_at || ''),
+  )
 })
 
 const groupedMessages = useChatGrouping(messages)
@@ -239,6 +275,7 @@ function messageClasses(msg: ChatMessage) {
   return {
     'from-user': sender === 'user',
     'from-system': sender === 'system',
+    'from-worker': msg.source === 'worker',
     'from-foreman': sender === 'foreman',
     'from-agent': sender !== 'user' && sender !== 'system',
   }
@@ -249,10 +286,17 @@ function senderLabel(msg: ChatMessage): string {
   if (sender === 'user') return 'YOU'
   if (sender === 'system') return 'SYS'
   if (sender === 'foreman') return '⚙ FOREMAN'
+  if (msg.source === 'worker') return `WORKER · ${sender}`
   return sender.toUpperCase()
 }
 
-const SOURCE_LABELS: Record<string, string> = { discord: 'Discord', api: 'API', web: 'Web' }
+const SOURCE_LABELS: Record<string, string> = {
+  discord: 'Discord',
+  api: 'API',
+  web: 'Web',
+  worker: 'Worker',
+  github: 'GitHub',
+}
 
 function sourceLabel(msg: ChatMessage): string | null {
   const source = msg.source
@@ -270,6 +314,10 @@ function taskBadge(msg: GroupedMessage): string | null {
 async function load() {
   const guildId = guildStore.currentGuild?.id
   if (!guildId) return
+  const conversationId = props.id
+  history.value = []
+  hasOlder.value = false
+  oldestId.value = undefined
   if (!conversation.value) {
     try {
       await conversationsStore.fetchConversation(guildId, props.id)
@@ -279,7 +327,11 @@ async function load() {
   }
   loadingMessages.value = true
   try {
-    history.value = await conversationsStore.fetchConversationMessages(guildId, props.id)
+    const page = await conversationsStore.fetchConversationMessages(guildId, conversationId)
+    if (props.id !== conversationId) return
+    history.value = page
+    hasOlder.value = page.length === 100
+    oldestId.value = typeof page[0]?.id === 'number' ? page[0].id : undefined
   } finally {
     loadingMessages.value = false
   }
@@ -336,7 +388,7 @@ watch(
   async () => {
     // Capture position before the DOM updates so we only follow new content
     // when the user was already at/near the bottom.
-    const stick = isNearBottom()
+    const stick = !loadingOlder.value && isNearBottom()
     await nextTick()
     if (stick && messagesEl.value) {
       messagesEl.value.scrollTop = messagesEl.value.scrollHeight
@@ -651,6 +703,12 @@ watch(
   word-break: break-word;
 }
 
+.from-worker .msg-content {
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
 .msg-content--markdown :deep(p) {
   margin: 0 0 6px;
 }
@@ -736,6 +794,7 @@ watch(
   padding: 1px 4px;
   flex-shrink: 0;
   white-space: nowrap;
+  cursor: pointer;
 }
 
 .msg-time {
