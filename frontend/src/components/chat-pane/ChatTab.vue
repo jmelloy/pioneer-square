@@ -213,11 +213,23 @@ defineExpose({
   },
 })
 
+// Distance (px) from the bottom still counted as "at the bottom".
+const BOTTOM_THRESHOLD = 48
+
+function isNearBottom(): boolean {
+  const el = messagesEl.value
+  if (!el) return true
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_THRESHOLD
+}
+
 watch(
   messages,
   async () => {
+    // Capture position before the DOM updates so we only follow new content
+    // when the user was already at/near the bottom.
+    const stick = isNearBottom()
     await nextTick()
-    if (messagesEl.value) {
+    if (stick && messagesEl.value) {
       messagesEl.value.scrollTop = messagesEl.value.scrollHeight
     }
   },
