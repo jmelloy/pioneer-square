@@ -2022,6 +2022,44 @@ class Worker:
                     level=LEVEL_WORKER,
                 )
 
+        # Toolchain env per worktree (mise-managed PATH etc.), shared by setup
+        # commands and the agent so both see the same tools.
+        toolchain_envs: dict[str, dict[str, str]] = {}
+        for entry in acquired.entries:
+            toolchain_envs[entry.wt_path] = await repo_setup.toolchain_env(entry.wt_path)
+            setup_cfg = await repo_setup.fetch_setup_config(
+                self.cfg.http_url, self.cfg.guild_id, self.cfg.auth_token or "", entry.repo_full
+            )
+            if not setup_cfg.commands:
+                continue
+            await emit(f"Running setup commands for {entry.repo_full}…", level=LEVEL_WORKER)
+            setup_env = {
+                **self._env_for_tool(tool),
+                **git_ops.gh_token_env(token),
+                **toolchain_envs[entry.wt_path],
+            }
+            setup_result = await repo_setup.run_setup_commands(
+                entry.wt_path,
+                setup_cfg,
+                emit,
+                env=setup_env,
+                is_cancelled=lambda: task_id in self._cancelled_tasks,
+            )
+            if setup_result.cancelled:
+                self._clear_cancelled(task_id)
+                await self._task_update(
+                    task_id, agent=agent, state="cancelled", finishedAt=_now_iso()
+                )
+                await self._release_task_worktrees(task_id)
+                await self._set_state("idle", agent)
+                return
+            if not setup_result.ok:
+                await emit(
+                    f"⚠ setup failed for {entry.repo_full}; continuing — the agent may need "
+                    "to bootstrap dependencies itself.",
+                    level=LEVEL_WORKER,
+                )
+
         # Tracks the last agent session ID so redirects and same-worker follow-ups
         # can resume with full context. Seeded from the task's saved session_id
         # when this is a follow-up dispatched back to the worker that ran it.
@@ -2146,6 +2184,7 @@ class Worker:
             # Pin gh (and anything reading GITHUB_TOKEN) in the agent subprocess
             # to this task's token, not the process-wide ambient one.
             tool_env.update(git_ops.gh_token_env(token))
+            tool_env.update(toolchain_envs.get(primary_wt, {}))
             if not is_review:
                 tool_env.update(publish_context.environment())
 
