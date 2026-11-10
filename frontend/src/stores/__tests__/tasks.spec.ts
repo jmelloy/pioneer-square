@@ -33,25 +33,15 @@ describe('useTasksStore', () => {
       })
     })
 
-    it.each(['task-created', 'task-assigned'] as const)(
-      'keeps the conversation link from %s',
-      (type) => {
-        const store = useTasksStore()
-        store.handleWebSocketMessage({
-          type,
-          taskId: 't-linked',
-          workerId: 'w-abc',
-          name: 'Linked task',
-          description: 'Conversation work',
-          phase: 'execute',
-          state: 'pending',
-          createdAt: '2025-01-01T00:00:00Z',
-          conversationId: 42,
-        })
+    it.each([
+      { type: 'task-created', taskId: 't-linked', state: 'pending', conversationId: 42 },
+      { type: 'task-assigned', taskId: 't-linked', workerId: 'w-abc', conversationId: 42 },
+    ] as const)('keeps the conversation link from $type', (event) => {
+      const store = useTasksStore()
+      store.handleWebSocketMessage(event)
 
-        expect(store.tasks[0].conversation_id).toBe(42)
-      },
-    )
+      expect(store.tasks[0].conversation_id).toBe(42)
+    })
 
     it('preserves the conversation link when an assignment omits it', () => {
       const store = useTasksStore()
