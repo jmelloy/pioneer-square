@@ -59,7 +59,7 @@ owns `DISCORD_CHANNEL_ID`.
 | `DISCORD_PIONEER_GUILD_SLUG` | For slash commands | The Pioneer Square guild (workspace) slug `/ps` commands operate against — not a Discord ID (see terminology note below). |
 | `DISCORD_OPERATOR_ROLE_NAME` | No | Role name (besides Manage Channels) allowed to run `/join-channel`/`/leave-channel`. Default `Pioneer Square Operator`. |
 | `DISCORD_DEV_GUILD_ID` | No (registration only) | Scopes `scripts/register_discord_commands.py` registration to one server (near-instant) instead of globally (up to 1 hour). |
-| `DISCORD_STREAM_TASKS` | No | When truthy (`1`/`true`/`yes`/`on`), mirror each working task's live terminal output into a dedicated per-task Discord thread as silent, low-priority messages. Currently off by default (high-volume). Requires `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID` — the feed always routes into a thread, never a flat channel post. |
+| `DISCORD_STREAM_TASKS` | No | Opt in to dedicated stream threads for tasks **without a conversation** (`1`/`true`/`yes`/`on`; off by default). Requires `DISCORD_BOT_TOKEN` + a configured channel. Conversation-linked tasks mirror automatically to their conversation's existing Discord thread. |
 | `DISCORD_PR_DEBOUNCE_SECONDS` | No | Seconds to buffer `check_run`/`check_suite` completions for the same PR before flushing them as one combined, silent Discord message. Currently defaults to `15`. |
 
 `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID` must be set **together** — the bot needs both
@@ -200,9 +200,15 @@ take priority over this — see `notify_foreman_chat` in `backend/discord_notifi
 
 ### Live task-stream mirroring
 
-Set `DISCORD_STREAM_TASKS` (plus `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID`) to mirror a
-worker task's **live terminal output** into Discord while it runs. Currently off by default,
-since the volume is high.
+Conversation-linked tasks automatically send task progress, runner output and agent output to
+that conversation's existing Discord thread. All linked tasks share this destination, with task
+IDs on each batch. Auth diagnostics stay in terminal logs. PR reviews and completed checks
+(including successful checks and their reports) also appear there and in the web conversation
+history. Task completion never archives the shared conversation thread. If the conversation has
+no Discord mirror, activity is not redirected to another thread or the main channel.
+
+For tasks **without a conversation**, set `DISCORD_STREAM_TASKS` (plus `DISCORD_BOT_TOKEN` + a
+configured channel) to enable the legacy stream below. This remains off by default:
 
 - **Per-task thread** — created lazily off a starter message, currently named
   `⚙ <task-id>: <description>`, persisted in `discord_thread_bindings`

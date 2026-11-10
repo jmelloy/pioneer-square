@@ -63,10 +63,12 @@ export const useConversationsStore = defineStore('conversations', () => {
   async function fetchConversationMessages(
     guildId: string,
     conversationId: number,
+    beforeId?: number,
   ): Promise<ChatMessage[]> {
     try {
       return await api<ChatMessage[]>(
-        `/api/guilds/${guildId}/conversations/${conversationId}/messages`,
+        `/api/guilds/${guildId}/conversations/${conversationId}/messages` +
+          (beforeId != null ? `?before_id=${beforeId}` : ''),
       )
     } catch (e) {
       console.error('Failed to fetch conversation messages', e)

@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import discord_notifier
+from conversation_activity import publish_activity
 from db.github_events import link_task_context
 from events import (
     agent_owner_lock,
@@ -78,11 +79,11 @@ from ws_types import (
 logger = logging.getLogger(__name__)
 
 
-# Terminal-output "levels" (see worker.py LEVEL_* constants) whose lines are
-# actual agent/Claude output worth mirroring into a task's Discord stream
-# thread. ``None`` is the default for task-scoped emits (LEVEL_INFO); worker /
-# auth / claude-framing lines are deliberately excluded as low-value noise.
-_DISCORD_STREAM_LEVELS = frozenset({None, "info", "thinking"})
+# Task-scoped progress and runner output belong in the conversation. Auth
+# diagnostics remain in the terminal log, not chat or Discord.
+_CONVERSATION_ACTIVITY_LEVELS = frozenset(
+    {None, "info", "thinking", "worker", "claude", "error", "warning"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -641,11 +642,31 @@ async def handle_terminal_output(ctx: WSContext, msg: TerminalOutputMsg) -> None
             level=level if level else None,
         ),
     )
-    # Mirror agent/Claude output into the task's own Discord stream thread as a
-    # low-priority feed (opt-in via DISCORD_STREAM_TASKS). Buffered internally,
-    # so this call stays off the network path and is a no-op when disabled.
-    if task_id and line and level in _DISCORD_STREAM_LEVELS:
-        await discord_notifier.notify_task_stream(ctx.guild_id, task_id, line, detail)
+    if task_id and line and level in _CONVERSATION_ACTIVITY_LEVELS:
+        conversation_id = (
+            await ctx.db.exec(
+                select(Task.conversation_id).where(
+                    col(Task.id) == task_id, col(Task.guild_id) == ctx.guild_pk
+                )
+            )
+        ).one_or_none()
+        await publish_activity(
+            ctx.db,
+            guild_id=ctx.guild_id,
+            guild_pk=ctx.guild_pk,
+            conversation_id=conversation_id,
+            task_id=task_id,
+            sender=msg_agent_id or worker_id_for_log or "worker",
+            content=line,
+            source="worker",
+            created_at=created_at,
+            mirror=False,
+        )
+        # Discord batches worker lines to avoid a network request per log line.
+        if conversation_id is not None or level in {None, "info", "thinking"}:
+            await discord_notifier.notify_task_stream(
+                ctx.guild_id, task_id, line, detail, conversation_id=conversation_id
+            )
 
 
 async def handle_worker_register(ctx: WSContext, msg: WorkerRegisterMsg) -> None:

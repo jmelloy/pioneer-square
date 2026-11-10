@@ -776,6 +776,23 @@ async def _post_foreman_chat_line(thread_id: str, content: str) -> None:
     )
 
 
+async def notify_conversation_activity(guild_id: str, conversation_id: int, content: str) -> None:
+    """Mirror untrusted activity only to its conversation, without mentions."""
+    if not bot_token() or not content.strip():
+        return
+    thread_id = await _lookup_foreman_thread_for_user(
+        guild_id, None, conversation_id=conversation_id
+    )
+    if not thread_id:
+        return
+    for chunk in _chunk_content(content, _MAX_MESSAGE_LENGTH):
+        await _bot_request(
+            "post",
+            f"/channels/{thread_id}/messages",
+            {"content": chunk, "flags": _SILENT_FLAG, "allowed_mentions": {"parse": []}},
+        )
+
+
 async def notify_foreman_chat(
     guild_id: str,
     content: str,
@@ -965,6 +982,37 @@ async def mention_or_login(github_login: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 
+async def _notify_task_conversation(
+    task_id: str | None, title: str, description: str, url: str | None = None
+) -> bool:
+    """Return whether a task's conversation owns this notification (never archive it)."""
+    if not task_id:
+        return False
+    try:
+        from database import AsyncSessionLocal  # noqa: PLC0415
+        from models import Guild, Task  # noqa: PLC0415
+        from sqlmodel import col, select  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
+            row = (
+                await db.exec(
+                    select(Guild.slug, Task.conversation_id)
+                    .join(Task, col(Task.guild_id) == col(Guild.id))
+                    .where(col(Task.id) == task_id)
+                )
+            ).one_or_none()
+        if row is None or row.conversation_id is None:
+            return False
+        content = f"**{title}** · `{task_id}`\n{description}"
+        if url:
+            content += f"\n{url}"
+        await notify_conversation_activity(row.slug, row.conversation_id, content)
+        return True
+    except Exception:
+        logger.warning("discord: task conversation routing failed task=%s", task_id, exc_info=True)
+        return True  # Don't leak a conversation event into a fallback channel.
+
+
 async def notify_event(
     event_type: str,
     title: str,
@@ -1011,6 +1059,8 @@ async def notify_event(
     Never raises.
     """
     if bot_token():
+        if await _notify_task_conversation(task_id, title, description, url):
+            return
         coords = await _canonical_coords(issue_repo, issue_number, kind=kind, task_id=task_id)
         if coords:
             repo, number = coords
@@ -1079,6 +1129,8 @@ async def notify_existing_thread(
     same guarantees as ``notify_event``.
     """
     if bot_token():
+        if await _notify_task_conversation(task_id, title, description, url):
+            return
         coords = await _canonical_coords(issue_repo, issue_number, kind=kind, task_id=task_id)
         if coords:
             thread_id = await _lookup_thread(_SUBJECT_ISSUE, _issue_subject_key(*coords))
@@ -1140,6 +1192,7 @@ class _StreamBuffer:
     """In-memory accumulator for one task's pending stream lines."""
 
     guild_id: str
+    conversation_id: int | None = None
     lines: list[_StreamEntry] = field(default_factory=list)
     size: int = 0
     flush_task: asyncio.Task | None = None
@@ -1205,6 +1258,8 @@ async def notify_task_stream_event(
     resolved for *guild_id*. Never raises.
     """
     if not bot_token():
+        return
+    if await _notify_task_conversation(task_id, title, description):
         return
     channel = await _resolve_channel_for_guild(guild_id)
     if not channel:
@@ -1297,12 +1352,20 @@ def _format_stream_entries(entries: list[_StreamEntry], start_turn: int) -> tupl
     return "\n".join(output), turn_number
 
 
-async def _post_task_stream(guild_id: str, task_id: str, content: str) -> None:
-    """Post *content* into *task_id*'s per-task thread as silent messages. Never raises."""
-    channel = await _resolve_channel_for_guild(guild_id)
-    if not channel:
-        return
-    thread_id = await _ensure_task_thread(task_id, channel)
+async def _post_task_stream(
+    guild_id: str, task_id: str, content: str, *, conversation_id: int | None = None
+) -> None:
+    """Post silently to the owning conversation, or the legacy task stream."""
+    if conversation_id is not None:
+        thread_id = await _lookup_foreman_thread_for_user(
+            guild_id, None, conversation_id=conversation_id
+        )
+        content = f"**Worker · `{task_id}`**\n{content}"
+    else:
+        channel = await _resolve_channel_for_guild(guild_id)
+        if not channel:
+            return
+        thread_id = await _ensure_task_thread(task_id, channel)
     if not thread_id:
         return
     for chunk in _chunk_content(content, _MAX_MESSAGE_LENGTH):
@@ -1328,7 +1391,10 @@ async def _drain_and_post(buf: _StreamBuffer, task_id: str) -> None:
         content, buf.turn_count = _format_stream_entries(buf.lines, buf.turn_count)
         buf.lines = []
         buf.size = 0
-    await _post_task_stream(buf.guild_id, task_id, content)
+    if buf.conversation_id is not None:
+        await _post_task_stream(buf.guild_id, task_id, content, conversation_id=buf.conversation_id)
+    else:
+        await _post_task_stream(buf.guild_id, task_id, content)
 
 
 async def _flush_task_stream(task_id: str) -> None:
@@ -1352,7 +1418,12 @@ async def _delayed_flush(task_id: str) -> None:
 
 
 async def notify_task_stream(
-    guild_id: str, task_id: str, line: str, detail: dict | None = None
+    guild_id: str,
+    task_id: str,
+    line: str,
+    detail: dict | None = None,
+    *,
+    conversation_id: int | None = None,
 ) -> None:
     """Buffer one streaming terminal line for *task_id* and schedule a flush.
 
@@ -1363,18 +1434,19 @@ async def notify_task_stream(
     ``LogDetail`` in ``frontend/src/types.ts``) — passed through so tool_use/
     tool_result lines can be folded into per-turn summaries at flush time
     (see ``_format_stream_entries``) instead of posted raw.
-    Silent no-op unless ``DISCORD_STREAM_TASKS`` is enabled (and a bot token is
-    configured), or when *line*/*task_id* is blank. Never raises.
+    Conversation-linked tasks mirror automatically; legacy per-task threads
+    remain opt-in via ``DISCORD_STREAM_TASKS``. Never raises.
     """
-    if not _stream_enabled():
+    if not bot_token() or (conversation_id is None and not _stream_enabled()):
         return
     if not task_id or not line or not line.strip():
         return
 
     buf = _stream_buffers.get(task_id)
     if buf is None:
-        buf = _StreamBuffer(guild_id=guild_id)
+        buf = _StreamBuffer(guild_id=guild_id, conversation_id=conversation_id)
         _stream_buffers[task_id] = buf
+    buf.conversation_id = conversation_id
 
     buf.lines.append(_StreamEntry(line=line, detail=detail))
     buf.size += len(line) + 1

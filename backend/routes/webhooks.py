@@ -23,6 +23,7 @@ import os
 from datetime import UTC, datetime
 
 import discord_notifier
+from conversation_activity import github_activity, publish_activity
 from database import get_db_dep
 from db import github_cache
 from events import broadcast_msg
@@ -1020,9 +1021,27 @@ async def github_webhook(
         task_id,
     )
 
-    # Discord notifications for key GitHub events.
+    # The conversation consumes all PR results, including successful checks that
+    # don't warrant waking the Foreman. Redeliveries returned above cannot duplicate it.
+    activity = github_activity(event_type, action, payload)
+    if activity:
+        await publish_activity(
+            db,
+            guild_id=guild_id,
+            guild_pk=guild_pk,
+            conversation_id=task_conversation_id,
+            task_id=task_id,
+            sender="github",
+            content=activity,
+            source="github",
+            created_at=created_at,
+        )
+
+    # Unlinked work keeps its legacy issue/PR Discord destination.
     _pr_label = f"{repo}#{pr_number}" if repo and pr_number else (repo or "")
-    if event_type == "pull_request" and action == "opened":
+    if task_conversation_id is not None:
+        pass  # Already mirrored into the conversation, not a second PR thread.
+    elif event_type == "pull_request" and action == "opened":
         pr_obj = payload.get("pull_request") or {}
         pr_title = (pr_obj.get("title") or "")[:120]
         assignees = pr_obj.get("assignees") or []
@@ -1185,32 +1204,31 @@ async def github_webhook(
         ),
     )
 
-    chat_line = _build_chat_line(event_type, action, repo, pr_number, payload, task_id)
-    chat_now = datetime.now(UTC)
-    await broadcast_msg(
-        guild_id,
-        ChatMsg(
-            from_="github",
-            to="foreman",
-            content=chat_line,
-            createdAt=chat_now.isoformat(),
-            taskId=task_id,
-            conversationId=task_conversation_id,
-        ),
-    )
-    db.add(
-        Message(
-            guild_id=guild_pk,
-            from_agent="github",
-            to_agent="foreman",
-            content=chat_line,
-            message_type="chat",
-            created_at=chat_now,
-            task_id=task_id,
-            conversation_id=task_conversation_id,
+    if task_conversation_id is None:
+        chat_line = _build_chat_line(event_type, action, repo, pr_number, payload, task_id)
+        chat_now = datetime.now(UTC)
+        await broadcast_msg(
+            guild_id,
+            ChatMsg(
+                from_="github",
+                to="foreman",
+                content=chat_line,
+                createdAt=chat_now.isoformat(),
+                taskId=task_id,
+            ),
         )
-    )
-    await db.commit()
+        db.add(
+            Message(
+                guild_id=guild_pk,
+                from_agent="github",
+                to_agent="foreman",
+                content=chat_line,
+                message_type="chat",
+                created_at=chat_now,
+                task_id=task_id,
+            )
+        )
+        await db.commit()
 
     # review_requested is handled on its own path: it creates a new task so it
     # does not require an existing task_id, but it does require the requested
@@ -1437,6 +1455,7 @@ async def ci_notify(
             created_at=created_at,
             task_id=message_task_id,
             conversation_id=message_conversation_id,
+            source="github",
         )
     )
     await db.commit()
@@ -1447,8 +1466,18 @@ async def ci_notify(
             to="foreman",
             content=content,
             createdAt=created_at.isoformat(),
+            taskId=message_task_id,
+            conversationId=message_conversation_id,
+            source="github",
         ),
     )
+    if message_conversation_id is not None:
+        spawn(
+            discord_notifier.notify_conversation_activity(
+                guild_id, message_conversation_id, content
+            ),
+            name=f"discord.ci-notify:{message_conversation_id}",
+        )
     logger.info(
         "ci-notify guild=%s repo=%s pr=%s task=%s conclusion=%s",
         guild_id,

@@ -89,7 +89,7 @@ export const useGuildStore = defineStore('guild', () => {
       const guild = await api<Guild>(`/guilds/${guildId}`)
       currentGuild.value = guild
       messages.value = (guild.messages || []).filter(
-        (m: ChatMessage) => (m.from || m.from_agent) !== 'github',
+        (m: ChatMessage) => (m.from || m.from_agent) !== 'github' || m.conversationId != null,
       )
       return guild
     } catch (e) {
@@ -219,7 +219,7 @@ export const useGuildStore = defineStore('guild', () => {
 
   function handleWebSocketMessage(data: WSInbound) {
     if (data.type === 'chat') {
-      if (data.from !== 'github') {
+      if (data.from !== 'github' || data.conversationId != null) {
         // Replace any matching optimistic local entry instead of duplicating
         const localIdx = messages.value.findIndex(
           (m) => m._local && m.from === data.from && m.content === data.content,
