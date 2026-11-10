@@ -657,3 +657,23 @@ async def test_run_claude_auto_max_turns_is_failure_even_with_zero_exit():
     assert success is False
     assert stop_reason == "max_turns"
     assert last_text == "still working"
+
+
+def test_task_notification_summary_truncated():
+    from pioneer_worker.claude_runner import MAX_TASK_SUMMARY_LEN, parse_claude_event
+
+    long = "x" * 5000
+    event = {"type": "system", "subtype": "task_notification", "summary": long}
+    [(_, detail)] = parse_claude_event(event)
+    out = detail["event"]["summary"]
+    assert len(out) == MAX_TASK_SUMMARY_LEN
+    assert out.endswith("...")
+    assert event["summary"] == long
+
+
+def test_task_notification_short_summary_untouched():
+    from pioneer_worker.claude_runner import parse_claude_event
+
+    event = {"type": "system", "subtype": "task_notification", "summary": "x" * 500}
+    [(_, detail)] = parse_claude_event(event)
+    assert detail["event"]["summary"] == "x" * 500
