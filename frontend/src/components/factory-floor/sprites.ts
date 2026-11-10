@@ -4,9 +4,11 @@
  * Atlas layout (robots-atlas.png): one block of 4 rows per (type, colourway):
  *   rowBlock = (type * 2 + colourway) * 4,  row = rowBlock + yaw  (yaw 0 SE, 1 SW, 2 NW, 3 NE)
  * Columns are frames, in the order given by `meta.anims[anim].off + frame`.
+ * Six extra body palettes are derived from colourway 0; the atlas itself is unchanged.
  * Lamp pixels are baked as marker colours and recoloured here per mode.
  */
 import type { Robot, RobotAtlasMeta } from './types.ts'
+import { recolorBody } from './colorways'
 
 type RGB = [number, number, number]
 const LAMP_MODES: Record<string, { main: RGB; hi: RGB }> = {
@@ -36,48 +38,51 @@ export class RobotSprites {
   private variants = new Map<string, HTMLCanvasElement>()
   private scratch: HTMLCanvasElement
   private sg: CanvasRenderingContext2D
+  private atlas: HTMLImageElement
 
   constructor(atlas: HTMLImageElement, meta: RobotAtlasMeta) {
+    this.atlas = atlas
     this.meta = meta
     this.scratch = document.createElement('canvas')
     this.scratch.width = meta.FW
     this.scratch.height = meta.FH
     this.sg = this.scratch.getContext('2d', { willReadFrequently: true })!
-    this.buildVariants(atlas)
   }
 
-  /** One recoloured copy of each (type, colourway) block per lamp mode. */
-  private buildVariants(atlas: HTMLImageElement) {
+  /** Cache only variants actually used, rather than allocating all eight palettes upfront. */
+  private variant(type: number, colorway: number, mode: string) {
+    const key = `${type}|${colorway}|${mode}`
+    const cached = this.variants.get(key)
+    if (cached) return cached
     const { FH } = this.meta
-    this.meta.types.forEach((tp, t) => {
-      for (let cw = 0; cw < 2; cw++) {
-        const c = document.createElement('canvas')
-        c.width = atlas.width
-        c.height = 4 * FH
-        const g = c.getContext('2d', { willReadFrequently: true })!
-        g.drawImage(atlas, 0, (t * 2 + cw) * 4 * FH, atlas.width, 4 * FH, 0, 0, atlas.width, 4 * FH)
-        const src = g.getImageData(0, 0, c.width, c.height)
-        for (const mode of Object.keys(LAMP_MODES)) {
-          const out = new ImageData(new Uint8ClampedArray(src.data), src.width, src.height),
-            d = out.data,
-            m = LAMP_MODES[mode]
-          for (let i = 0; i < d.length; i += 4) {
-            if (d[i + 3] === 0 || d[i] !== 255 || d[i + 2] !== 255) continue // marker colours are (255, 0|128, 255)
-            const q = d[i + 1] === 0 ? m.main : d[i + 1] === 128 ? m.hi : null
-            if (q) {
-              d[i] = q[0]
-              d[i + 1] = q[1]
-              d[i + 2] = q[2]
-            }
-          }
-          const c2 = document.createElement('canvas')
-          c2.width = c.width
-          c2.height = c.height
-          c2.getContext('2d')!.putImageData(out, 0, 0)
-          this.variants.set(`${tp}|${cw}|${mode}`, c2)
-        }
-      }
-    })
+    const c = document.createElement('canvas')
+    c.width = this.atlas.width
+    c.height = 4 * FH
+    const g = c.getContext('2d', { willReadFrequently: true })!
+    const sourceColorway = colorway === 1 ? 1 : 0
+    g.drawImage(
+      this.atlas,
+      0,
+      (type * 2 + sourceColorway) * 4 * FH,
+      c.width,
+      c.height,
+      0,
+      0,
+      c.width,
+      c.height,
+    )
+    const pixels = g.getImageData(0, 0, c.width, c.height)
+    const d = pixels.data
+    recolorBody(d, type, colorway)
+    const lamp = LAMP_MODES[mode]
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i + 3] === 0 || d[i] !== 255 || d[i + 2] !== 255) continue
+      const q = d[i + 1] === 0 ? lamp.main : d[i + 1] === 128 ? lamp.hi : null
+      if (q) [d[i], d[i + 1], d[i + 2]] = q
+    }
+    g.putImageData(pixels, 0, 0)
+    this.variants.set(key, c)
+    return c
   }
 
   /** Things in the robot's hand / impact sparks. Drawn into the sprite layer so props can still hide them. */
@@ -138,17 +143,7 @@ export class RobotSprites {
       sg.fillRect(AX - half, AY + dy - 1, 2 * half + 1, 1)
     }
     const lamp = an === 'work' && (f === 1 || f === 3) ? 'busy' : b.mode // lamps flash bright on every strike
-    sg.drawImage(
-      this.variants.get(`${tp}|${b.cw}|${lamp}`)!,
-      fi * FW,
-      b.yaw * FH,
-      FW,
-      FH,
-      0,
-      0,
-      FW,
-      FH,
-    )
+    sg.drawImage(this.variant(b.type, b.cw, lamp), fi * FW, b.yaw * FH, FW, FH, 0, 0, FW, FH)
     this.overlays(an, f, this.meta.anchors[tp][this.meta.dirs[b.yaw]][fi], tm, i)
     // per-pixel depth test against props
     const bx = px - AX,

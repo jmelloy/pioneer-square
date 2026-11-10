@@ -1,6 +1,7 @@
 import type { Agent, Task } from '../../types'
 import type { Robot, SceneConfig, Yaw } from './types'
 import { Sim } from './sim'
+import { ROBOT_COLORWAY_COUNT } from './colorways'
 
 export interface AgentRobot extends Robot {
   agentId: string
@@ -58,7 +59,7 @@ export class FactoryState {
           act: null,
           actT: 0,
           type,
-          cw: Math.floor(hash / 3) % 2,
+          cw: Math.floor(hash / 3) % ROBOT_COLORWAY_COUNT,
           seed: (hash % 1000) / 1000,
           yaw: 1,
           working: false,

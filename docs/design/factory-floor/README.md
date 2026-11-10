@@ -2,10 +2,14 @@
 
 ## Source
 
+- `/assets/factory-scene.html`: linkable standalone demo from the supplied
+  `files-3/factory-scene.html`, preserved verbatim under `frontend/public/assets/`.
 - `HANDOFF.md`: supplied standalone handoff, preserved verbatim.
 - `files-2.zip`: supplied archive, preserved verbatim. It contains a nested
   `factory-floor-handoff.zip` with the self-contained reference, generators,
   original art, demo component, simulation, and tests.
+- `colorways.png`: all eight runtime colourways across the three robot types,
+  rendered in Chromium (the first two columns are the unchanged atlas originals).
 - `live-desktop.png` / `live-mobile.png`: initial whole-room Chromium screenshots.
 - `zoomed-work-area.png`: work-area zoom before the 80% threshold adjustment,
   at a 1040×1060 viewport, close
@@ -27,7 +31,12 @@ there is no new network protocol, dependency, or demo route.
 
 - Each online agent gets a robot keyed by its agent ID. New robots choose a
   least-used body type among online robots, with the ID hash breaking ties;
-  colourways remain ID-hashed. Existing robots keep their appearance during
+  eight colourways remain ID-hashed. `colorways.ts` adds cobalt, plum, crimson,
+  ivory, petrol, and moss by swapping exact body shades from the first atlas
+  colourway. Shadows, lamps, outlines, and other materials retain their original
+  colours; lanky's shared darkest metal/body shade is deliberately unchanged.
+  Sprite variants are created on demand and cached, not rebuilt each frame.
+  Existing robots keep their appearance during
   updates. Body assignments can change after a remount or reconnection, as the
   current mix determines availability. Offline/removed agents disappear; an empty
   guild has no robots.
