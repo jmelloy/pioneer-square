@@ -378,3 +378,8 @@ async def test_reclaim_startup_removes_stale_dirs(tmp_path, repo_path):
 async def test_reclaim_startup_on_missing_base_dir_is_a_noop(tmp_path):
     tw = _tw(tmp_path)
     assert await tw.reclaim_startup([]) == []
+
+
+def test_wt_path_excludes_worker_id(tmp_path):
+    wt = _tw(tmp_path)
+    assert wt.wt_path("t-abc", "o/repo") == str(tmp_path / "work" / "t-abc" / "repo")
