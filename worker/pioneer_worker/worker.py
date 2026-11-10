@@ -2017,10 +2017,10 @@ class Worker:
 
         for entry in acquired.entries:
             if not await repo_setup.install_mise(entry.wt_path, emit):
-                await self._task_update(task_id, agent=agent, state="failed", finishedAt=_now_iso())
-                await self._set_state("error", agent)
-                await self._set_state("idle", agent)
-                return
+                await emit(
+                    f"⚠ mise setup failed for {entry.repo_full}; continuing without toolchain setup.",
+                    level=LEVEL_WORKER,
+                )
 
         # Tracks the last agent session ID so redirects and same-worker follow-ups
         # can resume with full context. Seeded from the task's saved session_id

@@ -1,8 +1,8 @@
-"""Mise installation is scoped to acquired task repositories and fails closed."""
+"""Mise setup is scoped to acquired task repositories and is best-effort."""
 
 import asyncio
 import signal
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 from pioneer_worker import repo_setup
@@ -29,16 +29,47 @@ async def test_install_detected_config(tmp_path, config, exit_code):
     emit = AsyncMock()
     with patch.object(repo_setup.asyncio, "create_subprocess_exec", return_value=proc) as spawn:
         assert await repo_setup.install_mise(str(tmp_path), emit) == (exit_code == 0)
-    spawn.assert_awaited_once_with(
-        "mise",
-        "install",
-        cwd=str(tmp_path),
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        start_new_session=True,
-    )
+    commands = [("trust", config), ("install",)] if exit_code == 0 else [("trust", config)]
+    assert spawn.await_args_list == [
+        call(
+            "mise",
+            *command,
+            cwd=str(tmp_path),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True,
+        )
+        for command in commands
+    ]
     emit.assert_any_await("mise output", level="worker")
+
+
+async def test_trusts_all_detected_configs_before_install(tmp_path):
+    for config in repo_setup.MISE_CONFIGS:
+        path = tmp_path / config
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    proc = AsyncMock(returncode=0)
+    proc.communicate.return_value = (b"", None)
+    with patch.object(repo_setup.asyncio, "create_subprocess_exec", return_value=proc) as spawn:
+        assert await repo_setup.install_mise(str(tmp_path), AsyncMock())
+    assert [args.args[1:] for args in spawn.await_args_list] == [
+        *(("trust", config) for config in repo_setup.MISE_CONFIGS),
+        ("install",),
+    ]
+
+
+async def test_install_failure_after_trust(tmp_path):
+    (tmp_path / "mise.toml").touch()
+    trust = AsyncMock(returncode=0)
+    trust.communicate.return_value = (b"", None)
+    install = AsyncMock(returncode=1)
+    install.communicate.return_value = (b"install failed", None)
+    emit = AsyncMock()
+    with patch.object(repo_setup.asyncio, "create_subprocess_exec", side_effect=[trust, install]):
+        assert not await repo_setup.install_mise(str(tmp_path), emit)
+    emit.assert_any_await("✗ mise install failed (exit 1)", level="worker")
 
 
 async def test_missing_mise_fails_with_message(tmp_path):
@@ -52,15 +83,19 @@ async def test_missing_mise_fails_with_message(tmp_path):
 
 
 @pytest.mark.parametrize("error", [TimeoutError, asyncio.CancelledError])
-async def test_timeout_and_cancellation_reap_installer(tmp_path, error):
+@pytest.mark.parametrize("during_install", [False, True])
+async def test_timeout_and_cancellation_reap_installer(tmp_path, error, during_install):
     (tmp_path / "mise.toml").touch()
     proc = AsyncMock()
     proc.returncode = None
     proc.pid = 12345
     proc.communicate.side_effect = error
     emit = AsyncMock()
+    trust = AsyncMock(returncode=0)
+    trust.communicate.return_value = (b"", None)
+    processes = [trust, proc] if during_install else [proc]
     with (
-        patch.object(repo_setup.asyncio, "create_subprocess_exec", return_value=proc),
+        patch.object(repo_setup.asyncio, "create_subprocess_exec", side_effect=processes),
         patch.object(repo_setup.os, "killpg") as kill,
     ):
         if error is asyncio.CancelledError:
@@ -131,12 +166,8 @@ async def test_worker_prepares_only_acquired_repos_before_agent(tmp_path, setup_
             },
             worker.agents[0],
         )
-    if setup_ok:
-        runner.assert_awaited_once()
-    else:
-        runner.assert_not_called()
-        assert prepared == [entries[0].wt_path]
-        assert any(
-            call.kwargs.get("state") == "failed" for call in worker._task_update.await_args_list
-        )
-        assert worker.agents[0].state == "idle"
+    runner.assert_awaited_once()
+    assert prepared == [entry.wt_path for entry in entries]
+    assert not any(
+        call.kwargs.get("state") == "failed" for call in worker._task_update.await_args_list
+    )
