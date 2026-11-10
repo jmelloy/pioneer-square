@@ -220,10 +220,12 @@ def test_assign_task_appears_in_list(client):
     assert descriptions == {"Task one", "Task two"}
 
 
-def test_assign_task_stamps_conversation_id(client):
+def test_assign_task_stamps_conversation_id(client, monkeypatch):
     """Manual worker task assignment resolves/creates a conversation for the
     caller instead of leaving Task.conversation_id null (#1300)."""
     test_client, db_url = client
+    broadcast = AsyncMock()
+    monkeypatch.setattr("routes.workers.broadcast_msg", broadcast)
     insert_guild(db_url, "guildconv1")
     worker_id = _create_worker(test_client, "guildconv1")
 
@@ -240,6 +242,7 @@ def test_assign_task_stamps_conversation_id(client):
             select(col(Task.conversation_id)).where(col(Task.id) == task_id)
         )
     assert conversation_id is not None
+    assert broadcast.call_args.args[1].conversationId == conversation_id
 
 
 def test_assign_task_reuses_same_conversation_for_same_user(client):

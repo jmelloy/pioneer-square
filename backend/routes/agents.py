@@ -90,6 +90,7 @@ async def start_agent_run(
             tool=tool,
             taskType="interactive",
             targetAgentId=agent_id,
+            conversationId=conversation_id,
             model=req.model,
             provider=req.provider,
             phase="execute",

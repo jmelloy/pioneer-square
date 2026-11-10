@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from unittest.mock import AsyncMock
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -17,10 +18,12 @@ def _auth(db_url: str) -> dict:
     return {"Authorization": f"Bearer {make_auth_token(db_url)}"}
 
 
-def test_start_agent_run_stamps_conversation_id(client):
+def test_start_agent_run_stamps_conversation_id(client, monkeypatch):
     """Interactive task creation resolves/creates a conversation for the
     caller instead of leaving Task.conversation_id null (#1300)."""
     test_client, db_url = client
+    broadcast = AsyncMock()
+    monkeypatch.setattr("routes.agents.broadcast_msg", broadcast)
     insert_guild(db_url, "guildagent1")
     insert_worker(db_url, "guildagent1", "w-agent1")
     insert_agent(db_url, "guildagent1", "a-agent1", worker_id="w-agent1", state="idle")
@@ -38,6 +41,7 @@ def test_start_agent_run_stamps_conversation_id(client):
             select(col(Task.conversation_id)).where(col(Task.id) == task_id)
         )
     assert conversation_id is not None
+    assert broadcast.call_args.args[1].conversationId == conversation_id
 
 
 def test_start_agent_run_reuses_same_conversation_for_same_user(client):
