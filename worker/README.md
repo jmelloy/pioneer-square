@@ -96,16 +96,20 @@ The worker stays running, reconnecting if the backend restarts.
 
 ### Repository toolchains (mise)
 
-Before starting the agent, the worker runs `mise install` in each acquired task
-worktree containing `mise.toml`, `.mise.toml`, `.config/mise/config.toml`, or
-`.mise/config.toml`. Reused worktrees are checked again on follow-ups; mise reuses
-already-installed tools. Repos without these files are unaffected.
+Before starting the agent, the worker runs `mise trust <config>` for each detected
+`mise.toml`, `.mise.toml`, `.config/mise/config.toml`, or `.mise/config.toml` in each
+acquired task worktree, then runs `mise install`. Reused worktrees are checked again
+on follow-ups; mise reuses already-installed tools. Repos without these files are
+unaffected.
 
-The worker host must have mise on PATH and any required config trust established
-by the operator. Setup is non-interactive and never grants trust automatically.
-Installer output is added to the task log after installation completes. A missing
-mise binary, rejected config, installation failure, or 10-minute timeout fails the
-task before the agent starts. Cancellation terminates the installer process group.
+The worker host must have mise on PATH. Setup is non-interactive and automatically
+trusts these repository configurations, which can execute code on the worker; only
+run tasks from repositories you trust. Command output is added to the task log after
+each command completes. A missing mise binary, trust failure, installation failure,
+or 10-minute timeout per command logs a warning; the worker continues to the agent
+without successful toolchain setup. A trust failure skips installation for that
+repository. Cancellation still stops the task and terminates the active command's
+process group.
 
 This installs tools only: it does not activate the agent's environment, install
 application dependencies, run setup tasks, or start services.
