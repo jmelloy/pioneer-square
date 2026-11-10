@@ -38,9 +38,7 @@ async def link_task_context(db: AsyncSession, task_id: str) -> None:
     Never overwrites an existing owner or replays historical automated actions.
     The caller commits this with its task update.
     """
-    task = (
-        await db.exec(select(Task).where(col(Task.id) == task_id, live_tasks_filter()))
-    ).first()
+    task = (await db.exec(select(Task).where(col(Task.id) == task_id, live_tasks_filter()))).first()
     if task is None or task.conversation_id is None:
         return
     for model, repo, number in (
