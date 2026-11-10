@@ -18,6 +18,7 @@ import anyio
 import httpx
 
 from . import (  # noqa: F401 - test patch compatibility
+    artifact_upload,
     claude_runner,
     codex_runner,
     git_ops,
@@ -2163,6 +2164,7 @@ class Worker:
                         "Do NOT push any commits or open a PR as part of this review.\n"
                     )
             if not is_review:
+                current_desc += artifact_upload.prompt_note(task_id)
                 current_desc += (
                     "\n\nIMPORTANT — publish progress after each meaningful checkpoint, "
                     "from each repository you change:\n"
@@ -2426,6 +2428,11 @@ class Worker:
                 await self._ensure_pr_webhook(pr_url, emit)
 
             logger.info("Task %s: pr_url=%s", task_id, pr_url)
+            uploaded = await artifact_upload.upload_task_artifacts(
+                self.cfg.http_url, self.cfg.guild_id, self.cfg.auth_token, task_id
+            )
+            if uploaded:
+                last_msg = artifact_upload.append_markdown(last_msg or "", uploaded)
             msg = {
                 "workerId": self.cfg.worker_id,
                 "agentId": agent.agent_id,

@@ -1209,3 +1209,20 @@ class ModelCatalog(SQLModel, table=True):
     # (e.g. "us.anthropic.claude-sonnet-4-6-20251001-v1:0"). NULL until the
     # Bedrock enricher resolves it (requires AWS credentials at catalog refresh).
     bedrock_model_id: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+
+
+class Artifact(SQLModel, table=True):
+    """An image (screenshot etc.) stored in S3 and referenced from tasks/messages."""
+
+    __tablename__ = "artifacts"  # type: ignore[assignment]
+
+    id: str = Field(sa_column=Column(Text, primary_key=True))  # uuid4 string
+    guild_id: int | None = Field(default=None, foreign_key="guilds.id", index=True)
+    key: str = Field(sa_column=Column(Text, nullable=False))
+    url: str = Field(sa_column=Column(Text, nullable=False))
+    content_type: str = Field(sa_column=Column(Text, nullable=False))
+    size_bytes: int
+    uploaded_by_worker_id: str | None = Field(default=None, foreign_key="workers.id")
+    task_id: str | None = Field(default=None, foreign_key="tasks.id", index=True)
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
