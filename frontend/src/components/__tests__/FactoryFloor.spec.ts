@@ -88,7 +88,8 @@ describe('FactoryFloor', () => {
     expect(mocks.load).toHaveBeenCalledTimes(4)
     expect(mocks.construct).toHaveBeenCalledOnce()
     expect(wrapper.findAll('.agent-hit')).toHaveLength(1)
-    expect(wrapper.find('canvas').attributes('width')).toBe('297')
+    expect(wrapper.find('canvas').attributes('width')).toBe('854')
+    expect(wrapper.find('canvas').attributes('height')).toBe('480')
     expect(wrapper.find('.agent-hit').attributes('aria-label')).toContain('Build widget')
     await wrapper.find('.agent-hit').trigger('click')
     expect(useUiStore().selectedAgentId).toBe('a-1')
@@ -142,7 +143,7 @@ describe('FactoryFloor', () => {
     expect(mocks.render.mock.lastCall?.[1][0].path).toEqual([])
   })
 
-  it('zooms at 80% fit, crops toward work spots, and keeps agent targets aligned', async () => {
+  it('fits the scene height without scrolling and keeps agent targets aligned', async () => {
     const wrapper = mountFloor()
     await flushPromises()
     const viewport = wrapper.find('.floor-viewport').element
@@ -154,6 +155,7 @@ describe('FactoryFloor', () => {
       [600, 700],
       [200, 700],
       [1800, 2000],
+      [1200, 240],
     ]) {
       Object.defineProperties(viewport, {
         clientWidth: { configurable: true, value: width },
@@ -161,47 +163,21 @@ describe('FactoryFloor', () => {
       })
       resize([], {} as ResizeObserver)
       await flushPromises()
-      const scale = Math.max(1, Math.floor(Math.min(width / 297, height / 383) / 0.8))
-      expect(viewport.scrollLeft).toBeGreaterThanOrEqual(0)
-      expect(viewport.scrollLeft).toBeLessThanOrEqual(Math.max(0, 297 * scale - width))
-      expect(viewport.scrollTop).toBe(Math.max(0, 383 * scale - height))
-      if (width < 297 * scale) expect(viewport.scrollLeft).toBeGreaterThan(0)
-      expect(parseFloat(stage.style.width)).toBeCloseTo(297 * scale)
-      expect(parseFloat(stage.style.height)).toBeCloseTo(383 * scale)
+      const scale = height / 480
+      expect(viewport.scrollLeft).toBe(0)
+      expect(viewport.scrollTop).toBe(0)
+      expect(parseFloat(stage.style.width)).toBeCloseTo(854 * scale)
+      expect(parseFloat(stage.style.height)).toBeCloseTo(height)
       expect(parseFloat(button.style.left)).toBeCloseTo(originalLeft * scale)
       expect(parseFloat(button.style.top)).toBeCloseTo(originalTop * scale)
       expect(parseFloat(button.style.width)).toBeCloseTo(24 * scale)
-      expect(wrapper.find('canvas').attributes('width')).toBe('297')
+      expect(wrapper.find('canvas').attributes('width')).toBe('854')
     }
     const previousWidth = stage.style.width
     Object.defineProperty(viewport, 'clientWidth', { configurable: true, value: 0 })
     resize([], {} as ResizeObserver)
     await flushPromises()
     expect(stage.style.width).toBe(previousWidth)
-  })
-
-  it.each([
-    [1000, 612, 1],
-    [1000, 613, 2],
-    [1000, 919, 2],
-    [1000, 920, 3],
-    [1000, 1225, 3],
-    [1000, 1226, 4],
-    [712, 2000, 2],
-    [713, 2000, 3],
-  ])('uses %ipx × %ipx to select %i× at the 80%% threshold', async (width, height, scale) => {
-    const wrapper = mountFloor()
-    await flushPromises()
-    const viewport = wrapper.find('.floor-viewport').element
-    Object.defineProperties(viewport, {
-      clientWidth: { configurable: true, value: width },
-      clientHeight: { configurable: true, value: height },
-    })
-    resize([], {} as ResizeObserver)
-    await flushPromises()
-    const stage = wrapper.find<HTMLElement>('.floor-stage').element
-    expect(parseFloat(stage.style.width)).toBe(297 * scale)
-    expect(parseFloat(stage.style.height)).toBe(383 * scale)
   })
 
   it('reports asset failures instead of an unhandled rejection', async () => {
