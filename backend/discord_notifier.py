@@ -133,6 +133,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -1200,6 +1201,7 @@ class _StreamBuffer:
     # Running count of turns already posted for this task, so turn numbers stay
     # sequential across flush batches instead of resetting to 1 each time.
     turn_count: int = 0
+    rate_states: dict[str, str] = field(default_factory=dict)
 
 
 # Keyed by task_id. Holds only tasks with un-flushed lines; entries are removed
@@ -1285,7 +1287,67 @@ def _chunk_content(text: str, size: int) -> list[str]:
     return chunks
 
 
-def _format_stream_entries(entries: list[_StreamEntry], start_turn: int) -> tuple[str, int]:
+def _claude_stream_preview(entry: _StreamEntry, rate_states: dict[str, str]) -> str | None:
+    """Keep lifecycle outcomes, not repeated Claude bookkeeping, in Discord."""
+    detail = entry.detail or {}
+    event = detail.get("event")
+    if detail.get("toolType") != "claude_json" or not isinstance(event, dict):
+        return entry.line
+
+    def preview(value: object) -> str:
+        text = " ".join(str(value or "").split())
+        return text if len(text) <= 160 else text[:157] + "..."
+
+    kind = event.get("type")
+    subtype = event.get("subtype")
+    if kind == "tool_progress":
+        if event.get("heartbeat") is True:
+            return None
+        return f"{preview(event.get('tool_name') or 'Tool')} running"
+    if kind == "rate_limit_event":
+        info = event.get("rate_limit_info")
+        if not isinstance(info, dict):
+            return entry.line
+        session = event.get("session_id")
+        state = json.dumps(info, sort_keys=True)
+        if isinstance(session, str) and session:
+            if rate_states.get(session) == state:
+                return None
+            rate_states[session] = state
+        return f"Rate limit · {preview(info.get('status'))} · {preview(info.get('rateLimitType'))}"
+    if kind == "system":
+        # The tool-use line already names the command; notifications carry its outcome.
+        if subtype in ("task_started", "background_tasks_changed", "hook_started"):
+            return None
+        if subtype == "hook_response":
+            if event.get("outcome") == "success" and event.get("exit_code") == 0:
+                return None
+            return f"✗ Hook failed · {preview(event.get('hook_name'))} · {preview(event.get('output') or event.get('stderr'))}"
+        if subtype == "task_notification":
+            status = event.get("status")
+            marker = "✓" if status == "completed" else "✗"
+            return f"{marker} Task {preview(status)} · {preview(event.get('summary'))} · {preview(event.get('task_id'))}"
+        if subtype == "task_updated":
+            patch = event.get("patch")
+            if isinstance(patch, dict) and patch.get("status") in (
+                "completed",
+                "failed",
+                "stopped",
+                "cancelled",
+            ):
+                marker = "✓" if patch["status"] == "completed" else "✗"
+                return f"{marker} Task {preview(patch['status'])} · {preview(event.get('task_id'))}"
+            return entry.line
+        if subtype == "code_change_published":
+            return f"Code change · {preview(event.get('action'))} · {preview(event.get('url'))}"
+        if subtype == "vcs_state_changed":
+            return f"Repository updated · {preview(event.get('kind'))} · {preview(event.get('branch'))}"
+    return entry.line
+
+
+def _format_stream_entries(
+    entries: list[_StreamEntry], start_turn: int, *, rate_states: dict[str, str] | None = None
+) -> tuple[str, int]:
     """Compact consecutive tool_use/tool_result entries into per-turn summary lines.
 
     Mirrors the frontend's turn grouping (see LogList.vue): a run of consecutive
@@ -1299,13 +1361,16 @@ def _format_stream_entries(entries: list[_StreamEntry], start_turn: int) -> tupl
     (#1107) — previously it was spoiler-wrapped (``||...||``), but a
     click-to-reveal preview was still judged too noisy since users have to
     open the thread for full context anyway. Only the tool_use line naming
-    what ran is kept. Non-tool lines pass through unchanged. Returns the
-    formatted text and the turn count to carry into the next batch, so
+    what ran is kept. Claude bookkeeping is filtered or summarized; failed
+    tool results stay visible outside groups. Other lines pass through unchanged.
+    Returns the formatted text and the turn count to carry into the next batch, so
     numbering stays sequential across flushes.
     """
     output: list[str] = []
     group: list[_StreamEntry] = []
     turn_number = start_turn
+    if rate_states is None:
+        rate_states = {}
 
     def flush_group() -> None:
         nonlocal turn_number, group
@@ -1343,11 +1408,18 @@ def _format_stream_entries(entries: list[_StreamEntry], start_turn: int) -> tupl
 
     for entry in entries:
         detail = entry.detail or {}
-        if detail.get("toolType") in ("tool_use", "tool_result"):
+        line = _claude_stream_preview(entry, rate_states)
+        if line is None:
+            continue
+        if detail.get("toolType") == "tool_result" and detail.get("is_error") is True:
+            flush_group()
+            error = " ".join(entry.line.split())
+            output.append(f"✗ Tool failed · {error[:160]}")
+        elif detail.get("toolType") in ("tool_use", "tool_result"):
             group.append(entry)
         else:
             flush_group()
-            output.append(entry.line)
+            output.append(line)
     flush_group()
     return "\n".join(output), turn_number
 
@@ -1388,9 +1460,13 @@ async def _drain_and_post(buf: _StreamBuffer, task_id: str) -> None:
     async with buf.lock:
         if not buf.lines:
             return
-        content, buf.turn_count = _format_stream_entries(buf.lines, buf.turn_count)
+        content, buf.turn_count = _format_stream_entries(
+            buf.lines, buf.turn_count, rate_states=buf.rate_states
+        )
         buf.lines = []
         buf.size = 0
+    if not content:
+        return
     if buf.conversation_id is not None:
         await _post_task_stream(buf.guild_id, task_id, content, conversation_id=buf.conversation_id)
     else:

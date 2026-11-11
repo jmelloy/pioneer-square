@@ -107,9 +107,11 @@ function linkify(text: string): string {
   )
 }
 
-const eventSummary = computed(
-  () => claudeEventSummary(props.log.detail) ?? piEventSummary(props.log.detail),
-)
+const eventSummary = computed(() => {
+  if (props.log.detail?.toolType === 'tool_result' && props.log.detail.is_error === true)
+    return `✗ Tool failed · ${props.log.line}`
+  return claudeEventSummary(props.log.detail) ?? piEventSummary(props.log.detail)
+})
 
 const isMarkdownLine = computed(() => {
   if (eventSummary.value !== undefined) return false
@@ -161,6 +163,7 @@ const lineClass = computed(() => {
   const log = props.log
   const line = log.line
   if (!line) return ''
+  if (log.detail?.is_error === true) return 'log-error'
   // Tool glyphs carry intrinsic success/error/tool semantics from Claude's
   // own output formatting, so they win regardless of level.
   if (line.startsWith('✓') || line.includes('Done')) return 'log-success'
