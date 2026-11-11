@@ -211,6 +211,10 @@ class Worker:
         # Set to True once _join() has been called the first time so that
         # _on_ws_reconnect doesn't prematurely re-join.
         self._joined = False
+        # Set once every agent slot is idle with its loop running; worker-register
+        # (→ Foreman worker-online) is held until then so Foreman never assigns
+        # work to slots that aren't ready yet.
+        self._slots_ready = False
         # Monotonic timestamp of the last successful GitHub repo-list refresh.
         # 0 means never refreshed; _idle_puller compares against this.
         self._last_repo_refresh: float = 0.0
@@ -958,6 +962,10 @@ class Worker:
                     "workerId": self.cfg.worker_id,
                 }
             )
+
+    async def _send_worker_register(self) -> None:
+        """Announce the worker; the backend fires the Foreman's worker-online
+        trigger off this, so only send it once every slot can accept work."""
         # Derive primary tool from config or first detected tool.
         primary_tool = self.cfg.tool or (
             self._available_tools[0] if self._available_tools else None
@@ -991,6 +999,8 @@ class Worker:
             return
         logger.info("WebSocket reconnected — re-sending join and agent states")
         await self._join()
+        if self._slots_ready:
+            await self._send_worker_register()
         # `join` resets each agent to idle in the backend. Re-send the actual
         # state so a mid-task reconnect doesn't show us as idle while we work.
         for slot in self.agents:
@@ -1208,6 +1218,8 @@ class Worker:
         # here; it can race the WS replay/assignment and duplicate work across
         # multiple local agent slots.
         runners = [asyncio.create_task(self._agent_loop(slot)) for slot in self.agents]
+        self._slots_ready = True
+        await self._send_worker_register()
         puller = asyncio.create_task(self._idle_puller())
         sweeper = asyncio.create_task(self._worktree_sweeper())
         s3_syncer = asyncio.create_task(self._s3_syncer()) if self.cfg.s3_bucket else None
