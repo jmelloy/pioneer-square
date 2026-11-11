@@ -116,7 +116,7 @@ async def _git(
     token: str | None = None,
     extra_env: dict[str, str] | None = None,
 ) -> bytes:
-    auth = {**git_ops._auth_env(token), **(extra_env or {})}
+    auth = {**(git_ops._auth_env(token) or {}), **(extra_env or {})}
     proc = await asyncio.create_subprocess_exec(
         "git",
         *args,
@@ -337,8 +337,10 @@ async def _publish(cwd: Path, context: PublishContext, message: str) -> str:
             verification = commit["commit"]["verification"]
             if not verification["verified"] or verification["reason"] != "valid":
                 raise PublishError("GitHub did not verify the App commit; refusing publication")
-            if (commit.get("committer") or {}).get("login") != credentials["username"]:
-                raise PublishError("Commit committer does not match the configured GitHub App")
+            # With a user author the App must be the committer; otherwise the App is the author.
+            role = "committer" if context.author else "author"
+            if (commit.get(role) or {}).get("login") != credentials["username"]:
+                raise PublishError(f"Commit {role} does not match the configured GitHub App")
             return commit
 
         async def sync_head(sha):
