@@ -654,6 +654,58 @@ async def update_foreman_config(
     return config
 
 
+# Cap on the guild-level pre-agents prompt. It is prepended to AGENTS.md for every
+# task, so an unbounded value would bloat every agent's context.
+PRE_AGENTS_PROMPT_MAX_LEN = 20_000
+
+
+class GuildSettingsUpdate(BaseModel):
+    # null or empty/whitespace-only clears the guild default.
+    pre_agents_prompt: str | None = Field(default=None, max_length=PRE_AGENTS_PROMPT_MAX_LEN)
+
+
+def _guild_settings_dict(guild: Guild) -> dict:
+    updated = guild.pre_agents_prompt_updated_at
+    return {
+        "pre_agents_prompt": guild.pre_agents_prompt,
+        "pre_agents_prompt_updated_at": updated.isoformat() if updated else None,
+    }
+
+
+@router.get("/api/guilds/{guild_id}/settings")
+async def get_guild_settings(
+    guild_id: str,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Return guild-level settings (any member can read)."""
+    res = await db.exec(select(Guild).where(col(Guild.slug) == guild_id))
+    guild = res.one_or_none()
+    if not guild:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    return _guild_settings_dict(guild)
+
+
+@router.patch("/api/guilds/{guild_id}/settings")
+async def update_guild_settings(
+    guild_id: str,
+    data: GuildSettingsUpdate,
+    github_user_id: str = Depends(require_member("owner")),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Update guild-level settings (owner only). Only fields present are changed."""
+    res = await db.exec(select(Guild).where(col(Guild.slug) == guild_id))
+    guild = res.one_or_none()
+    if not guild:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    if "pre_agents_prompt" in data.model_fields_set:
+        value = data.pre_agents_prompt
+        guild.pre_agents_prompt = value if value and value.strip() else None
+        guild.pre_agents_prompt_updated_at = datetime.now(UTC)
+    await db.commit()
+    return _guild_settings_dict(guild)
+
+
 @router.post("/api/guilds/{guild_id}/invites")
 async def create_guild_invite(
     guild_id: str,
