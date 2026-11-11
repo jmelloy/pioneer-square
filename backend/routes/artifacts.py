@@ -20,7 +20,14 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 router = APIRouter()
 
 
-def _payload(a: Artifact) -> dict:
+def _link_text(name: str | None) -> str:
+    """Filename safe for use as markdown link text."""
+    base = (name or "").replace("\\", "/").rsplit("/", 1)[-1]
+    base = "".join(ch for ch in base if ch not in "[]()\n\r").strip()
+    return base or "artifact"
+
+
+def _payload(a: Artifact, name: str | None = None) -> dict:
     return {
         "id": a.id,
         "key": a.key,
@@ -30,7 +37,9 @@ def _payload(a: Artifact) -> dict:
         "taskId": a.task_id,
         "uploadedByWorkerId": a.uploaded_by_worker_id,
         "createdAt": a.created_at.isoformat(),
-        "markdown": f"![{a.id}]({a.url})",
+        "artifactUri": f"artifact://{a.id}",
+        # Reference in message content; the frontend resolves artifact:// links.
+        "markdown": f"[{_link_text(name)}](artifact://{a.id})",
     }
 
 
@@ -79,7 +88,7 @@ async def upload_artifact(
     )
     db.add(row)
     await db.commit()
-    return _payload(row)
+    return _payload(row, file.filename)
 
 
 @router.get("/guilds/{guild_id}/artifacts/{artifact_id}")

@@ -3,7 +3,7 @@
 Agents are told (see ``prompt_note``) to save images under ``artifact_dir(task_id)``, which
 lives outside the git worktree so it never dirties it. After the run the worker uploads each
 file through the backend ``POST /guilds/{guild}/artifacts`` API (credentials stay on the
-backend) and appends markdown image links to the task's completion message.
+backend) and appends ``[name](artifact://<id>)`` markdown links to the task's completion message.
 """
 
 from __future__ import annotations
@@ -33,8 +33,9 @@ def prompt_note(task_id: str) -> str:
     return (
         "\n\nSCREENSHOTS: if you capture screenshots or images (e.g. from browser automation) "
         f"save them as PNG/JPG/WebP/GIF files (max 10MB) in {d}. They are uploaded "
-        "automatically and linked in your completion message; to embed one in a PR "
-        "description use the markdown image link printed in that message."
+        "automatically and linked in your completion message as "
+        "[name](artifact://<id>) markdown links. Do not put artifact:// links in "
+        "commit messages or PR descriptions; GitHub cannot resolve them."
     )
 
 
@@ -78,5 +79,5 @@ async def upload_task_artifacts(
 def append_markdown(text: str, artifacts: list[dict]) -> str:
     if not artifacts:
         return text
-    links = "\n".join(a.get("markdown") or f"![screenshot]({a['url']})" for a in artifacts)
+    links = "\n".join(a.get("markdown") or f"[screenshot](artifact://{a['id']})" for a in artifacts)
     return f"{text}\n\n**Screenshots:**\n{links}".lstrip()

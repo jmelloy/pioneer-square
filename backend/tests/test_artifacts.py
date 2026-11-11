@@ -59,3 +59,10 @@ def test_upload_route(client, monkeypatch):
         c.post("/guilds/art1/artifacts", files={"file": ("s.png", PNG, "image/png")}).status_code
         == 401
     )
+
+
+def test_markdown_reference_uses_artifact_scheme():
+    from routes.artifacts import _link_text
+
+    assert _link_text("a/b/shot [1].png") == "shot 1.png"
+    assert _link_text(None) == "artifact"

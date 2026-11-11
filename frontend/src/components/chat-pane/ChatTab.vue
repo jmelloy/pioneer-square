@@ -50,6 +50,7 @@
             msgSender(msg as ChatMessage) !== 'user' && msgSender(msg as ChatMessage) !== 'system'
           "
           class="msg-content msg-content--markdown"
+          v-artifacts="guildStore.currentGuild?.id"
           v-html="renderMarkdown((msg as ChatMessage).content)"
         ></span>
         <span v-else class="msg-content">{{ (msg as ChatMessage).content }}</span>
@@ -89,6 +90,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue'
 import { renderMarkdown } from '../../utils/markdown'
+import { vArtifacts } from '../../utils/artifacts'
 import { useGuildStore } from '../../stores/guild'
 import { useUiStore } from '../../stores/ui'
 import { useConversationsStore } from '../../stores/conversations'
