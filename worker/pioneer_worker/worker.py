@@ -1429,18 +1429,17 @@ class Worker:
 
                 elif mtype == "task-finalize":
                     # The worker no longer parks waiting for finalize; foreman
-                    # drives lifecycle now. Treat finalize as a hint that the
-                    # task is closed and the worktree can be released early.
+                    # drives lifecycle now. Retain worktrees for recovery until
+                    # the TTL sweeper runs; they may contain unpublished work.
                     if msg.get("workerId") != self.cfg.worker_id:
                         continue
                     task_id = msg.get("taskId")
                     if not task_id:
                         continue
                     with contextlib.suppress(Exception):
-                        await self._emit(f"Finalize signal for {task_id} — releasing worktree")
-                    logger.info("Finalize signal for task %s — releasing worktree", task_id)
+                        await self._emit(f"Finalize signal for {task_id} — worktree retained")
+                    logger.info("Finalize signal for task %s — worktree retained", task_id)
                     self._clear_cancelled(task_id)
-                    await self._release_task_worktrees(task_id)
 
                 elif mtype == "task-cancel":
                     if msg.get("workerId") != self.cfg.worker_id:
@@ -1551,10 +1550,6 @@ class Worker:
     def _touch_task_worktrees(self, task_id: str) -> None:
         """Refresh the activity timestamp for a task's worktrees."""
         self.worktrees.touch(task_id)
-
-    async def _release_task_worktrees(self, task_id: str) -> None:
-        """Remove all worktrees for a task immediately and forget them."""
-        await self.worktrees.release(task_id)
 
     async def _refresh_github_repos(self) -> None:
         """Fetch repos accessible to the GitHub token and update the registered list.
@@ -2099,7 +2094,6 @@ class Worker:
                 await self._task_update(
                     task_id, agent=agent, state="cancelled", finishedAt=_now_iso()
                 )
-                await self._release_task_worktrees(task_id)
                 await self._set_state("idle", agent)
                 return
             if not setup_result.ok:
@@ -2219,9 +2213,11 @@ class Worker:
                     '  pioneer publish -m "<concise checkpoint message>"\n'
                     "This stages all non-ignored work. When App signing is configured, "
                     "it publishes one verified checkpoint combining unpublished local commits. "
-                    "If App signing is unavailable, it logs a warning and uses normal unsigned Git. "
+                    "If App signing is unavailable or GitHub does not verify the App commit, "
+                    "it logs a warning and uses normal unsigned Git. "
                     "Do NOT use git commit or git push directly to publish task work. "
-                    "Report authorization, verification, or branch-conflict errors; do not bypass them."
+                    "Report authorization, identity/tree verification, or branch-conflict errors; "
+                    "do not bypass them."
                 )
             result = RunResult(False, StopReason.NO_EVENTS)
             success = result.success
@@ -2302,7 +2298,6 @@ class Worker:
                     await self._task_update(
                         task_id, agent=agent, state="cancelled", finishedAt=_now_iso()
                     )
-                    await self._release_task_worktrees(task_id)
                 finally:
                     self._interactive_queues.pop(task_id, None)
                     agent.current_claude = None
@@ -2346,7 +2341,6 @@ class Worker:
                     await self._task_update(
                         task_id, agent=agent, state="cancelled", finishedAt=_now_iso()
                     )
-                    await self._release_task_worktrees(task_id)
                     await self._set_state("idle", agent)
                     return
 
@@ -2361,7 +2355,6 @@ class Worker:
                     await self._task_update(
                         task_id, agent=agent, state="cancelled", finishedAt=_now_iso()
                     )
-                    await self._release_task_worktrees(task_id)
                     await self._set_state("idle", agent)
                     return
 

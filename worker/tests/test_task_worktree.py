@@ -252,6 +252,129 @@ async def test_acquire_followup_reuse_pulls_latest_from_origin(tmp_path, origin,
     assert (Path(_primary(second)) / "feature.txt").read_text() == "v2"
 
 
+@pytest.mark.parametrize("mode", ["followup", "review_pr"])
+@pytest.mark.parametrize("change", ["modified", "staged", "untracked", "status-failure"])
+async def test_acquire_reuse_preserves_local_work(tmp_path, origin, repo_path, mode, change):
+    from unittest.mock import AsyncMock, patch
+
+    from pioneer_worker import git_ops
+
+    _push_new_branch(origin, "feature/dirty", "feature.txt", "v1")
+    tw = _tw(tmp_path)
+    first = await tw.acquire(
+        "t-dirty", [("acme/widgets", str(repo_path))], mode="followup", branch="feature/dirty"
+    )
+    wt = Path(_primary(first))
+    if change in ("modified", "staged", "status-failure"):
+        (wt / "feature.txt").write_text("uncommitted edit")
+    if change == "staged":
+        _git(["add", "feature.txt"], cwd=str(wt))
+    if change == "untracked":
+        # reset --hard would overwrite this untracked file with the remote version.
+        (wt / "new.txt").write_text("local untracked work")
+        _git(["checkout", "feature/dirty"], cwd=str(origin))
+        (origin / "new.txt").write_text("remote version")
+        _git(["add", "new.txt"], cwd=str(origin))
+        _git(["commit", "-m", "add remote file"], cwd=str(origin))
+
+    run_git = git_ops.run_git
+
+    async def checked_git(args, **kwargs):
+        if change == "status-failure" and args[:1] == ["status"]:
+            return 1, "", "status failed"
+        return await run_git(args, **kwargs)
+
+    emit = AsyncMock()
+    with patch.object(git_ops, "run_git", side_effect=checked_git):
+        second = await tw.acquire(
+            "t-dirty",
+            [("acme/widgets", str(repo_path))],
+            mode=mode,
+            branch="feature/dirty",
+            emit=emit,
+        )
+
+    assert second.primary == first.primary
+    if change == "untracked":
+        assert (wt / "new.txt").read_text() == "local untracked work"
+    else:
+        assert (wt / "feature.txt").read_text() == "uncommitted edit"
+    assert any("keeping local state" in call.args[0] for call in emit.call_args_list)
+
+
+@pytest.mark.parametrize("signal", ["cancel", "sentinel", "finalize"])
+async def test_worker_retains_uncommitted_files(tmp_path, repo_path, signal):
+    from unittest.mock import AsyncMock, patch
+
+    from pioneer_worker.config import Config
+    from pioneer_worker.repo_setup import SetupConfig
+    from pioneer_worker.worker import _CANCEL_SENTINEL, Worker
+
+    worker = Worker(
+        Config(
+            backend_url="ws://localhost:8000",
+            guild_id="test-guild",
+            worker_id="w-test",
+            work_dir=str(tmp_path / "worker"),
+            repos=["acme/widgets"],
+            max_agents=1,
+        )
+    )
+    worker._send = AsyncMock()
+    worker._task_update = AsyncMock()
+    worker._task_github_token = AsyncMock(return_value=None)
+    worker._task_commit_identity = AsyncMock(return_value=(None, None))
+    task_id = "t-retained"
+    acquired = await worker.worktrees.acquire(
+        task_id, [("acme/widgets", str(repo_path))], mode="fresh", branch="feature/retained"
+    )
+    wt = Path(_primary(acquired))
+    (wt / "README.md").write_text("uncommitted edit")
+    (wt / "new.txt").write_text("untracked work")
+    _git(["add", "README.md"], cwd=str(wt))
+
+    async def cancel_runner(*args, **kwargs):
+        if signal == "cancel":
+            worker._mark_cancelled(task_id)
+        else:
+            await worker._redirect_queues[task_id].put(_CANCEL_SENTINEL)
+        return False, "interrupted", "", None
+
+    if signal == "finalize":
+
+        async def messages():
+            yield {"type": "task-finalize", "workerId": "w-test", "taskId": task_id}
+
+        worker._joined = True
+        worker.ws.messages = messages
+        await worker._listen()
+    else:
+        with (
+            patch(
+                "pioneer_worker.worker.git_ops.ensure_repo",
+                new=AsyncMock(return_value=str(repo_path)),
+            ),
+            patch("pioneer_worker.worker.publish.check_access", new=AsyncMock()),
+            patch(
+                "pioneer_worker.worker.repo_setup.install_mise", new=AsyncMock(return_value=True)
+            ),
+            patch("pioneer_worker.worker.repo_setup.toolchain_env", new=AsyncMock(return_value={})),
+            patch(
+                "pioneer_worker.worker.repo_setup.fetch_setup_config",
+                new=AsyncMock(return_value=SetupConfig()),
+            ),
+            patch("pioneer_worker.worker.claude_runner.run_claude_auto", new=cancel_runner),
+        ):
+            await worker._execute_task(
+                {"id": task_id, "description": "work", "name": "work"}, worker.agents[0]
+            )
+        assert worker.agents[0].state == "idle"
+
+    assert task_id in worker.worktrees
+    assert (wt / "README.md").read_text() == "uncommitted edit"
+    assert (wt / "new.txt").read_text() == "untracked work"
+
+
 # ── release ──────────────────────────────────────────────────────────────────
 
 

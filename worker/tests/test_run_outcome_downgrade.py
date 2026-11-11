@@ -38,7 +38,6 @@ async def _run_with_push(tmp_path, push_result: str, *, dirty: bool = False) -> 
     worker = Worker(_make_cfg(work_dir=str(tmp_path), repos=["org/myrepo"]))
     worker._send = AsyncMock()
     worker._task_update = AsyncMock()
-    worker._release_task_worktrees = AsyncMock()  # type: ignore[assignment]
 
     task = {"id": "t-outcome", "description": "do something", "name": "do something"}
     dirty_status = (0, "M some_file.py\n" if dirty else "", "")

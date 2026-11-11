@@ -226,11 +226,11 @@ async def test_existing_local_commits_become_one_checkpoint(publisher):
     assert git(root, "reflog", "show", "--format=%H", "HEAD").splitlines()[1] == old
 
 
-@pytest.mark.parametrize("failure", ["verified", "wrong_tree", "race"])
+@pytest.mark.parametrize("failure", ["wrong_tree", "race"])
 async def test_rejects_invalid_publication_without_changing_local_head(publisher, failure):
     root, server, context = publisher
     (root / "original.txt").write_text("changed")
-    setattr(server, failure, False if failure == "verified" else True)
+    setattr(server, failure, True)
     with pytest.raises(publish.PublishError):
         await publish.publish_checkpoint(root, context, "must fail")
     assert git(root, "rev-parse", "HEAD") == server.base
@@ -369,11 +369,15 @@ async def test_unavailable_signing_logs_and_publishes_unsigned(
     assert git(root, "status", "--porcelain") == ""
 
 
+@pytest.mark.parametrize("failure", ["missing-config", "unverified-commit"])
 async def test_unsigned_fallback_pushes_real_git_and_needs_no_preconfigured_identity(
-    publisher, monkeypatch, tmp_path_factory
+    publisher, monkeypatch, tmp_path_factory, caplog, failure
 ):
     root, server, context = publisher
-    server.credentials_status = 503
+    if failure == "missing-config":
+        server.credentials_status = 503
+    else:
+        server.verified = False
     git(root, "config", "--unset", "user.name")
     git(root, "config", "--unset", "user.email")
     remote = tmp_path_factory.mktemp("unsigned-remote") / "repo.git"
@@ -394,6 +398,35 @@ async def test_unsigned_fallback_pushes_real_git_and_needs_no_preconfigured_iden
     )
     assert await publish.publish_checkpoint(root, context, "no duplicate") == "nothing"
     assert git(root, "status", "--porcelain") == ""
+    assert "publishing an unsigned Git checkpoint" in caplog.text
+    assert not any(path == "/graphql" for _, path, _ in server.calls)
+
+
+@pytest.mark.parametrize("invalid", ["committer", "author", "tree"])
+async def test_unverified_commit_with_invalid_content_does_not_fall_back(
+    publisher, monkeypatch, invalid
+):
+    from unittest.mock import AsyncMock
+
+    root, server, context = publisher
+    server.verified = False
+    (root / "original.txt").write_text("must not publish")
+
+    def corrupt_commit():
+        commit = next(iter(server.commits.values()))
+        if invalid == "tree":
+            commit["commit"]["tree"]["sha"] = "0" * 40
+        else:
+            commit[invalid]["login"] = "someone-else"
+
+    server.on_verify = corrupt_commit
+    fallback = AsyncMock()
+    monkeypatch.setattr(publish, "_publish_unsigned", fallback)
+    with pytest.raises(publish.PublishError):
+        await publish.publish_checkpoint(root, context, "invalid")
+    fallback.assert_not_called()
+    assert server.remote is None
+    assert git(root, "rev-parse", "HEAD") == server.base
 
 
 async def test_unavailable_signing_with_no_changes_does_not_create_empty_branch(publisher):

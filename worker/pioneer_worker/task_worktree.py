@@ -147,10 +147,25 @@ class TaskWorktree:
                 if emit:
                     await emit(f"Reusing worktree {repo_name}", level=_LEVEL_WORKER)
                 if mode in ("followup", "review_pr"):
-                    # Pull latest so we don't clobber commits pushed since the
-                    # last follow-up or by other workers.
-                    await git_ops.run_git(["fetch", "origin", branch], cwd=wt, token=token)
-                    await git_ops.run_git(["reset", "--hard", f"origin/{branch}"], cwd=wt)
+                    # Retained worktrees may contain unpublished edits; fail closed.
+                    rc, status, _ = await git_ops.run_git(["status", "--porcelain"], cwd=wt)
+                    if rc != 0 or status.strip():
+                        logger.warning(
+                            "Task %s: worktree %s is dirty or status failed; "
+                            "skipping reset to origin/%s",
+                            task_id,
+                            wt,
+                            branch,
+                        )
+                        if emit:
+                            await emit(
+                                f"Worktree {repo_name} is dirty or status failed; "
+                                "keeping local state (not reset to origin)",
+                                level=_LEVEL_WORKER,
+                            )
+                    else:
+                        await git_ops.run_git(["fetch", "origin", branch], cwd=wt, token=token)
+                        await git_ops.run_git(["reset", "--hard", f"origin/{branch}"], cwd=wt)
                 entries.append(WorktreeEntry(repo_full, repo_path, wt))
                 continue
 

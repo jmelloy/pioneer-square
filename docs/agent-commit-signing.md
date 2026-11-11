@@ -41,10 +41,11 @@ pioneer publish -m "Describe this checkpoint"
 ```
 
 App signing is optional: missing/unavailable App credentials (including an unset
-guild installation ID or an unreachable credential service) log a warning and
-fall back to ordinary unsigned Git commits/pushes with existing task credentials.
-Authentication/authorization errors, invalid signatures, tree mismatches, and
-branch conflicts are not signing-availability errors and do not trigger fallback.
+guild installation ID or an unreachable credential service), or GitHub not verifying
+the App commit, log a warning and fall back to ordinary unsigned Git commits/pushes
+with existing task credentials. The unverified API commit is not published.
+Authentication/authorization errors, identity or tree mismatches, and branch
+conflicts remain fatal and do not trigger fallback.
 Repository rules can still reject unsigned pushes; this feature does not bypass
 them.
 
