@@ -49,7 +49,7 @@ def commit_env(context: PublishContext) -> dict[str, str]:
 
 
 class SigningUnavailable(PublishError):
-    """App credentials are unavailable; ordinary unsigned publication is allowed."""
+    """App signing is unavailable or unverified; unsigned publication is allowed."""
 
 
 @dataclass(frozen=True)
@@ -346,6 +346,13 @@ async def _publish(cwd: Path, context: PublishContext, message: str) -> str:
             verification = commit["commit"]["verification"]
             author = (commit.get("author") or {}).get("login")
             committer = (commit.get("committer") or {}).get("login")
+            # Signing may degrade to unsigned Git, but identity/content must still match.
+            if committer not in (credentials["username"], WEB_FLOW):
+                raise PublishError("Commit committer does not match the configured GitHub App")
+            if not context.author and author != credentials["username"]:
+                raise PublishError("Commit author does not match the configured GitHub App")
+            if commit["commit"]["tree"]["sha"] != tree:
+                raise PublishError("App commit does not contain the expected snapshot")
             if not verification["verified"] or verification["reason"] != "valid":
                 logger.warning(
                     "GitHub did not verify %s: reason=%s author=%s committer=%s "
@@ -357,12 +364,7 @@ async def _publish(cwd: Path, context: PublishContext, message: str) -> str:
                     context.author,
                     credentials["username"],
                 )
-                raise PublishError("GitHub did not verify the App commit; refusing publication")
-            # GitHub signs as web-flow (or the App). Without a user author the App authors.
-            if committer not in (credentials["username"], WEB_FLOW):
-                raise PublishError("Commit committer does not match the configured GitHub App")
-            if not context.author and author != credentials["username"]:
-                raise PublishError("Commit author does not match the configured GitHub App")
+                raise SigningUnavailable("GitHub did not verify the App commit")
             return commit
 
         async def sync_head(sha):
@@ -471,9 +473,7 @@ async def _publish(cwd: Path, context: PublishContext, message: str) -> str:
             made.get("sha"),
             made.get("verification"),
         )
-        commit = await verified_commit(made["sha"])
-        if commit["commit"]["tree"]["sha"] != tree:
-            raise PublishError("App commit does not contain the expected snapshot")
+        await verified_commit(made["sha"])
         # updateRefs adds exact compare-and-swap semantics missing from REST ref updates.
         update = await api(
             "POST",

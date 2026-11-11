@@ -1,9 +1,4 @@
-"""Tests that cancelled tasks release their worktrees immediately.
-
-On cancellation the worker must NOT defer worktree removal to the TTL sweeper;
-it must call _release_task_worktrees right away so disk space is reclaimed and
-a fresh assignment to the same worktree path is not confused by stale state.
-"""
+"""Cancelled tasks retain worktrees for recovery until the TTL sweeper runs."""
 
 from __future__ import annotations
 
@@ -33,10 +28,8 @@ def _make_cfg(**kwargs) -> Config:
 
 
 @pytest.mark.asyncio
-async def test_cancelled_task_releases_worktrees_immediately(tmp_path):
-    """When _cancelled_tasks contains the task id after the runner exits,
-    _release_task_worktrees must be called before the slot returns to idle.
-    """
+async def test_cancelled_task_retains_worktrees(tmp_path):
+    """Cancellation must not discard uncommitted work."""
     worker = Worker(_make_cfg(work_dir=str(tmp_path), repos=["org/myrepo"]))
     worker._send = AsyncMock()
     worker._task_update = AsyncMock()
@@ -44,12 +37,7 @@ async def test_cancelled_task_releases_worktrees_immediately(tmp_path):
     task_id = "t-cancel-wt1"
     agent = worker.agents[0]
 
-    released: list[str] = []
-
-    async def tracking_release(tid: str) -> None:
-        released.append(tid)
-
-    worker._release_task_worktrees = tracking_release  # type: ignore[assignment]
+    worker.worktrees.release = AsyncMock()  # type: ignore[method-assign]
 
     # Mark the task cancelled so the post-run check fires immediately.
     worker._mark_cancelled(task_id)
@@ -70,15 +58,14 @@ async def test_cancelled_task_releases_worktrees_immediately(tmp_path):
     ):
         await worker._execute_task(task, agent)
 
-    assert task_id in released, "worktrees must be released immediately on cancellation"
+    worker.worktrees.release.assert_not_called()
+    assert task_id in worker.worktrees
     assert agent.state == "idle", "slot must return to idle after cancellation"
 
 
 @pytest.mark.asyncio
-async def test_cancel_sentinel_releases_worktrees_immediately(tmp_path):
-    """When _CANCEL_SENTINEL lands in the redirect queue after the runner
-    exits, _release_task_worktrees must be called before the slot returns to idle.
-    """
+async def test_cancel_sentinel_retains_worktrees(tmp_path):
+    """A cancel sentinel must leave the task's worktrees registered."""
     worker = Worker(_make_cfg(work_dir=str(tmp_path), repos=["org/myrepo"]))
     worker._send = AsyncMock()
     worker._task_update = AsyncMock()
@@ -86,12 +73,7 @@ async def test_cancel_sentinel_releases_worktrees_immediately(tmp_path):
     task_id = "t-cancel-wt2"
     slot = worker.agents[0]
 
-    released: list[str] = []
-
-    async def tracking_release(tid: str) -> None:
-        released.append(tid)
-
-    worker._release_task_worktrees = tracking_release  # type: ignore[assignment]
+    worker.worktrees.release = AsyncMock()  # type: ignore[method-assign]
 
     task = {"id": task_id, "description": "do something", "name": "do something"}
 
@@ -113,7 +95,8 @@ async def test_cancel_sentinel_releases_worktrees_immediately(tmp_path):
     ):
         await worker._execute_task(task, slot)
 
-    assert task_id in released, "worktrees must be released immediately on cancel sentinel"
+    worker.worktrees.release.assert_not_called()
+    assert task_id in worker.worktrees
     assert slot.state == "idle", "slot must return to idle after cancel sentinel"
 
 
@@ -128,7 +111,6 @@ async def test_cancellation_is_cleared_once_honoured(tmp_path):
     worker = Worker(_make_cfg(work_dir=str(tmp_path), repos=["org/myrepo"]))
     worker._send = AsyncMock()
     worker._task_update = AsyncMock()
-    worker._release_task_worktrees = AsyncMock()  # type: ignore[assignment]
 
     task_id = "t-cancel-clear"
     task = {"id": task_id, "description": "do something", "name": "do something"}

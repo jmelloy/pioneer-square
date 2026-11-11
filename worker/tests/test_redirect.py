@@ -152,25 +152,17 @@ async def test_followup_message_enqueues_task_for_idle_worker():
     assert queued["description"] == "original task description"
 
 
-async def test_finalize_message_releases_worktrees_for_task():
-    """task-finalize is now a hint that the worktree can be released early —
-    it must NOT block any in-memory loop, just trigger cleanup of the
-    registered worktrees for that task.
-    """
+async def test_finalize_message_retains_worktrees_for_task():
+    """Finalization must not discard work that has not been published."""
     worker = Worker(_make_cfg())
     worker._joined = True
     worker._send = AsyncMock()
 
     task_id = "t-finalize1"
 
-    released: list[str] = []
-
-    async def fake_release(tid: str) -> None:
-        released.append(tid)
-
-    worker._release_task_worktrees = fake_release  # type: ignore[assignment]
+    worker.worktrees.release = AsyncMock()  # type: ignore[method-assign]
 
     msg = {"type": "task-finalize", "workerId": "w-test01", "taskId": task_id}
     await _pump_one_message(worker, msg)
 
-    assert released == [task_id]
+    worker.worktrees.release.assert_not_called()
