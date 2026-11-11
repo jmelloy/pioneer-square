@@ -11,6 +11,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -25,6 +26,25 @@ class PublishError(Exception):
     """Publication failed; local work must be preserved."""
 
 
+def _pair(name: str | None, email: str | None) -> tuple[str, str] | None:
+    return (name, email) if name and email else None
+
+
+def _api_identity(pair: tuple[str, str] | None) -> dict | None:
+    if not pair:
+        return None
+    return {"name": pair[0], "email": pair[1], "date": datetime.now(UTC).isoformat()}
+
+
+def commit_env(context: PublishContext) -> dict[str, str]:
+    """GIT_AUTHOR_*/GIT_COMMITTER_* for the author (user) + committer (bot) pair."""
+    env: dict[str, str] = {}
+    for prefix, pair in (("AUTHOR", context.author), ("COMMITTER", context.committer)):
+        if pair:
+            env[f"GIT_{prefix}_NAME"], env[f"GIT_{prefix}_EMAIL"] = pair
+    return env
+
+
 class SigningUnavailable(PublishError):
     """App credentials are unavailable; ordinary unsigned publication is allowed."""
 
@@ -36,6 +56,10 @@ class PublishContext:
     task_id: str
     auth_token: str = field(repr=False)
     branch: str
+    # Commit identity: ``author`` is the human who triggered the task and
+    # ``committer`` is the GitHub App bot, each a (name, email) pair or None.
+    author: tuple[str, str] | None = None
+    committer: tuple[str, str] | None = None
 
     @classmethod
     def from_env(cls) -> PublishContext:
@@ -52,9 +76,24 @@ class PublishContext:
             )
         values = [os.environ[key] for key in keys]
         values[0] = values[0].replace("wss://", "https://").replace("ws://", "http://")
-        return cls(*values)
+        return cls(
+            *values,
+            author=_pair(
+                os.environ.get("PIONEER_AUTHOR_NAME"), os.environ.get("PIONEER_AUTHOR_EMAIL")
+            ),
+            committer=_pair(
+                os.environ.get("PIONEER_COMMITTER_NAME"), os.environ.get("PIONEER_COMMITTER_EMAIL")
+            ),
+        )
 
     def environment(self) -> dict[str, str]:
+        env = self._base_environment()
+        for prefix, pair in (("AUTHOR", self.author), ("COMMITTER", self.committer)):
+            if pair:
+                env[f"PIONEER_{prefix}_NAME"], env[f"PIONEER_{prefix}_EMAIL"] = pair
+        return env
+
+    def _base_environment(self) -> dict[str, str]:
         return dict(
             zip(
                 (
@@ -70,8 +109,14 @@ class PublishContext:
         )
 
 
-async def _git(args: list[str], *, cwd: Path, token: str | None = None) -> bytes:
-    auth = git_ops._auth_env(token)
+async def _git(
+    args: list[str],
+    *,
+    cwd: Path,
+    token: str | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> bytes:
+    auth = {**git_ops._auth_env(token), **(extra_env or {})}
     proc = await asyncio.create_subprocess_exec(
         "git",
         *args,
@@ -212,6 +257,7 @@ async def _publish_unsigned(
                 message,
             ],
             cwd=cwd,
+            extra_env=commit_env(context),
         )
     try:
         base = (
@@ -250,6 +296,8 @@ async def _publish(cwd: Path, context: PublishContext, message: str) -> str:
     async with httpx.AsyncClient(timeout=60) as client:
         credentials = await _credentials(client, context, repo)
         token = credentials["access_token"]
+        # The App slug is "<name>[bot]"; its noreply email links commits to the bot.
+        committer = context.committer
         headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
@@ -289,8 +337,8 @@ async def _publish(cwd: Path, context: PublishContext, message: str) -> str:
             verification = commit["commit"]["verification"]
             if not verification["verified"] or verification["reason"] != "valid":
                 raise PublishError("GitHub did not verify the App commit; refusing publication")
-            if (commit.get("author") or {}).get("login") != credentials["username"]:
-                raise PublishError("Commit author does not match the configured GitHub App")
+            if (commit.get("committer") or {}).get("login") != credentials["username"]:
+                raise PublishError("Commit committer does not match the configured GitHub App")
             return commit
 
         async def sync_head(sha):
@@ -385,7 +433,14 @@ async def _publish(cwd: Path, context: PublishContext, message: str) -> str:
         made = await api(
             "POST",
             f"/repos/{repo}/git/commits",
-            json={"tree": tree, "parents": [parent], "message": message.rstrip() + "\n\n" + marker},
+            json={
+                "tree": tree,
+                "parents": [parent],
+                "message": message.rstrip() + "\n\n" + marker,
+                # Triggering user authors; the App bot commits (and signs).
+                **({"author": _api_identity(context.author)} if context.author else {}),
+                **({"committer": _api_identity(committer)} if context.author and committer else {}),
+            },
         )
         commit = await verified_commit(made["sha"])
         if commit["commit"]["tree"]["sha"] != tree:

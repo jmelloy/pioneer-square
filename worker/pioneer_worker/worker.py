@@ -413,6 +413,33 @@ class Worker:
             logger.warning("Could not fetch task GitHub token: %s", exc)
         return self.cfg.github_token
 
+    async def _task_commit_identity(
+        self, task_id: str
+    ) -> tuple[tuple[str, str] | None, tuple[str, str] | None]:
+        """Fetch (author, committer) for *task_id*: triggering user + App bot.
+
+        Best-effort; ``(None, None)`` leaves commits on the default identity.
+        """
+        try:
+            async with await self._http(authed=True) as client:
+                resp = await client.get(
+                    "/auth/github/task-identity",
+                    params={"guild_id": self.cfg.guild_id, "task_id": task_id},
+                )
+            if resp.status_code != 200:
+                logger.warning("No task commit identity (status %d)", resp.status_code)
+                return None, None
+            data = resp.json()
+        except Exception as exc:
+            logger.warning("Could not fetch task commit identity: %s", exc)
+            return None, None
+
+        def pair(key: str) -> tuple[str, str] | None:
+            v = data.get(key) or {}
+            return (v["name"], v["email"]) if v.get("name") and v.get("email") else None
+
+        return pair("author"), pair("committer")
+
     def _apply_local_env_overrides(self) -> None:
         """Apply shared env from pioneer-worker.toml to this worker process."""
         for key, value in self.cfg.env.items():
@@ -1995,8 +2022,15 @@ class Worker:
             return
 
         await self._task_update(task_id, agent=agent, branch=branch, worktreePath=primary_wt)
+        author, committer = await self._task_commit_identity(task_id)
         publish_context = publish.PublishContext(
-            self.cfg.http_url, self.cfg.guild_id, task_id, self.cfg.auth_token or "", branch
+            self.cfg.http_url,
+            self.cfg.guild_id,
+            task_id,
+            self.cfg.auth_token or "",
+            branch,
+            author=author,
+            committer=committer,
         )
         if not is_review:
             for entry in acquired.entries:
