@@ -107,6 +107,7 @@ async def test_on_ws_reconnect_resends_join_and_register():
     cfg.max_agents = 2
     worker = Worker(cfg)
     worker._joined = True  # simulate post-auth state
+    worker._slots_ready = True
     sent: list[dict] = []
     worker._send = AsyncMock(side_effect=lambda p: sent.append(p))
 
@@ -117,6 +118,20 @@ async def test_on_ws_reconnect_resends_join_and_register():
     assert len(join_msgs) == 2, f"Expected one join per slot, got {sent}"
     assert len(register_msgs) == 1, f"Expected one worker-register, got {sent}"
     assert {m["agentId"] for m in join_msgs} == {s.agent_id for s in worker.agents}
+
+
+async def test_worker_register_held_until_slots_ready():
+    """worker-register triggers the Foreman's worker-online; it must not go out
+    from _join() or a reconnect while slots are still initializing."""
+    worker = Worker(_make_cfg())
+    worker._joined = True  # joined, but startup hasn't finished readying slots
+    sent: list[dict] = []
+    worker._send = AsyncMock(side_effect=lambda p: sent.append(p))
+
+    await worker._join()
+    await worker._on_ws_reconnect()
+
+    assert sent and not [m for m in sent if m.get("type") == "worker-register"], sent
 
 
 async def test_join_assigns_distinct_names_per_slot():
