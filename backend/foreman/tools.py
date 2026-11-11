@@ -39,6 +39,7 @@ from foreman.tools_schema import (
     FOREMAN_TOOLS,  # noqa: F401 — re-exported for test compatibility
 )
 from github_app_auth import get_app_installation_token, get_app_slug
+from guild_settings import get_guild_pre_agents_prompt
 from lock_service import LockService
 from models import (
     Agent,
@@ -1921,6 +1922,7 @@ async def _handle_assign_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
                         prUrl=effective_pr_url,
                         headSha=effective_head_sha,
                         repos=repos,
+                        guildPreAgentsPrompt=await get_guild_pre_agents_prompt(guild_id),
                     ).model_dump(by_alias=True, exclude_none=True),
                 )
                 _spawn_discord_task_assigned(
@@ -2014,6 +2016,7 @@ async def _handle_assign_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
                         prUrl=effective_pr_url,
                         headSha=effective_head_sha,
                         repos=repos,
+                        guildPreAgentsPrompt=await get_guild_pre_agents_prompt(guild_id),
                     ).model_dump(by_alias=True, exclude_none=True),
                 )
                 _spawn_discord_task_assigned(

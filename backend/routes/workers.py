@@ -23,6 +23,7 @@ from database import get_db_dep
 from events import broadcast_msg, emit_terminal_line
 from fastapi import APIRouter, Depends, HTTPException
 from foreman.conversation_service import resolve_conversation_id
+from guild_settings import get_guild_pre_agents_prompt
 from models import Task, Worker, live_tasks_filter
 from pydantic import BaseModel, field_validator
 from spawn_config import SpawnLayer, get_spawn_row, resolve_spawn, row_to_layer, upsert_spawn_row
@@ -430,6 +431,7 @@ async def assign_task(
             prNumber=data.pr_number,
             prRepo=data.pr_repo,
             repos=data.repos,
+            guildPreAgentsPrompt=await get_guild_pre_agents_prompt(guild_id),
         ),
     )
 

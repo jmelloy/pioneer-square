@@ -17,6 +17,7 @@ from database import get_db_dep
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException
 from foreman.conversation_service import resolve_conversation_id
+from guild_settings import get_guild_pre_agents_prompt
 from models import Agent, Task
 from sqlalchemy import update
 from sqlmodel import col, select
@@ -94,6 +95,7 @@ async def start_agent_run(
             model=req.model,
             provider=req.provider,
             phase="execute",
+            guildPreAgentsPrompt=await get_guild_pre_agents_prompt(guild_id),
         ),
     )
     return {"status": "started", "agentId": agent_id, "taskId": task_id, "tool": tool}

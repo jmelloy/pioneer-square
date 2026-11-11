@@ -37,6 +37,7 @@ from foreman.github_url_parser import parse_github_urls
 from foreman.proxy import fail_pending_for_websocket, resolve_foreman_api_response
 from foreman.runner import ensure_poll_loop, reset_foreman_poll
 from foreman.tools import maybe_post_plan_comment
+from guild_settings import get_guild_pre_agents_prompt
 from lock_service import LockService
 from models import Agent, Message, Task, TaskEvent, TaskLog, User, Worker
 from pydantic import ValidationError
@@ -412,6 +413,7 @@ async def handle_join(ctx: WSContext, msg: JoinMsg) -> None:
                         issueRepo=pt.issue_repo,
                         prNumber=pt.pr_number,
                         prRepo=pt.pr_repo,
+                        guildPreAgentsPrompt=await get_guild_pre_agents_prompt(ctx.guild_id),
                     ),
                 )
     joined_msg = AgentJoinedMsg(
