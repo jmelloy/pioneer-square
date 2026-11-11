@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import secrets
 import urllib.parse
@@ -47,6 +48,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from task_lifecycle import TERMINAL_STATES
 from utils import generate_guild_id
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -247,6 +249,14 @@ async def get_task_identity(
     if user and not user.is_bot:
         author = _user_git_identity(user)
     committer = get_app_bot_identity()
+    logger.info(
+        "Task %s commit identity: author=%s committer=%s (user=%s is_bot=%s)",
+        task_id,
+        author,
+        committer,
+        task.user_id,
+        user.is_bot if user else None,
+    )
     return {
         "author": {"name": author[0], "email": author[1]} if author else None,
         "committer": {"name": committer[0], "email": committer[1]} if committer else None,

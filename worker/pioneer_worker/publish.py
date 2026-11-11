@@ -21,6 +21,9 @@ from . import git_ops
 
 logger = logging.getLogger(__name__)
 
+# GitHub's committer for commits it signs on behalf of API callers.
+WEB_FLOW = "web-flow"
+
 
 class PublishError(Exception):
     """Publication failed; local work must be preserved."""
@@ -296,8 +299,14 @@ async def _publish(cwd: Path, context: PublishContext, message: str) -> str:
     async with httpx.AsyncClient(timeout=60) as client:
         credentials = await _credentials(client, context, repo)
         token = credentials["access_token"]
-        # The App slug is "<name>[bot]"; its noreply email links commits to the bot.
-        committer = context.committer
+        logger.info(
+            "Publishing %s@%s as %s: author=%s (committer chosen by GitHub; expires %s)",
+            repo,
+            context.branch,
+            credentials["username"],
+            context.author,
+            credentials.get("expires_at"),
+        )
         headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
@@ -335,12 +344,25 @@ async def _publish(cwd: Path, context: PublishContext, message: str) -> str:
         async def verified_commit(sha):
             commit = await api("GET", f"/repos/{repo}/commits/{sha}")
             verification = commit["commit"]["verification"]
+            author = (commit.get("author") or {}).get("login")
+            committer = (commit.get("committer") or {}).get("login")
             if not verification["verified"] or verification["reason"] != "valid":
+                logger.warning(
+                    "GitHub did not verify %s: reason=%s author=%s committer=%s "
+                    "requested_author=%s app=%s",
+                    sha,
+                    verification.get("reason"),
+                    author,
+                    committer,
+                    context.author,
+                    credentials["username"],
+                )
                 raise PublishError("GitHub did not verify the App commit; refusing publication")
-            # With a user author the App must be the committer; otherwise the App is the author.
-            role = "committer" if context.author else "author"
-            if (commit.get(role) or {}).get("login") != credentials["username"]:
-                raise PublishError(f"Commit {role} does not match the configured GitHub App")
+            # GitHub signs as web-flow (or the App). Without a user author the App authors.
+            if committer not in (credentials["username"], WEB_FLOW):
+                raise PublishError("Commit committer does not match the configured GitHub App")
+            if not context.author and author != credentials["username"]:
+                raise PublishError("Commit author does not match the configured GitHub App")
             return commit
 
         async def sync_head(sha):
@@ -439,10 +461,15 @@ async def _publish(cwd: Path, context: PublishContext, message: str) -> str:
                 "tree": tree,
                 "parents": [parent],
                 "message": message.rstrip() + "\n\n" + marker,
-                # Triggering user authors; the App bot commits (and signs).
+                # Triggering user authors. Never send a committer: GitHub only signs
+                # when it picks the committer itself (web-flow); explicit ones are unsigned.
                 **({"author": _api_identity(context.author)} if context.author else {}),
-                **({"committer": _api_identity(committer)} if context.author and committer else {}),
             },
+        )
+        logger.info(
+            "Created commit %s: verification=%s",
+            made.get("sha"),
+            made.get("verification"),
         )
         commit = await verified_commit(made["sha"])
         if commit["commit"]["tree"]["sha"] != tree:
@@ -483,6 +510,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("-m", "--message", required=True)
     args = parser.parse_args(argv)
+    # PIONEER_PUBLISH_LOG_LEVEL=INFO traces identity, token expiry, and GitHub responses.
+    logging.basicConfig(level=os.environ.get("PIONEER_PUBLISH_LOG_LEVEL", "WARNING").upper())
     try:
         result = asyncio.run(
             publish_checkpoint(

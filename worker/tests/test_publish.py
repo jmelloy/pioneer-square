@@ -51,7 +51,7 @@ class GitHub:
         self.calls = []
         self.commits = {}
         self.seen_commit_bodies = []
-        self.commit_committer = "app[bot]"
+        self.commit_committer = None  # None: mimic GitHub's real choice
         self.on_verify = None
         self.credentials_status = 200
 
@@ -119,18 +119,23 @@ class GitHub:
                 oid = git(
                     self.root, "hash-object", "-w", "-t", "commit", "--stdin", data=raw.encode()
                 )
+                # Real GitHub: only signs when it chooses the committer (web-flow).
+                signed = self.verified and "committer" not in body
                 result = {
                     "sha": oid,
                     "tree": {"sha": body["tree"]},
                     "verification": {
-                        "verified": self.verified,
-                        "reason": "valid" if self.verified else "unsigned",
+                        "verified": signed,
+                        "reason": "valid" if signed else "unsigned",
                     },
                 }
                 self.commits[oid] = {
                     "sha": oid,
                     "author": {"login": "app[bot]"},
-                    "committer": {"login": self.commit_committer},
+                    "committer": {
+                        "login": self.commit_committer
+                        or body.get("committer", {}).get("name", "web-flow")
+                    },
                     "commit": {
                         "message": body["message"],
                         "tree": {"sha": body["tree"]},
@@ -471,7 +476,7 @@ def test_unconfigured_cli_fails_without_network(monkeypatch, capsys):
     assert "PIONEER_" in capsys.readouterr().err
 
 
-async def test_signed_commit_is_authored_by_user_and_committed_by_bot(publisher):
+async def test_user_authored_commit_is_signed_with_github_committer(publisher):
     root, server, context = publisher
     context = dataclasses.replace(
         context, author=("Ada", "ada@example.com"), committer=("app[bot]", "1+app@x")
@@ -480,7 +485,11 @@ async def test_signed_commit_is_authored_by_user_and_committed_by_bot(publisher)
     assert await publish.publish_checkpoint(root, context, "by ada") == "pushed"
     body = server.seen_commit_bodies[-1]
     assert body["author"]["name"] == "Ada" and body["author"]["email"] == "ada@example.com"
-    assert body["committer"]["name"] == "app[bot]"
+    # An explicit committer makes GitHub skip signing; it must be omitted.
+    assert "committer" not in body
+    commit = server.commits[server.remote]
+    assert commit["committer"]["login"] == "web-flow"
+    assert commit["commit"]["verification"]["verified"]
 
 
 async def test_commit_without_identity_sends_no_author(publisher):

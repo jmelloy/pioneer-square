@@ -15,7 +15,12 @@ files, symlinks, and submodule entries. GraphQL `createCommitOnBranch` also sign
 but cannot express a new executable file's mode. See live results below.
 
 For both APIs, the observed author was `pioneer-square[bot]` and the committer was
-`GitHub` (`web-flow`), not the bot in both fields. Use an **installation access
+`GitHub` (`web-flow`), not the bot in both fields. An explicit `committer` on the REST
+request makes GitHub skip signing (`reason: unsigned`), so the publisher never
+sends one and accepts `web-flow` (or the App) as committer. A custom human
+`author` with GitHub-chosen committer has not been live-probed; set
+`PIONEER_PUBLISH_LOG_LEVEL=INFO` to trace identity, token expiry, and the
+create-commit verification response. Use an **installation access
 token** for bot authorship, not a human OAuth token. GitHub explicitly documents
 GraphQL signing and support for Apps. [1][2]
 
