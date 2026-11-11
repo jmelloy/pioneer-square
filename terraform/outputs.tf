@@ -82,3 +82,8 @@ output "ecs_capacity_asg_name" {
   value       = aws_autoscaling_group.ecs_capacity.name
 }
 
+
+output "artifact_bucket_name" {
+  description = "S3 bucket holding screenshot/image artifacts."
+  value       = aws_s3_bucket.artifacts.bucket
+}

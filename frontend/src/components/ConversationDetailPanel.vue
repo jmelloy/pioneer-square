@@ -125,7 +125,8 @@
                 msgSender(msg as ChatMessage) !== 'system'
               "
               class="msg-content msg-content--markdown"
-              v-html="renderMarkdown((msg as ChatMessage).content)"
+              v-artifacts="guildStore.currentGuild?.id"
+            v-html="renderMarkdown((msg as ChatMessage).content)"
             ></span>
             <span v-else class="msg-content">{{ (msg as ChatMessage).content }}</span>
           </template>
@@ -175,6 +176,7 @@ import { useTasksStore } from '../stores/tasks'
 import { useUiStore } from '../stores/ui'
 import { formatClock, formatRelative } from '../utils/format'
 import { renderMarkdown } from '../utils/markdown'
+import { vArtifacts } from '../utils/artifacts'
 import { ApiError } from '../utils/api'
 import { useChatGrouping, isToolUseGroup } from '../composables/useChatGrouping'
 import type { GroupedMessage } from '../composables/useChatGrouping'

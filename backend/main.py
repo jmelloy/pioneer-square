@@ -462,6 +462,7 @@ app.add_middleware(
 
 from routes import a2a as _a2a_routes  # noqa: E402
 from routes import agents as _agents_routes  # noqa: E402
+from routes import artifacts as _artifacts_routes  # noqa: E402
 from routes import auth as _auth_routes  # noqa: E402
 from routes import conversations as _conversations_routes  # noqa: E402
 from routes import cost as _cost_routes  # noqa: E402
@@ -492,6 +493,7 @@ app.include_router(_guilds_routes.router)
 app.include_router(_agents_routes.router)
 app.include_router(_workers_routes.router)
 app.include_router(_repo_setup_routes.router)
+app.include_router(_artifacts_routes.router)
 app.include_router(_tasks_routes.router)
 app.include_router(_conversations_routes.router)
 app.include_router(_usage_routes.router)
