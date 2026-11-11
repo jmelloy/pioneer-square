@@ -459,7 +459,7 @@ async def test_cmd_pickup_no_linked_account_leaves_conversation_unset(monkeypatc
 
     added_task = mock_db.add.call_args[0][0]
     assert added_task.user_id is None
-    assert added_task.conversation_id is None
+    assert mock_db.add.call_count == 1  # no ConversationTask link
 
 
 @pytest.mark.asyncio
@@ -510,9 +510,9 @@ async def test_cmd_pickup_linked_account_stamps_conversation_id(monkeypatch):
 
         await _cmd_pickup(interaction, "test-guild", "https://github.com/org/repo/issues/13")
 
-    added_task = mock_db.add.call_args[0][0]
+    added_task, link = (c.args[0] for c in mock_db.add.call_args_list)
     assert added_task.user_id == "u-123"
-    assert added_task.conversation_id == 42
+    assert (link.conversation_id, link.task_id) == (42, added_task.id)
     assert broadcasts[0].conversationId == 42
 
 
@@ -574,7 +574,7 @@ async def test_cmd_review_creates_task(monkeypatch):
     assert added_task.phase == "review"
     assert added_task.pr_number == 99
     assert added_task.user_id is None
-    assert added_task.conversation_id is None
+    assert mock_db.add.call_count == 1  # no ConversationTask link
     assert sent
     assert "99" in sent[0]["embeds"][0]["title"]
 
@@ -627,9 +627,9 @@ async def test_cmd_review_linked_account_stamps_conversation_id(monkeypatch):
 
         await _cmd_review(interaction, "test-guild", "https://github.com/org/repo/pull/100")
 
-    added_task = mock_db.add.call_args[0][0]
+    added_task, link = (c.args[0] for c in mock_db.add.call_args_list)
     assert added_task.user_id == "u-456"
-    assert added_task.conversation_id == 77
+    assert (link.conversation_id, link.task_id) == (77, added_task.id)
     assert broadcasts[0].conversationId == 77
 
 

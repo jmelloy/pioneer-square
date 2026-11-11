@@ -63,6 +63,7 @@ from models import (  # noqa: E402
     TaskEvent,
     TaskLog,
     Worker,
+    task_conversation_id,
 )
 from sqlalchemy import func, select, update  # noqa: E402
 from sqlmodel import col  # noqa: E402
@@ -495,8 +496,11 @@ class TestExecToolsDispatching:
         with _sync_session(db_session) as session:
             task = session.get(Task, task_id)
             assert task.thread_id is None
-            assert task.conversation_id is not None
-            conversation = session.get(Conversation, task.conversation_id)
+            conversation_id = session.scalar(
+                select(task_conversation_id()).where(col(Task.id) == task_id)
+            )
+            assert conversation_id is not None
+            conversation = session.get(Conversation, conversation_id)
             assert conversation is not None
             assert conversation.status == "active"
 
@@ -514,8 +518,11 @@ class TestExecToolsDispatching:
 
         with _sync_session(db_session) as session:
             task = session.get(Task, task_id)
+            conversation_id = session.scalar(
+                select(task_conversation_id()).where(col(Task.id) == task_id)
+            )
         assert task.thread_id is None
-        assert task.conversation_id is None
+        assert conversation_id is None
 
     async def test_assign_task_new_stamps_conversation_id(self, db_session):
         insert_guild(db_session, "g-thread-stamp-assign")
@@ -537,8 +544,11 @@ class TestExecToolsDispatching:
         with _sync_session(db_session) as session:
             task = session.get(Task, task_id)
             assert task.thread_id is None
-            assert task.conversation_id is not None
-            assert session.get(Conversation, task.conversation_id) is not None
+            conversation_id = session.scalar(
+                select(task_conversation_id()).where(col(Task.id) == task_id)
+            )
+            assert conversation_id is not None
+            assert session.get(Conversation, conversation_id) is not None
 
     async def test_create_task_custom_phase(self, db_session):
         insert_guild(db_session, "g-planphase")

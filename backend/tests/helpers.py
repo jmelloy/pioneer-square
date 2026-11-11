@@ -26,6 +26,7 @@ from models import (
     User,
     UserSession,
     Worker,
+    link_conversation_task,
 )
 from sqlalchemy import create_engine, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -384,9 +385,10 @@ def insert_task(
                 user_id=user_id,
                 parent_task_id=parent_task_id,
                 claude_session_id=claude_session_id,
-                conversation_id=conversation_id,
                 created_at=now,
             )
             .on_conflict_do_nothing(index_elements=["id"])
         )
+        if conversation_id is not None:
+            session.execute(link_conversation_task(conversation_id, task_id))
         session.commit()

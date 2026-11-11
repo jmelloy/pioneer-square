@@ -3,7 +3,8 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import JSON, Boolean, Column, DateTime, Index, Text, UniqueConstraint, or_, text
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlmodel import Field, SQLModel, col
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlmodel import Field, Relationship, SQLModel, col, select
 
 # Coding agent runners a worker can be configured with. Single source of
 # truth for the "tool" enum used across worker registration, task dispatch,
@@ -28,6 +29,40 @@ def live_tasks_filter(now: datetime | None = None):
     if now is None:
         now = datetime.now(UTC)
     return or_(col(Task.deleted_at).is_(None), col(Task.deleted_at) > now - SOFT_DELETE_GRACE)
+
+
+def task_conversation_id():
+    """Scalar subquery: a task's primary (earliest-linked) conversation id, or NULL.
+
+    Correlates to the enclosing query's ``Task``. Tasks are N:N with
+    conversations (#1431); callers routing a single reply use this one.
+    """
+    return (
+        select(ConversationTask.conversation_id)
+        .where(col(ConversationTask.task_id) == col(Task.id))
+        .order_by(col(ConversationTask.created_at), col(ConversationTask.conversation_id))
+        .limit(1)
+        .correlate(Task)
+        .scalar_subquery()
+    )
+
+
+def task_in_conversation(conversation_id):
+    """SQL clause matching tasks linked to *conversation_id* via conversation_tasks."""
+    return col(Task.id).in_(
+        select(ConversationTask.task_id).where(
+            col(ConversationTask.conversation_id) == conversation_id
+        )
+    )
+
+
+def link_conversation_task(conversation_id: int, task_id: str):
+    """Idempotent INSERT linking a task to a conversation (no-op if already linked)."""
+    return (
+        pg_insert(ConversationTask)
+        .values(conversation_id=conversation_id, task_id=task_id)
+        .on_conflict_do_nothing()
+    )
 
 
 def finalize_soft_delete_at(
@@ -176,6 +211,25 @@ class Message(SQLModel, table=True):
 THREAD_STATUSES = ("active", "archived", "closed")
 
 
+class ConversationTask(SQLModel, table=True):
+    """Join table: a task can belong to many conversations and vice versa (#1431).
+
+    The composite primary key enforces unique (conversation_id, task_id) pairs.
+    """
+
+    __tablename__ = "conversation_tasks"  # type: ignore[assignment]
+    __table_args__ = (Index("ix_conversation_tasks_task_id", "task_id"),)
+
+    conversation_id: int = Field(
+        foreign_key="conversations.id", primary_key=True, ondelete="CASCADE"
+    )
+    task_id: str = Field(foreign_key="tasks.id", primary_key=True, ondelete="CASCADE")
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=text("now()")),
+    )
+
+
 class Conversation(SQLModel, table=True):
     """A logical conversation between a user and the Foreman within a guild.
 
@@ -210,6 +264,8 @@ class Conversation(SQLModel, table=True):
     name: str | None = None
     status: str = Field(default="active", sa_column_kwargs={"server_default": "'active'"})
     discord_thread_id: str | None = None
+
+    tasks: list["Task"] = Relationship(back_populates="conversations", link_model=ConversationTask)
 
 
 class Thread(SoftDeleteMixin, SQLModel, table=True):
@@ -477,9 +533,12 @@ class Task(SoftDeleteMixin, SQLModel, table=True):
     # Deprecated (#1299): no longer written — use ``conversation_id``. Kept
     # only for rows created before the Thread -> Conversation migration.
     thread_id: str | None = Field(default=None, foreign_key="threads.id", index=True)
-    # Owning Conversation (#1271). Stamped wherever a task is created from a
-    # conversation; see Message.conversation_id.
-    conversation_id: int | None = Field(default=None, foreign_key="conversations.id", index=True)
+    # Conversations this task belongs to (#1431, N:N via conversation_tasks).
+    # Async sessions can't lazy-load: query via task_in_conversation /
+    # task_conversation_id instead of touching this attribute.
+    conversations: list[Conversation] = Relationship(
+        back_populates="tasks", link_model=ConversationTask
+    )
 
 
 class GithubToken(SQLModel, table=True):

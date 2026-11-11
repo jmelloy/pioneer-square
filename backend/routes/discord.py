@@ -53,6 +53,7 @@ from foreman.github_url_parser import parse_github_urls
 from foreman.tools import spawn_worker
 from models import (
     Agent,
+    ConversationTask,
     DiscordAccountLink,
     DiscordChannelGuild,
     DiscordPendingConnect,
@@ -465,9 +466,11 @@ async def _cmd_pickup(interaction: dict, guild_slug: str, issue_url: str) -> Non
                 issue_number=issue_number,
                 created_at=created_at,
                 user_id=ps_user_id,
-                conversation_id=conversation_id,
             )
             db.add(task)
+            await db.flush()  # task row must exist before its link (FK)
+            if conversation_id is not None:
+                db.add(ConversationTask(conversation_id=conversation_id, task_id=task_id))
             await db.commit()
 
         await broadcast_msg(
@@ -552,9 +555,11 @@ async def _cmd_review(interaction: dict, guild_slug: str, pr_url: str) -> None:
                 pr_repo=pr_repo,
                 created_at=created_at,
                 user_id=ps_user_id,
-                conversation_id=conversation_id,
             )
             db.add(task)
+            await db.flush()  # task row must exist before its link (FK)
+            if conversation_id is not None:
+                db.add(ConversationTask(conversation_id=conversation_id, task_id=task_id))
             await db.commit()
 
         pr_name = f"{pr_repo}#{pr_number}"

@@ -36,7 +36,7 @@ from foreman.conversation_service import (
     touch_conversation,
 )
 from helpers import create_db, insert_guild, insert_task, truncate_all
-from models import Task
+from models import Task, link_conversation_task
 from sqlalchemy import update
 from sqlmodel import col
 
@@ -101,9 +101,7 @@ class TestResolveConversationId:
         async with database_module.AsyncSessionLocal() as db:
             task_conv = await get_or_create_conversation(db, guild_pk, "task-owner")
             await db.commit()
-            await db.exec(
-                update(Task).where(col(Task.id) == "t-rc3").values(conversation_id=task_conv.id)
-            )
+            await db.exec(link_conversation_task(task_conv.id, "t-rc3"))
             await db.commit()
 
         async with database_module.AsyncSessionLocal() as db:

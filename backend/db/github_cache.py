@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from models import GithubIssue, GithubPullRequest, Task, live_tasks_filter
+from models import GithubIssue, GithubPullRequest, Task, live_tasks_filter, task_in_conversation
 from sqlalchemy import func, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import col, select
@@ -150,7 +150,7 @@ def conversation_item_filter(
     linked_task = (
         select(Task.id)
         .where(
-            col(Task.conversation_id) == conversation_id,
+            task_in_conversation(conversation_id),
             live_tasks_filter(),
             col(repo_col) == col(model.repo),
             col(number_col) == col(model.number),

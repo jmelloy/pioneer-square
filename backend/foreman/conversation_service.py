@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 from events import broadcast
-from models import Conversation, Guild, Task
+from models import Conversation, Guild, Task, task_conversation_id
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from ws_types import ConversationCreatedMsg, ConversationUpdatedMsg
@@ -329,7 +329,7 @@ async def resolve_conversation_id(
     session (e.g. creating a ``Task``) get that for free.
     """
     if task_id:
-        result = await db.exec(select(col(Task.conversation_id)).where(col(Task.id) == task_id))
+        result = await db.exec(select(task_conversation_id()).where(col(Task.id) == task_id))
         conversation_id = result.first()
         if conversation_id is not None:
             return conversation_id

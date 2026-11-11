@@ -16,7 +16,7 @@ from discord import router
 from foreman import runner, tools
 from foreman.conversation_service import create_conversation
 from helpers import insert_guild, insert_worker
-from models import GithubEvent, Task
+from models import ConversationTask, GithubEvent, Task, task_conversation_id
 from routes.debug_query import _validate_readonly_query
 from sqlmodel import select
 
@@ -171,8 +171,10 @@ async def test_task_creation_keeps_pinned_conversation(client, tool_name):
         result = await tools.exec_tools(slug, [tool], user_id="user", conversation_id=original_id)
     assert not result[0].get("is_error"), result
     async with database.AsyncSessionLocal() as db:
-        task = (await db.exec(select(Task).where(Task.guild_id == guild_pk))).one()
-        assert task.conversation_id == original_id
+        conversation_id = (
+            await db.exec(select(task_conversation_id()).where(Task.guild_id == guild_pk))
+        ).one()
+        assert conversation_id == original_id
 
 
 async def test_task_tool_rejects_conversation_from_another_guild(client):
@@ -235,7 +237,6 @@ async def test_pr_linkage_reconciles_old_events_and_shares_context(client):
                 Task(
                     id=task_id,
                     guild_id=guild_pk,
-                    conversation_id=conv,
                     name="Shared",
                     description="Shared work",
                     pr_repo="owner/shared",
@@ -244,6 +245,8 @@ async def test_pr_linkage_reconciles_old_events_and_shares_context(client):
                     created_at=datetime.now(UTC),
                 )
             )
+            await db.flush()
+            db.add(ConversationTask(conversation_id=conv, task_id=task_id))
             await db.flush()
             await link_task_context(db, task_id)
         await db.commit()

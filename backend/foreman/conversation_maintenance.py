@@ -22,7 +22,7 @@ from datetime import UTC, datetime, timedelta
 
 from database import get_db
 from foreman.conversation_service import set_conversation_status
-from models import Conversation, Task, live_tasks_filter
+from models import Conversation, Task, live_tasks_filter, task_in_conversation
 from sqlmodel import col, select
 from task_lifecycle import TERMINAL_STATES
 
@@ -79,7 +79,7 @@ async def _sweep_conversations_once(guild_id: str) -> dict[str, int]:
                     col(Conversation.updated_at) < archive_cutoff,
                     ~select(Task.id)
                     .where(
-                        col(Task.conversation_id) == col(Conversation.id),
+                        task_in_conversation(col(Conversation.id)),
                         ~col(Task.state).in_(list(TERMINAL_STATES)),
                         live_tasks_filter(),
                     )

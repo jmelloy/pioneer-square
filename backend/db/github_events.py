@@ -7,7 +7,15 @@ module reads the append-only per-delivery ``GithubEvent`` rows written by
 
 from __future__ import annotations
 
-from models import GithubEvent, GithubIssue, GithubPullRequest, Task, live_tasks_filter
+from models import (
+    GithubEvent,
+    GithubIssue,
+    GithubPullRequest,
+    Task,
+    live_tasks_filter,
+    task_conversation_id,
+    task_in_conversation,
+)
 from sqlalchemy import and_, update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -26,7 +34,7 @@ def conversation_event_filter(conversation_id: int):
                 col(Task.pr_number) == col(GithubEvent.pr_number),
             ),
         )
-        .where(col(Task.conversation_id) == conversation_id, live_tasks_filter())
+        .where(task_in_conversation(conversation_id), live_tasks_filter())
     )
     # Separate indexed branches avoid a correlated scan of the entire delivery log.
     return col(GithubEvent.id).in_(stamped.correlate(None).union(linked.correlate(None)))
@@ -38,9 +46,14 @@ async def link_task_context(db: AsyncSession, task_id: str) -> None:
     Never overwrites an existing owner or replays historical automated actions.
     The caller commits this with its task update.
     """
-    task = (await db.exec(select(Task).where(col(Task.id) == task_id, live_tasks_filter()))).first()
-    if task is None or task.conversation_id is None:
+    row = (
+        await db.exec(
+            select(Task, task_conversation_id()).where(col(Task.id) == task_id, live_tasks_filter())
+        )
+    ).first()
+    if row is None or row[1] is None:
         return
+    task, conversation_id = row
     for model, repo, number in (
         (GithubIssue, task.issue_repo, task.issue_number),
         (GithubPullRequest, task.pr_repo, task.pr_number),
@@ -53,7 +66,7 @@ async def link_task_context(db: AsyncSession, task_id: str) -> None:
                     col(model.number) == number,
                     col(model.conversation_id).is_(None),
                 )
-                .values(conversation_id=task.conversation_id)
+                .values(conversation_id=conversation_id)
             )
     if task.pr_repo and task.pr_number is not None:
         await db.exec(
@@ -65,7 +78,7 @@ async def link_task_context(db: AsyncSession, task_id: str) -> None:
                 col(GithubEvent.task_id).is_(None),
                 col(GithubEvent.conversation_id).is_(None),
             )
-            .values(task_id=task.id, conversation_id=task.conversation_id)
+            .values(task_id=task.id, conversation_id=conversation_id)
         )
 
 
