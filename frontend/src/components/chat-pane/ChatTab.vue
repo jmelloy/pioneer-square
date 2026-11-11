@@ -75,15 +75,29 @@
       </template>
     </div>
   </div>
-  <div class="chat-input-row">
+  <AttachmentTray
+    :attachments="attach.attachments.value"
+    :notice="attach.notice.value"
+    @remove="attach.remove"
+    @retry="attach.retry"
+  />
+  <div
+    class="chat-input-row"
+    :class="{ dragging: attach.dragging.value }"
+    @dragover="attach.onDragOver"
+    @dragleave="attach.onDragLeave"
+    @drop="attach.onDrop"
+  >
+    <AttachButton @files="attach.addFiles" />
     <textarea
       v-model="inputText"
       class="chat-input"
       placeholder="Send directive..."
       rows="3"
       @keydown.enter.exact.prevent="onSend"
+      @paste="attach.onPaste"
     ></textarea>
-    <button class="pixel-btn send-btn" @click="onSend">▶</button>
+    <button class="pixel-btn send-btn" :disabled="attach.uploading.value" @click="onSend">▶</button>
   </div>
 </template>
 
@@ -91,6 +105,9 @@
 import { ref, computed, watch, nextTick } from 'vue'
 import { renderMarkdown } from '../../utils/markdown'
 import { vArtifacts } from '../../utils/artifacts'
+import AttachmentTray from '../AttachmentTray.vue'
+import AttachButton from '../AttachButton.vue'
+import { useAttachments } from '../../composables/useAttachments'
 import { useGuildStore } from '../../stores/guild'
 import { useUiStore } from '../../stores/ui'
 import { useConversationsStore } from '../../stores/conversations'
@@ -102,6 +119,7 @@ import type { ChatMessage } from '../../types'
 const guildStore = useGuildStore()
 
 const inputText = ref('')
+const attach = useAttachments(() => guildStore.currentGuild?.id)
 const messagesEl = ref<HTMLElement | null>(null)
 
 const uiStore = useUiStore()
@@ -172,7 +190,8 @@ function sourceLabel(msg: ChatMessage): string | null {
 const formatTime = (iso?: string) => formatClock(iso)
 
 function onSend() {
-  const text = inputText.value.trim()
+  if (attach.uploading.value || attach.hasErrors.value) return
+  const text = attach.compose(inputText.value)
   if (!text) return
 
   const sent = guildStore.sendMessage({
@@ -202,6 +221,7 @@ function onSend() {
   }
 
   inputText.value = ''
+  attach.clear()
 }
 
 defineExpose({
@@ -540,6 +560,11 @@ watch(
     opacity: 1;
     transform: translateY(-2px);
   }
+}
+
+.chat-input-row.dragging {
+  outline: 2px dashed var(--color-brass);
+  outline-offset: -4px;
 }
 
 .chat-input-row {
