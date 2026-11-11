@@ -68,6 +68,11 @@ Optional:
 - `worker_id` — pre-existing worker id from the backend. If omitted, the worker
   registers itself on first launch and writes the assigned id to
   `pioneer-worker.state.json` next to the config.
+- `pre_agents_prompt` — text prepended to every task description (all runners,
+  follow-ups, reviews) so the agent sees it before reading `AGENTS.md`.
+  Precedence: `pre_agents_prompt` in the task payload > this TOML key >
+  `PIONEER_PRE_AGENTS_PROMPT` env var. Blank values are ignored; an empty
+  string in the task payload disables injection for that task.
 - `[github] token` — inline token, or `"env:VAR"` to read from the environment.
   Required to push and open PRs against private repos.
 

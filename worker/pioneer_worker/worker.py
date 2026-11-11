@@ -33,6 +33,7 @@ from . import (  # noqa: F401 - test patch compatibility
 from . import config as config_mod
 from .bedrock_role import apply_bedrock_role
 from .control_api import ControlServer
+from .pre_agents import apply_pre_agents
 from .runner_registry import build as build_runner_registry  # pyright: ignore[reportMissingImports]
 from .runner_types import (  # pyright: ignore[reportMissingImports]
     ProcessHandle,
@@ -2227,7 +2228,9 @@ class Worker:
             async def _run_current_desc() -> RunResult:
                 return await runner.run(
                     RunRequest(
-                        description=current_desc,
+                        description=apply_pre_agents(
+                            current_desc, task, self.cfg.pre_agents_prompt
+                        ),
                         cwd=primary_wt,
                         emit=emit,
                         env=tool_env,
