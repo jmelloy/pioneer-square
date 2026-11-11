@@ -9,6 +9,14 @@
         <span class="tab-label">Tasks</span>
       </button>
       <button
+        class="tab-btn"
+        :class="{ active: activeTab === 'conversations' }"
+        @click="activeTab = 'conversations'"
+      >
+        <span class="tab-label">Conversations</span>
+        <span v-if="activeConversationCount" class="tab-count">{{ activeConversationCount }}</span>
+      </button>
+      <button
         v-if="ghStore.isConfigured"
         class="tab-btn"
         :class="{ active: activeTab === 'issues' }"
@@ -21,6 +29,7 @@
 
     <div class="tab-content">
       <TaskTree v-if="activeTab === 'tasks'" />
+      <ConversationList v-if="activeTab === 'conversations'" />
       <IssuesTab
         v-if="activeTab === 'issues' && ghStore.isConfigured"
         @select-issue="onSelectIssue"
@@ -42,7 +51,9 @@ import { computed, inject, onMounted, ref, watch } from 'vue'
 import { useGuildStore } from '../stores/guild'
 import { useGitHubStore } from '../stores/github'
 import { useUiStore } from '../stores/ui'
+import { useConversationsStore } from '../stores/conversations'
 import TaskTree from './sidebar/TaskTree.vue'
+import ConversationList from './sidebar/ConversationList.vue'
 import IssuesTab from './chat-pane/IssuesTab.vue'
 import CostSummary from './sidebar/CostSummary.vue'
 import type { GitHubIssue } from '../types'
@@ -50,12 +61,16 @@ import type { GitHubIssue } from '../types'
 const guildStore = useGuildStore()
 const ghStore = useGitHubStore()
 const uiStore = useUiStore()
+const conversationsStore = useConversationsStore()
 
 const switchMobileTab = inject<(tab: string) => void>('switchMobileTab', () => {})
 
 const isConnected = computed(() => guildStore.isConnected)
 const openIssueCount = computed(() => ghStore.issues.filter((i) => i.state === 'open').length)
-const activeTab = ref<'tasks' | 'issues'>('tasks')
+const activeConversationCount = computed(
+  () => conversationsStore.conversations.filter((c) => c.status === 'active').length,
+)
+const activeTab = ref<'tasks' | 'conversations' | 'issues'>('tasks')
 
 onMounted(async () => {
   if (ghStore.repos.length === 0 && ghStore.token) {
