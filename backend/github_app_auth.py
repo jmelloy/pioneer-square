@@ -166,11 +166,19 @@ def get_app_installation_token(installation_id: str | None = None) -> str | None
         now = datetime.now(UTC)
         entry = _token_cache.get(installation_id)
         if entry and entry["expires_at"] - now > timedelta(minutes=5):
+            logger.debug(
+                "Reusing installation token for %s (expires %s)",
+                installation_id,
+                entry["expires_at"].isoformat(),
+            )
             return entry["token"]
 
         data = _request_installation_token(app_id, private_key_pem, installation_id)
         expires_at = datetime.fromisoformat(data["expires_at"].replace("Z", "+00:00"))
         _token_cache[installation_id] = {"token": data["token"], "expires_at": expires_at}
+        logger.info(
+            "Minted installation token for %s (expires %s)", installation_id, expires_at.isoformat()
+        )
         return data["token"]
 
 
@@ -184,8 +192,15 @@ def get_app_publish_credentials(repo: str, installation_id: str) -> dict[str, st
     with _cache_lock:
         cached = _publish_token_cache.get(cache_key)
         if cached and cached["expires_at"] - datetime.now(UTC) > timedelta(minutes=5):
+            logger.info(
+                "Reusing publish token for %s via installation %s (expires %s)",
+                repo,
+                installation_id,
+                cached["expires_at"].isoformat(),
+            )
             return cached["credentials"].copy()
         jwt = generate_jwt(app_id, private_key)
+        logger.info("Generated App JWT (app %s) to mint a publish token for %s", app_id, repo)
         headers = {"Authorization": f"Bearer {jwt}", "Accept": "application/vnd.github+json"}
         response = httpx.get(
             f"https://api.github.com/repos/{repo}/installation", headers=headers, timeout=15
@@ -193,6 +208,12 @@ def get_app_publish_credentials(repo: str, installation_id: str) -> dict[str, st
         response.raise_for_status()
         installation = response.json()
         if str(installation["id"]) != installation_id:
+            logger.warning(
+                "Repo %s is on installation %s, guild expects %s",
+                repo,
+                installation["id"],
+                installation_id,
+            )
             raise ValueError("Repository belongs to a different GitHub App installation")
         permissions = {"contents": "write"}
         if installation.get("permissions", {}).get("workflows") == "write":
@@ -210,6 +231,13 @@ def get_app_publish_credentials(repo: str, installation_id: str) -> dict[str, st
             "username": f"{installation['app_slug']}[bot]",
             "expires_at": data["expires_at"],
         }
+        logger.info(
+            "Minted publish token for %s as %s (permissions %s, expires %s)",
+            repo,
+            credentials["username"],
+            sorted(permissions),
+            data["expires_at"],
+        )
         _publish_token_cache[cache_key] = {
             "credentials": credentials,
             "expires_at": datetime.fromisoformat(data["expires_at"].replace("Z", "+00:00")),
@@ -244,6 +272,7 @@ def get_app_bot_identity() -> tuple[str, str] | None:
         return None
     identity = (slug, f"{user_id}+{slug}@users.noreply.github.com")
     _bot_identity_cache[slug] = identity
+    logger.info("Resolved App bot identity %s <%s>", *identity)
     return identity
 
 
