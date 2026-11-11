@@ -148,28 +148,8 @@ def _stringify_tool_result_content(content: object) -> str:
     return "\n".join(part for part in parts if part)
 
 
-MAX_TASK_SUMMARY_LEN = 500
-
-
-def _truncate_task_summary(event: dict) -> dict:
-    """Return *event* with an over-long task-notification ``summary`` truncated.
-
-    Summaries can embed whole file contents when the agent makes code changes.
-    The original event dict is not mutated.
-    """
-    if event.get("type") != "system" or event.get("subtype") not in (
-        "task_started",
-        "task_notification",
-    ):
-        return event
-    summary = event.get("summary")
-    if not isinstance(summary, str) or len(summary) <= MAX_TASK_SUMMARY_LEN:
-        return event
-    return {**event, "summary": summary[: MAX_TASK_SUMMARY_LEN - 3] + "..."}
-
-
 def _claude_json_detail(event: dict, *, block: dict | None = None) -> dict:
-    detail: dict = {"toolType": "claude_json", "event": _truncate_task_summary(event)}
+    detail: dict = {"toolType": "claude_json", "event": event}
     if block is not None:
         detail["block"] = block
     return detail
@@ -268,7 +248,11 @@ def parse_claude_event(event: dict) -> list[tuple[str, dict | None]]:
                 if content.strip():
                     lines = content.strip().splitlines()
                     summary = _summarize_lines(lines)
-                    detail = {"toolType": "tool_result", "output": content}
+                    detail = {
+                        "toolType": "tool_result",
+                        "output": content,
+                        "is_error": blk.get("is_error", False),
+                    }
                     pairs.append((summary, detail))
                 else:
                     pairs.append(

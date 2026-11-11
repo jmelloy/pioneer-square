@@ -86,6 +86,22 @@ describe('claudeEventSummary', () => {
     expect(claudeEventSummary({ toolType: 'claude_json', event })).toBe(expected)
   })
 
+  it('bounds multiline lifecycle previews without mutating the raw payload', () => {
+    const description = 'long command\n'.repeat(300)
+    const event = { type: 'system', subtype: 'task_started', task_id: 'bg-1', description }
+    const summary = claudeEventSummary({ toolType: 'claude_json', event })!
+    expect(summary.length).toBeLessThan(200)
+    expect(summary).not.toContain('\n')
+    expect(summary).toContain('...')
+    expect(event.description).toBe(description)
+    expect(
+      claudeEventSummary({
+        toolType: 'claude_json',
+        event: { type: 'system', subtype: 'task_notification', summary: description },
+      })!.length,
+    ).toBeLessThan(200)
+  })
+
   it.each([
     undefined,
     null,

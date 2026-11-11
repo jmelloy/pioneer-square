@@ -7,6 +7,10 @@ export function claudeEventSummary(detail?: LogDetail | null): string | undefine
   const event = detail.event as Record<string, unknown>
   const text = (value: unknown) => (typeof value === 'string' ? value : '')
   const join = (...values: string[]) => values.filter(Boolean).join(' · ')
+  const preview = (value: unknown) => {
+    const body = text(value).replace(/\s+/g, ' ').trim()
+    return body.length > 160 ? `${body.slice(0, 157)}...` : body
+  }
 
   switch (event.type) {
     case 'tool_progress':
@@ -38,20 +42,28 @@ export function claudeEventSummary(detail?: LogDetail | null): string | undefine
     case 'system':
       switch (event.subtype) {
         case 'task_started':
-          return join('Task started', text(event.description), text(event.task_id))
+          return join('Task started', preview(event.description), text(event.task_id))
         case 'task_notification':
-          return join('Task', text(event.status), text(event.summary), text(event.task_id))
+          return join('Task', text(event.status), preview(event.summary), text(event.task_id))
         case 'task_updated':
-          return join('Task updated', text(event.task_id), JSON.stringify(event.patch))
+          return join('Task updated', text(event.task_id), preview(JSON.stringify(event.patch)))
         case 'background_tasks_changed':
           return Array.isArray(event.tasks)
             ? join(
                 `Background tasks: ${event.tasks.length}`,
                 ...event.tasks.map((task) =>
-                  task && typeof task === 'object' ? text(task.description) : '',
+                  task && typeof task === 'object' ? preview(task.description) : '',
                 ),
               )
             : 'Background tasks updated'
+        case 'hook_started':
+          return join('Hooks', text(event.hook_event) || text(event.hook_name), 'running')
+        case 'hook_response':
+          return join(
+            'Hooks',
+            text(event.hook_event) || text(event.hook_name),
+            event.outcome === 'success' && event.exit_code === 0 ? 'completed' : 'failed',
+          )
         case 'code_change_published':
           return join('Code change', text(event.action), text(event.repo), text(event.url))
         case 'vcs_state_changed':

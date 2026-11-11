@@ -160,6 +160,55 @@ function setScrollMetrics(
   el.scrollTop = scrollTop
 }
 
+describe('LogList Claude event groups', () => {
+  function eventLog(event: Record<string, unknown>): LogEntry {
+    return {
+      line: '[claude-json]',
+      timestamp: '2026-01-01T00:00:00Z',
+      detail: { toolType: 'claude_json', event: { session_id: 's-1', ...event } },
+    }
+  }
+
+  it('updates an expanded lifecycle group in place and exposes the original JSON', async () => {
+    const start = eventLog({
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'bg-1',
+      description: 'command '.repeat(100),
+    })
+    const wrapper = mount(LogList, { props: { logs: [start] } })
+    expect(wrapper.text().length).toBeLessThan(220)
+    await wrapper.find('.event-summary').trigger('click')
+    await wrapper.find('.log-line').trigger('click')
+    expect(wrapper.find('.log-detail-raw').text()).toContain('command '.repeat(100).trim())
+
+    const completion = eventLog({
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: 'bg-1',
+      status: 'completed',
+      summary: 'Passed',
+    })
+    await wrapper.setProps({ logs: [start, completion] })
+    expect(wrapper.findAll('.event-summary')).toHaveLength(1)
+    expect(wrapper.find('.event-summary').text()).toContain('completed · Passed')
+    expect(wrapper.find('.event-summary').attributes('aria-expanded')).toBe('true')
+    expect(wrapper.findAll('.log-line')).toHaveLength(2)
+  })
+
+  it('keeps tool failures outside collapsed turns', () => {
+    const failure: LogEntry = {
+      line: '  → permission denied',
+      timestamp: '',
+      detail: { toolType: 'tool_result', output: 'permission denied', is_error: true },
+    }
+    const wrapper = mount(LogList, { props: { logs: [toolLog('Bash'), toolLog('Read'), failure] } })
+    expect(wrapper.find('.turn-summary').exists()).toBe(true)
+    expect(wrapper.find('.log-error').text()).toContain('Tool failed ·')
+    expect(wrapper.find('.log-error').text()).toContain('permission denied')
+  })
+})
+
 describe('LogList auto-scroll', () => {
   it('scrolls to the bottom when new logs arrive while already near the bottom', async () => {
     const logs = [textLog('one')]

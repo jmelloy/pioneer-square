@@ -659,16 +659,25 @@ async def test_run_claude_auto_max_turns_is_failure_even_with_zero_exit():
     assert last_text == "still working"
 
 
-def test_task_notification_summary_truncated():
-    from pioneer_worker.claude_runner import MAX_TASK_SUMMARY_LEN, parse_claude_event
-
-    long = "x" * 5000
-    event = {"type": "system", "subtype": "task_notification", "summary": long}
+@pytest.mark.parametrize(
+    ("subtype", "field"), [("task_started", "description"), ("task_notification", "summary")]
+)
+def test_task_lifecycle_keeps_full_json(subtype, field):
+    event = {"type": "system", "subtype": subtype, field: "x" * 5000}
     [(_, detail)] = parse_claude_event(event)
-    out = detail["event"]["summary"]
-    assert len(out) == MAX_TASK_SUMMARY_LEN
-    assert out.endswith("...")
-    assert event["summary"] == long
+    assert detail["event"][field] == "x" * 5000
+
+
+def test_tool_result_retains_error_flag():
+    event = {
+        "type": "user",
+        "message": {
+            "content": [{"type": "tool_result", "content": "permission denied", "is_error": True}]
+        },
+    }
+    [(_, detail)] = parse_claude_event(event)
+    assert detail["is_error"] is True
+    assert detail["output"] == "permission denied"
 
 
 def test_task_notification_short_summary_untouched():

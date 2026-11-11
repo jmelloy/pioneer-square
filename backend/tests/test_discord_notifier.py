@@ -1584,6 +1584,121 @@ def test_format_stream_entries_zero_tool_calls_passes_through():
     assert turn_count == 0
 
 
+def _claude_entry(event):
+    return discord_notifier._StreamEntry(
+        line="[claude-json]", detail={"toolType": "claude_json", "event": event}
+    )
+
+
+def test_stream_omits_bookkeeping_without_breaking_tool_groups():
+    entries = [
+        _entry("▶ bash: pytest", "tool_use", "Bash"),
+        _claude_entry({"type": "tool_progress", "heartbeat": True}),
+        _claude_entry({"type": "system", "subtype": "task_started", "description": "pytest"}),
+        _claude_entry({"type": "system", "subtype": "hook_started"}),
+        _claude_entry(
+            {"type": "system", "subtype": "hook_response", "outcome": "success", "exit_code": 0}
+        ),
+        _entry("▶ read: file", "tool_use", "Read"),
+        _claude_entry({"type": "system", "subtype": "background_tasks_changed", "tasks": []}),
+    ]
+    content, turns = discord_notifier._format_stream_entries(entries, 0)
+    assert content == "▶ Turn 1: bash × 1, read × 1"
+    assert turns == 1
+
+
+def test_stream_lifecycle_previews_are_bounded_and_keep_failures():
+    event = {
+        "type": "system",
+        "subtype": "task_notification",
+        "task_id": "bg-1",
+        "status": "failed",
+        "summary": "long command\n" * 500,
+    }
+    content, _ = discord_notifier._format_stream_entries([_claude_entry(event)], 0)
+    assert content.startswith("✗ Task failed ·")
+    assert "bg-1" in content
+    assert "..." in content
+    assert "\n" not in content
+    assert len(content) < 220
+    assert len(event["summary"]) > 500
+
+
+def test_stream_preserves_hook_errors_unknown_events_and_failed_updates():
+    entries = [
+        _claude_entry(
+            {
+                "type": "system",
+                "subtype": "hook_response",
+                "outcome": "error",
+                "exit_code": 1,
+                "output": "setup broke",
+            }
+        ),
+        _claude_entry(
+            {
+                "type": "system",
+                "subtype": "task_updated",
+                "task_id": "bg-1",
+                "patch": {"status": "failed"},
+            }
+        ),
+        _claude_entry({"type": "new_event"}),
+    ]
+    content, _ = discord_notifier._format_stream_entries(entries, 0)
+    assert "Hook failed" in content
+    assert "setup broke" in content
+    assert "Task failed" in content
+    assert "[claude-json]" in content
+
+
+def test_stream_rate_state_deduplicates_across_batches_but_keeps_recovery():
+    state = {}
+
+    def rate(status, session="s-1"):
+        return _claude_entry(
+            {
+                "type": "rate_limit_event",
+                "session_id": session,
+                "rate_limit_info": {"status": status},
+            }
+        )
+
+    first, _ = discord_notifier._format_stream_entries([rate("allowed")], 0, rate_states=state)
+    repeated, _ = discord_notifier._format_stream_entries([rate("allowed")], 0, rate_states=state)
+    recovery, _ = discord_notifier._format_stream_entries(
+        [rate("rejected"), rate("allowed")], 0, rate_states=state
+    )
+    separate, _ = discord_notifier._format_stream_entries(
+        [rate("allowed", "s-2")], 0, rate_states=state
+    )
+    assert "allowed" in first
+    assert repeated == ""
+    assert "rejected" in recovery and "allowed" in recovery
+    assert "allowed" in separate
+
+
+def test_stream_tool_errors_are_not_hidden_in_turn_groups():
+    failed = discord_notifier._StreamEntry(
+        line="  → permission denied", detail={"toolType": "tool_result", "is_error": True}
+    )
+    content, _ = discord_notifier._format_stream_entries(
+        [_entry("bash", "tool_use", "Bash"), _entry("read", "tool_use", "Read"), failed], 0
+    )
+    assert "Turn 1" in content
+    assert "✗ Tool failed · → permission denied" in content
+
+
+@pytest.mark.asyncio
+async def test_stream_suppressed_batch_does_not_post_header_only_message():
+    buf = discord_notifier._StreamBuffer(guild_id="guild-1", conversation_id=596)
+    buf.lines = [_claude_entry({"type": "tool_progress", "heartbeat": True})]
+    with patch.object(discord_notifier, "_post_task_stream", AsyncMock()) as post:
+        await discord_notifier._drain_and_post(buf, "t-1")
+    post.assert_not_awaited()
+    assert buf.lines == []
+
+
 @pytest.mark.asyncio
 async def test_notify_task_stream_carries_detail_into_buffer(monkeypatch):
     """notify_task_stream stores the passed-through detail on the buffered entry."""

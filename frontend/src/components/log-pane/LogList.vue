@@ -5,7 +5,13 @@
     </div>
     <template
       v-for="item in groupedLogs"
-      :key="item.type === 'turn' ? `turn-${item.turnNumber}` : `line-${item.index}`"
+      :key="
+        item.type === 'event'
+          ? item.key
+          : item.type === 'turn'
+            ? `turn-${item.turnNumber}`
+            : `line-${item.index}`
+      "
     >
       <LogLine
         v-if="item.type === 'line'"
@@ -13,6 +19,29 @@
         :expanded="expandedLineIdx === item.index"
         @toggle="toggleLineDetail(item.index)"
       />
+      <div v-else-if="item.type === 'event'" class="event-group">
+        <button
+          type="button"
+          class="turn-summary event-summary"
+          :aria-expanded="expandedEvents.has(item.key)"
+          @click="toggleEvent(item.key)"
+        >
+          <span class="turn-summary-icon">{{ expandedEvents.has(item.key) ? '▾' : '▸' }}</span>
+          <span class="turn-summary-text">
+            {{ item.summary }}
+            <template v-if="item.entries.length > 1"> ({{ item.entries.length }} updates)</template>
+          </span>
+        </button>
+        <div v-if="expandedEvents.has(item.key)" class="turn-body">
+          <LogLine
+            v-for="entry in item.entries"
+            :key="entry.index"
+            :log="entry.log"
+            :expanded="expandedTurnLineIdx === entry.index"
+            @toggle="toggleTurnLineDetail(entry.index)"
+          />
+        </div>
+      </div>
       <div v-else class="turn-group">
         <div class="turn-summary" @click="toggleTurn(item.turnNumber)">
           <span class="turn-summary-icon">{{
@@ -44,6 +73,7 @@ import { ref, computed, watch, nextTick } from 'vue'
 import LogLine from './LogLine.vue'
 import type { LogEntry } from '../../types'
 import { isVisibleLogEntry } from '../../utils/logs'
+import { compactClaudeLogs, type ClaudeLogGroup } from '../../utils/compactClaudeLogs'
 
 const props = defineProps<{ logs: LogEntry[] }>()
 
@@ -55,6 +85,7 @@ const bodyEl = ref<HTMLElement | null>(null)
 const expandedLineIdx = ref<number | null>(null)
 const expandedTurnLineIdx = ref<number | null>(null)
 const expandedTurns = ref<Set<number>>(new Set())
+const expandedEvents = ref<Set<string>>(new Set())
 
 interface LineItem {
   type: 'line'
@@ -71,6 +102,7 @@ interface TurnItem {
 }
 
 function isToolLine(log: LogEntry): boolean {
+  if (log.detail?.is_error === true) return false
   // 'thinking' blocks routinely appear between tool calls in the same logical
   // turn (Claude emits thinking → tool_use → tool_result per step), so they're
   // treated as part of the run rather than a boundary — otherwise every
@@ -92,8 +124,8 @@ const visibleLogs = computed(() =>
   props.logs.map((log, index) => ({ log, index })).filter(({ log }) => isVisibleLogEntry(log)),
 )
 
-const groupedLogs = computed<(LineItem | TurnItem)[]>(() => {
-  const result: (LineItem | TurnItem)[] = []
+const groupedLogs = computed<(LineItem | TurnItem | ClaudeLogGroup)[]>(() => {
+  const result: (LineItem | TurnItem | ClaudeLogGroup)[] = []
   let turnNumber = 0
   let current: { log: LogEntry; index: number }[] = []
 
@@ -125,14 +157,17 @@ const groupedLogs = computed<(LineItem | TurnItem)[]>(() => {
     current = []
   }
 
-  visibleLogs.value.forEach(({ log, index }) => {
-    if (isToolLine(log)) {
-      current.push({ log, index })
+  for (const item of compactClaudeLogs(visibleLogs.value)) {
+    if ('type' in item) {
+      flush()
+      result.push(item)
+    } else if (isToolLine(item.log)) {
+      current.push(item)
     } else {
       flush()
-      result.push({ type: 'line', log, index })
+      result.push({ type: 'line', ...item })
     }
-  })
+  }
   flush()
 
   return result
@@ -150,6 +185,13 @@ function toggleTurn(turnNumber: number) {
   expandedTurns.value = next
 }
 
+function toggleEvent(key: string) {
+  const next = new Set(expandedEvents.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  expandedEvents.value = next
+}
+
 function toggleLineDetail(i: number) {
   expandedLineIdx.value = expandedLineIdx.value === i ? null : i
 }
@@ -164,6 +206,7 @@ defineExpose({
     expandedLineIdx.value = null
     expandedTurnLineIdx.value = null
     expandedTurns.value = new Set()
+    expandedEvents.value = new Set()
   },
 })
 
@@ -242,6 +285,15 @@ watch(
   cursor: pointer;
   border-radius: 2px;
 }
+.event-summary {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-family: inherit;
+  text-align: left;
+  width: 100%;
+}
+
 .turn-summary:hover {
   background: rgba(255, 255, 255, 0.04);
 }
