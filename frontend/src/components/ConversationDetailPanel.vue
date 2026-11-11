@@ -126,7 +126,7 @@
               "
               class="msg-content msg-content--markdown"
               v-artifacts="guildStore.currentGuild?.id"
-            v-html="renderMarkdown((msg as ChatMessage).content)"
+              v-html="renderMarkdown((msg as ChatMessage).content)"
             ></span>
             <span v-else class="msg-content">{{ (msg as ChatMessage).content }}</span>
           </template>
@@ -134,7 +134,20 @@
       </div>
 
       <div v-if="conversation.status !== 'closed'" class="reply-row">
-        <div class="reply-input-group">
+        <AttachmentTray
+          :attachments="attach.attachments.value"
+          :notice="attach.notice.value"
+          @remove="attach.remove"
+          @retry="attach.retry"
+        />
+        <div
+          class="reply-input-group"
+          :class="{ dragging: attach.dragging.value }"
+          @dragover="attach.onDragOver"
+          @dragleave="attach.onDragLeave"
+          @drop="attach.onDrop"
+        >
+          <AttachButton @files="attach.addFiles" />
           <textarea
             v-model="replyText"
             class="reply-input"
@@ -142,10 +155,13 @@
             rows="3"
             :disabled="sending"
             @keydown.enter.exact.prevent="onReply"
+            @paste="attach.onPaste"
           ></textarea>
           <button
             class="pixel-btn send-btn"
-            :disabled="sending || !replyText.trim()"
+            :disabled="
+              sending || attach.uploading.value || (!replyText.trim() && !attach.ready.value.length)
+            "
             @click="onReply"
           >
             {{ sending ? '…' : '▶' }}
@@ -169,6 +185,9 @@
 </template>
 
 <script setup lang="ts">
+import AttachmentTray from './AttachmentTray.vue'
+import AttachButton from './AttachButton.vue'
+import { useAttachments } from '../composables/useAttachments'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useGuildStore } from '../stores/guild'
 import { useConversationsStore } from '../stores/conversations'
@@ -196,6 +215,7 @@ const acting = ref(false)
 const loadingMessages = ref(false)
 const messagesEl = ref<HTMLElement | null>(null)
 const replyText = ref('')
+const attach = useAttachments(() => guildStore.currentGuild?.id)
 const sending = ref(false)
 const replyError = ref<string | null>(null)
 
@@ -379,8 +399,9 @@ async function load() {
 
 async function onReply() {
   const guildId = guildStore.currentGuild?.id
-  const content = replyText.value.trim()
-  if (!guildId || !content || sending.value) return
+  const content = attach.compose(replyText.value)
+  if (!guildId || !content || sending.value || attach.uploading.value || attach.hasErrors.value)
+    return
   sending.value = true
   replyError.value = null
   try {
@@ -389,6 +410,7 @@ async function onReply() {
     const posted = await conversationsStore.postConversationMessage(guildId, props.id, content)
     history.value = [...history.value, posted]
     replyText.value = ''
+    attach.clear()
   } catch (e) {
     replyError.value = e instanceof ApiError ? e.message : 'Failed to send reply'
   } finally {
@@ -928,6 +950,11 @@ watch(
   padding: 10px 12px;
   border-top: 2px solid var(--color-brass-dark);
   flex-shrink: 0;
+}
+
+.reply-input-group.dragging {
+  outline: 2px dashed var(--color-brass);
+  outline-offset: 2px;
 }
 
 .reply-input-group {

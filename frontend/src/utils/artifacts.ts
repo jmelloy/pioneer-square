@@ -1,5 +1,6 @@
 import type { Directive } from 'vue'
 import { api } from './api'
+import { openLightbox } from '../composables/useLightbox'
 
 // Messages reference artifacts as markdown links: `[shot.png](artifact://<uuid>)`.
 // renderMarkdown() keeps those links; this directive resolves them to previews.
@@ -59,6 +60,11 @@ export async function hydrateArtifactLinks(root: HTMLElement, guildId: string): 
         img.style.maxWidth = '100%'
         a.textContent = ''
         a.appendChild(img)
+        a.classList.add('artifact-thumb')
+        a.addEventListener('click', (e) => {
+          e.preventDefault()
+          openLightbox({ url: meta.url, name: label })
+        })
       } else {
         a.setAttribute('download', label)
       }
