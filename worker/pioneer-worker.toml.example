@@ -21,6 +21,12 @@ pull_interval = 300
 # Number of agents this worker runs concurrently (default: 4).
 # max_agents = 4
 
+# Optional prompt prepended to every task description, before the agent reads
+# AGENTS.md. Precedence: per-task `pre_agents_prompt` in the task payload >
+# this setting > PIONEER_PRE_AGENTS_PROMPT env var. An empty per-task value
+# disables injection for that task.
+# pre_agents_prompt = "Follow the team conventions in the wiki before starting."
+
 # Optional HTTP control API for driving/inspecting a live worker without a
 # frontend or the foreman. Disabled unless a port is set. Bind to localhost.
 # [api]

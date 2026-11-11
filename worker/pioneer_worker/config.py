@@ -69,6 +69,8 @@ class Config:
     pull_interval: float = 300.0
     claude_max_turns: int | None = None
     max_agents: int = 4
+    # Prompt prepended to every task description (before AGENTS.md is read).
+    pre_agents_prompt: str | None = None
     # Optional public-facing backend URL used when registering GitHub webhooks.
     # ``backend_url`` may point at an internal address GitHub can't reach
     # (e.g. ``http://backend:8000`` in Docker); set ``public_backend_url`` to
@@ -406,6 +408,9 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         # produces a worker that connects, announces no agents, and silently
         # never runs anything.
         max_agents=max(1, int(_max_agents_val)),
+        pre_agents_prompt=(
+            overrides.get("pre_agents_prompt") or raw.get("pre_agents_prompt") or None
+        ),
         public_backend_url=overrides.get("public_backend_url")
         or raw.get("public_backend_url")
         or os.environ.get("PIONEER_FRONTEND_URL"),
