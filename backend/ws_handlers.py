@@ -39,7 +39,7 @@ from foreman.runner import ensure_poll_loop, reset_foreman_poll
 from foreman.tools import maybe_post_plan_comment
 from guild_settings import get_guild_pre_agents_prompt
 from lock_service import LockService
-from models import Agent, Message, Task, TaskEvent, TaskLog, User, Worker
+from models import Agent, Message, Task, TaskEvent, TaskLog, User, Worker, task_conversation_id
 from pydantic import ValidationError
 from sqlalchemy import delete, func, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -382,14 +382,14 @@ async def handle_join(ctx: WSContext, msg: JoinMsg) -> None:
         # in tests where a peer WS closes on receiving the broadcast.
         if worker_id:
             result = await ctx.db.exec(
-                select(Task).where(
+                select(Task, task_conversation_id()).where(
                     col(Task.guild_id) == ctx.guild_pk,
                     col(Task.worker_id) == worker_id,
                     col(Task.state).in_(["pending", "working"]),
                 )
             )
             pending_tasks = result.all()
-            for pt in pending_tasks:
+            for pt, pt_conversation_id in pending_tasks:
                 logger.info(
                     "join: replaying task-assigned for pending task %s to worker %s",
                     pt.id,
@@ -408,7 +408,7 @@ async def handle_join(ctx: WSContext, msg: JoinMsg) -> None:
                         provider=pt.provider,
                         phase=pt.phase,
                         parentTaskId=pt.parent_task_id,
-                        conversationId=pt.conversation_id,
+                        conversationId=pt_conversation_id,
                         issueNumber=pt.issue_number,
                         issueRepo=pt.issue_repo,
                         prNumber=pt.pr_number,
@@ -647,7 +647,7 @@ async def handle_terminal_output(ctx: WSContext, msg: TerminalOutputMsg) -> None
     if task_id and line and level in _CONVERSATION_ACTIVITY_LEVELS:
         conversation_id = (
             await ctx.db.exec(
-                select(Task.conversation_id).where(
+                select(task_conversation_id()).where(
                     col(Task.id) == task_id, col(Task.guild_id) == ctx.guild_pk
                 )
             )

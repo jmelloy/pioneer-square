@@ -991,13 +991,13 @@ async def _notify_task_conversation(
         return False
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415
-        from models import Guild, Task  # noqa: PLC0415
+        from models import Guild, Task, task_conversation_id  # noqa: PLC0415
         from sqlmodel import col, select  # noqa: PLC0415
 
         async with AsyncSessionLocal() as db:
             row = (
                 await db.exec(
-                    select(Guild.slug, Task.conversation_id)
+                    select(Guild.slug, task_conversation_id().label("conversation_id"))
                     .join(Task, col(Task.guild_id) == col(Guild.id))
                     .where(col(Task.id) == task_id)
                 )

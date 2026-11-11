@@ -33,6 +33,7 @@ from foreman.runner import ensure_poll_loop, run_foreman_ai
 from lock_service import LockService
 from models import (
     Conversation,
+    ConversationTask,
     GithubEvent,
     GithubIssue,
     GithubPullRequest,
@@ -42,6 +43,7 @@ from models import (
     Message,
     Task,
 )
+from models import task_conversation_id as primary_conversation_id
 from pydantic import BaseModel
 from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -412,7 +414,7 @@ async def _find_task(
             col(Task.issue_repo),
             col(Task.issue_number),
             col(Task.branch),
-            col(Task.conversation_id),
+            primary_conversation_id().label("conversation_id"),
         )
         .where(
             col(Task.guild_id) == guild_pk,
@@ -440,13 +442,13 @@ async def _find_task_conversation_by_issue(
     if not repo or issue_number is None:
         return None
     res = await db.exec(
-        select(col(Task.conversation_id))
+        select(primary_conversation_id())
         .where(
             col(Task.guild_id) == guild_pk,
             col(Task.issue_repo) == repo,
             col(Task.issue_number) == issue_number,
             col(Task.deleted_at).is_(None),
-            col(Task.conversation_id).is_not(None),
+            col(Task.id).in_(select(ConversationTask.task_id)),
         )
         .order_by(col(Task.created_at).desc())
         .limit(1)
@@ -1424,7 +1426,7 @@ async def ci_notify(
         # Validate the caller-provided task_id belongs to this guild before using it as FK
         task_row = (
             await db.exec(
-                select(col(Task.id), col(Task.conversation_id)).where(
+                select(col(Task.id), primary_conversation_id().label("conversation_id")).where(
                     col(Task.id) == task_id, col(Task.guild_id) == guild_pk
                 )
             )

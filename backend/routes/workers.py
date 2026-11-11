@@ -24,7 +24,7 @@ from events import broadcast_msg, emit_terminal_line
 from fastapi import APIRouter, Depends, HTTPException
 from foreman.conversation_service import resolve_conversation_id
 from guild_settings import get_guild_pre_agents_prompt
-from models import Task, Worker, live_tasks_filter
+from models import ConversationTask, Task, Worker, live_tasks_filter
 from pydantic import BaseModel, field_validator
 from spawn_config import SpawnLayer, get_spawn_row, resolve_spawn, row_to_layer, upsert_spawn_row
 from sqlalchemy import update
@@ -407,9 +407,11 @@ async def assign_task(
             parent_task_id=data.parent_task_id,
             created_at=created_at,
             user_id=github_user_id,
-            conversation_id=conversation_id,
         )
     )
+    await db.flush()  # task row must exist before its link (FK)
+    if conversation_id is not None:
+        db.add(ConversationTask(conversation_id=conversation_id, task_id=task_id))
     await db.commit()
 
     await broadcast_msg(

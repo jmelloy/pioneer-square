@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 from database import AsyncSessionLocal  # noqa: E402
 from db import github_cache  # noqa: E402
-from models import Task  # noqa: E402
+from models import Task, task_conversation_id  # noqa: E402
 from sqlmodel import col, select  # noqa: E402
 from sqlmodel.ext.asyncio.session import AsyncSession  # noqa: E402
 
@@ -43,11 +43,11 @@ async def _issue_conversation_id(db: AsyncSession, repo: str, issue_number: int)
     most recently created task that actually has one set.
     """
     result = await db.exec(
-        select(col(Task.conversation_id))
+        select(task_conversation_id())
         .where(
             col(Task.issue_repo) == repo,
             col(Task.issue_number) == issue_number,
-            col(Task.conversation_id).is_not(None),
+            task_conversation_id().is_not(None),
         )
         .order_by(col(Task.created_at).desc())
         .limit(1)
@@ -59,11 +59,11 @@ async def _pr_conversation_id(db: AsyncSession, repo: str, pr_number: int) -> in
     """Best-effort conversation_id for a PR, from a matching task (#1300). See
     ``_issue_conversation_id`` for why this isn't guild-scoped."""
     result = await db.exec(
-        select(col(Task.conversation_id))
+        select(task_conversation_id())
         .where(
             col(Task.pr_repo) == repo,
             col(Task.pr_number) == pr_number,
-            col(Task.conversation_id).is_not(None),
+            task_conversation_id().is_not(None),
         )
         .order_by(col(Task.created_at).desc())
         .limit(1)

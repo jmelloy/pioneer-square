@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 sys.path.insert(0, os.path.dirname(__file__))
 
 from helpers import _sync_session, insert_agent, insert_guild, insert_worker, make_auth_token
-from models import Task
+from models import Task, task_conversation_id
 from sqlalchemy import select
 from sqlmodel import col  # noqa: E402
 
@@ -38,7 +38,7 @@ def test_start_agent_run_stamps_conversation_id(client, monkeypatch):
 
     with _sync_session(db_url) as session:
         conversation_id = session.scalar(
-            select(col(Task.conversation_id)).where(col(Task.id) == task_id)
+            select(task_conversation_id()).where(col(Task.id) == task_id)
         )
     assert conversation_id is not None
     assert broadcast.call_args.args[1].conversationId == conversation_id
@@ -69,10 +69,10 @@ def test_start_agent_run_reuses_same_conversation_for_same_user(client):
 
     with _sync_session(db_url) as session:
         conv1 = session.scalar(
-            select(col(Task.conversation_id)).where(col(Task.id) == first.json()["taskId"])
+            select(task_conversation_id()).where(col(Task.id) == first.json()["taskId"])
         )
         conv2 = session.scalar(
-            select(col(Task.conversation_id)).where(col(Task.id) == second.json()["taskId"])
+            select(task_conversation_id()).where(col(Task.id) == second.json()["taskId"])
         )
     assert conv1 is not None
     assert conv1 == conv2

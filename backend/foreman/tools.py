@@ -44,6 +44,7 @@ from lock_service import LockService
 from models import (
     Agent,
     Conversation,
+    ConversationTask,
     GithubToken,
     Guild,
     GuildKey,
@@ -53,6 +54,8 @@ from models import (
     TaskLog,
     User,
     Worker,
+    link_conversation_task,
+    task_conversation_id,
 )
 from sqlalchemy import update
 from sqlmodel import col, select
@@ -1596,9 +1599,11 @@ async def _handle_create_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
             pr_repo=inp.get("pr_repo"),
             created_at=created_at,
             user_id=user_id,
-            conversation_id=conversation_id,
         )
     )
+    await db.flush()  # task row must exist before its link (FK)
+    if conversation_id is not None:
+        db.add(ConversationTask(conversation_id=conversation_id, task_id=task_id))
     await db.flush()
     await link_task_context(db, task_id)
     await db.commit()
@@ -1875,9 +1880,12 @@ async def _handle_assign_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
                     )
                     .values(**update_values)
                 )
+                # N:N (#1431): reusing a task from another conversation links it here too.
+                if ctx.conversation_id is not None and existing_linkage is not None:
+                    await db.exec(link_conversation_task(ctx.conversation_id, existing_task_id))
                 await db.commit()
                 name_result = await db.exec(
-                    select(col(Task.name), col(Task.conversation_id)).where(
+                    select(col(Task.name), task_conversation_id()).where(
                         col(Task.id) == existing_task_id
                     )
                 )
@@ -1975,9 +1983,11 @@ async def _handle_assign_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
                         parent_task_id=parent_task_id,
                         created_at=created_at,
                         user_id=user_id,
-                        conversation_id=conversation_id,
                     )
                 )
+                await db.flush()  # task row must exist before its link (FK)
+                if conversation_id is not None:
+                    db.add(ConversationTask(conversation_id=conversation_id, task_id=task_id))
                 await db.commit()
                 logger.info(
                     "assign_task enqueue guild=%s task=%s worker=%s phase=%s "

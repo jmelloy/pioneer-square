@@ -60,6 +60,7 @@ from models import (
     Task,
     Worker,
     live_tasks_filter,
+    task_in_conversation,
 )
 from sqlalchemy import delete, func, tuple_
 from sqlmodel import col, select
@@ -515,7 +516,7 @@ async def _load_conversation_context(db, conversation_id: int | None) -> str:
             col(Task.branch),
             col(Task.pr_url),
         )
-        .where(col(Task.conversation_id) == conversation_id)
+        .where(task_in_conversation(conversation_id))
         .order_by(col(Task.created_at).desc())
         .limit(MAX_CONVERSATION_TASKS)
     )
