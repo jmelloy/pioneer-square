@@ -104,7 +104,16 @@ async def test_worker_output_from_multiple_tasks_is_live_and_durable(client):
             for task_id in ["t-feed-1", "t-feed-2", "t-feed-3"]:
                 await handle_terminal_output(
                     ctx,
-                    TerminalOutputMsg(taskId=task_id, line=f"Working on {task_id}", level="info"),
+                    TerminalOutputMsg(
+                        taskId=task_id,
+                        line=f"Working on {task_id}",
+                        level="info",
+                        detail={
+                            "toolType": "tool_use",
+                            "name": "bash",
+                            "input": {"command": "pytest"},
+                        },
+                    ),
                 )
         assert [call.args[1].conversationId for call in broadcast.call_args_list] == [
             conversation_id,
@@ -112,6 +121,8 @@ async def test_worker_output_from_multiple_tasks_is_live_and_durable(client):
             other_id,
         ]
         assert stream.call_args_list[0].kwargs["conversation_id"] == conversation_id
+        assert broadcast.call_args_list[0].args[1].detail["input"] == {"command": "pytest"}
+        assert broadcast.call_args_list[0].args[1].level == "info"
     token = make_auth_token(db_url)
     response = test_client.get(
         f"/api/guilds/{slug}/conversations/{conversation_id}/messages",
@@ -120,6 +131,8 @@ async def test_worker_output_from_multiple_tasks_is_live_and_durable(client):
     assert response.status_code == 200
     assert [m["taskId"] for m in response.json()] == ["t-feed-1", "t-feed-2"]
     assert all(m["source"] == "worker" for m in response.json())
+    assert all(m["detail"]["input"] == {"command": "pytest"} for m in response.json())
+    assert all(m["level"] == "info" for m in response.json())
 
 
 def test_successful_check_is_persisted_once_for_conversation(client):

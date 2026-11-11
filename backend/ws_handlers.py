@@ -661,6 +661,8 @@ async def handle_terminal_output(ctx: WSContext, msg: TerminalOutputMsg) -> None
             source="worker",
             created_at=created_at,
             mirror=False,
+            detail=detail,
+            level=level,
         )
         # Discord batches worker lines to avoid a network request per log line.
         if conversation_id is not None or level in {None, "info", "thinking"}:

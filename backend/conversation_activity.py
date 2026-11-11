@@ -1,5 +1,6 @@
 """Publish worker and GitHub activity into the owning conversation, without waking the Foreman."""
 
+import json
 from datetime import UTC, datetime
 
 import discord_notifier
@@ -64,6 +65,8 @@ async def publish_activity(
     source: str,
     created_at: datetime | None = None,
     mirror: bool = True,
+    detail: dict | None = None,
+    level: str | None = None,
 ) -> None:
     """Persist before broadcasting; callers supply a guild-validated conversation."""
     if conversation_id is None or not content.strip():
@@ -80,6 +83,7 @@ async def publish_activity(
             message_type="activity",
             source=source,
             created_at=created_at,
+            meta=json.dumps({"detail": detail, "level": level}),
         )
     )
     await db.commit()
@@ -93,6 +97,8 @@ async def publish_activity(
             conversationId=conversation_id,
             source=source,
             createdAt=created_at.isoformat(),
+            detail=detail,
+            level=level,
         ),
     )
     if mirror:

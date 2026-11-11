@@ -103,6 +103,9 @@ class ChatMsg(_WS):
     # The Conversation (#1298) this message belongs to, so the Conversations
     # UI can filter live messages. None for messages not scoped to one.
     conversationId: int | None = None
+    # Worker activity uses the same expandable renderer as the task log pane.
+    detail: dict[str, Any] | None = None
+    level: str | None = None
 
 
 class TerminalOutputMsg(_WS):
