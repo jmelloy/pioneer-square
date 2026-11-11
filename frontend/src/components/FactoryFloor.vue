@@ -1,18 +1,18 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useAgentsStore } from '../stores/agents'
 import { useTasksStore } from '../stores/tasks'
 import { useUiStore } from '../stores/ui'
 import { FactoryRenderer, loadImage } from './factory-floor/renderer'
 import { FactoryState } from './factory-floor/state'
 import type { DoohickeyAtlasMeta, RobotAtlasMeta, SceneConfig } from './factory-floor/types'
-import sceneJson from './factory-floor/scene.json'
+import sceneJson from './factory-floor/scenes/glued/scene.json'
 import robotMeta from './factory-floor/assets/robots-atlas.json'
 import dooMeta from './factory-floor/assets/doohickeys.json'
-import backgroundUrl from './factory-floor/assets/background.png'
+import backgroundUrl from './factory-floor/scenes/glued/assets/background.png'
 import robotsUrl from './factory-floor/assets/robots-atlas.png'
 import doohickeysUrl from './factory-floor/assets/doohickeys.png'
-import maskUrl from './factory-floor/assets/prop-mask.png'
+import maskUrl from './factory-floor/scenes/glued/assets/prop-mask.png'
 
 const props = withDefaults(defineProps<{ paused?: boolean; showZones?: boolean }>(), {
   paused: undefined,
@@ -23,13 +23,6 @@ const uiStore = useUiStore()
 const scene = sceneJson as unknown as SceneConfig
 const { width: W, height: H } = scene.image
 const floor = new FactoryState(scene)
-const workCentre = scene.spots.reduce(
-  ([x, y], spot) => {
-    const [sx, sy] = floor.paths.geo.tileCentre(...spot.tile)
-    return [x + sx / scene.spots.length, y + sy / scene.spots.length]
-  },
-  [0, 0],
-)
 const agents = computed(() => agentsStore.agents.filter((agent) => agent.state !== 'offline'))
 const taskById = computed(() => new Map(tasksStore.tasks.map((task) => [task.id, task])))
 const positions = ref<Record<string, [number, number]>>({})
@@ -47,23 +40,11 @@ let last = 0
 let clock = 0
 let disposed = false
 
-async function measure() {
+function measure() {
   if (!wrap.value || disposed) return
   const { clientWidth, clientHeight } = wrap.value
   if (clientWidth <= 0 || clientHeight <= 0) return
-  // Zoom up only when at least 80% of that level fits in both dimensions.
-  scale.value = Math.max(1, Math.floor(Math.min(clientWidth / W, clientHeight / H) / 0.8))
-  await nextTick()
-  if (!wrap.value || disposed) return
-  // Start the crop at the work spots; scrolling can still reveal the rest of the room.
-  wrap.value.scrollLeft = Math.max(
-    0,
-    Math.min(W * scale.value - clientWidth, workCentre[0] * scale.value - clientWidth / 2),
-  )
-  wrap.value.scrollTop = Math.max(
-    0,
-    Math.min(H * scale.value - clientHeight, workCentre[1] * scale.value - clientHeight / 2),
-  )
+  scale.value = clientHeight / H
 }
 
 function draw() {
@@ -214,13 +195,14 @@ const tickerMessages = computed(() => {
 .floor-viewport {
   position: absolute;
   inset: 34px 0 28px;
-  overflow: auto;
-  display: grid;
-  place-items: safe center;
+  overflow: hidden;
+  mask-image: linear-gradient(to right, transparent, black 6%, black 94%, transparent);
 }
 .floor-stage {
-  position: relative;
-  flex-shrink: 0;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
 }
 canvas {
   display: block;
