@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 from helpers import _sync_session, insert_guild, make_auth_token
-from models import Guild, Task
+from models import Guild, Task, User
 from routes import auth
 from sqlmodel import select
 
@@ -142,3 +142,33 @@ def test_publication_never_falls_back_to_personal_token(publication):
     response = request(publication)
     assert response.status_code == 503
     assert "App" in response.json()["detail"]
+
+
+def test_task_identity_returns_author_and_committer(publication, monkeypatch):
+    client, db_url, worker, _ = publication
+    monkeypatch.setattr(auth, "get_app_bot_identity", lambda: ("app[bot]", "9+app@x"))
+    with _sync_session(db_url) as db:
+        db.add(
+            User(
+                id="42",
+                github_id="42",
+                github_login="ada",
+                display_name="Ada L",
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+        )
+        task = db.get(Task, "t-publish")
+        task.user_id = "42"
+        db.add(task)
+        db.commit()
+    r = client.get(
+        "/auth/github/task-identity",
+        params={"guild_id": "g-publish", "task_id": "t-publish"},
+        headers={"Authorization": f"Bearer {worker['auth_token']}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == {
+        "author": {"name": "Ada L", "email": "42+ada@users.noreply.github.com"},
+        "committer": {"name": "app[bot]", "email": "9+app@x"},
+    }

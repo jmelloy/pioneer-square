@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import dataclasses
 import json
 import subprocess
 from pathlib import Path
@@ -49,6 +50,8 @@ class GitHub:
         self.timeout_after_update = False
         self.calls = []
         self.commits = {}
+        self.seen_commit_bodies = []
+        self.commit_committer = "app[bot]"
         self.on_verify = None
         self.credentials_status = 200
 
@@ -99,7 +102,12 @@ class GitHub:
                 tree = git(self.root, "write-tree", env=env)
                 status, result = 201, {"sha": self.base if self.wrong_tree else tree}
             elif path.endswith("/git/commits"):
-                assert set(body) == {"tree", "parents", "message"}
+                assert (
+                    {"tree", "parents", "message"}
+                    <= set(body)
+                    <= {"tree", "parents", "message", "author", "committer"}
+                )
+                self.seen_commit_bodies.append(body)
                 # A real object with different identity from the local commit.
                 raw = (
                     f"tree {body['tree']}\nparent {body['parents'][0]}\n"
@@ -122,6 +130,7 @@ class GitHub:
                 self.commits[oid] = {
                     "sha": oid,
                     "author": {"login": "app[bot]"},
+                    "committer": {"login": self.commit_committer},
                     "commit": {
                         "message": body["message"],
                         "tree": {"sha": body["tree"]},
@@ -460,3 +469,56 @@ def test_unconfigured_cli_fails_without_network(monkeypatch, capsys):
         monkeypatch.delenv(key, raising=False)
     assert publish.main(["-m", "checkpoint"]) == 1
     assert "PIONEER_" in capsys.readouterr().err
+
+
+async def test_signed_commit_is_authored_by_user_and_committed_by_bot(publisher):
+    root, server, context = publisher
+    context = dataclasses.replace(
+        context, author=("Ada", "ada@example.com"), committer=("app[bot]", "1+app@x")
+    )
+    (root / "original.txt").write_text("changed")
+    assert await publish.publish_checkpoint(root, context, "by ada") == "pushed"
+    body = server.seen_commit_bodies[-1]
+    assert body["author"]["name"] == "Ada" and body["author"]["email"] == "ada@example.com"
+    assert body["committer"]["name"] == "app[bot]"
+
+
+async def test_commit_without_identity_sends_no_author(publisher):
+    root, server, context = publisher
+    (root / "original.txt").write_text("changed")
+    await publish.publish_checkpoint(root, context, "plain")
+    assert "author" not in server.seen_commit_bodies[-1]
+
+
+async def test_user_authored_commit_rejected_when_committer_is_not_the_app(publisher):
+    root, server, context = publisher
+    context = dataclasses.replace(context, author=("Ada", "ada@example.com"))
+    server.commit_committer = "someone-else"
+    (root / "original.txt").write_text("changed")
+    with pytest.raises(publish.PublishError, match="committer"):
+        await publish.publish_checkpoint(root, context, "bad")
+
+
+async def test_unsigned_fallback_authors_as_user_and_commits_as_bot(
+    publisher, monkeypatch, tmp_path_factory
+):
+    root, server, context = publisher
+    remote = tmp_path_factory.mktemp("author-remote") / "repo.git"
+    git(root, "init", "--bare", str(remote))
+    real_git = publish._git
+
+    async def local_push(args, **kwargs):
+        if args[0] == "push":
+            return git(kwargs["cwd"], "push", str(remote), args[-1]).encode()
+        return await real_git(args, **kwargs)
+
+    monkeypatch.setattr(publish, "_git", local_push)
+    server.credentials_status = 503
+    context = dataclasses.replace(
+        context, author=("Ada", "ada@example.com"), committer=("bot", "bot@example.com")
+    )
+    (root / "original.txt").write_text("changed")
+    await publish.publish_checkpoint(root, context, "unsigned by ada")
+    assert git(root, "log", "-1", "--format=%an <%ae>|%cn <%ce>") == (
+        "Ada <ada@example.com>|bot <bot@example.com>"
+    )

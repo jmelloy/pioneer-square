@@ -200,6 +200,59 @@ async def get_publish_token(
         ) from exc
 
 
+def _user_git_identity(user: User) -> tuple[str, str] | None:
+    """Return (name, email) to author a user's commits, or None if unknown.
+
+    Prefers the user's stored email; otherwise GitHub's noreply address
+    (``<id>+<login>@users.noreply.github.com``) so GitHub still links the
+    commit to the account without exposing a private address.
+    """
+    name = user.display_name or user.github_login
+    if not name:
+        return None
+    if user.email:
+        return name, user.email
+    if user.github_login and user.github_id.isdigit():
+        return name, f"{user.github_id}+{user.github_login}@users.noreply.github.com"
+    return None
+
+
+@router.get("/auth/github/task-identity")
+async def get_task_identity(
+    response: Response,
+    guild_id: str = Query(...),
+    task_id: str = Query(...),
+    principal: str = Depends(require_worker_or_member),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Return the author/committer pair for commits made by *task_id*.
+
+    ``author`` is the human who triggered the task (null when unknown, e.g.
+    system tasks or users without a usable name); ``committer`` is the GitHub
+    App bot (null when the App is not configured). Only the assigned worker may
+    read it.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    guild = (await db.exec(select(Guild).where(col(Guild.slug) == guild_id))).one_or_none()
+    task = await db.get(Task, task_id)
+    if not guild or not task or task.guild_id != guild.id or task.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Task not found in this guild")
+    if not task.worker_id or principal != f"worker:{task.worker_id}":
+        raise HTTPException(status_code=403, detail="Only the assigned worker may read this")
+    author = None
+    user = await db.get(User, task.user_id) if task.user_id else None
+    # Discord bot accounts are provisioned under a real human; author as them.
+    if user and user.is_bot and user.parent_user_id:
+        user = await db.get(User, user.parent_user_id) or user
+    if user and not user.is_bot:
+        author = _user_git_identity(user)
+    committer = get_app_bot_identity()
+    return {
+        "author": {"name": author[0], "email": author[1]} if author else None,
+        "committer": {"name": committer[0], "email": committer[1]} if committer else None,
+    }
+
+
 @router.get("/auth/me")
 async def get_me(
     github_user_id: str = Depends(require_user),
