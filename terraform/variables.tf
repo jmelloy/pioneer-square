@@ -337,6 +337,24 @@ variable "s3_force_destroy" {
   default     = false
 }
 
+variable "artifact_bucket_name" {
+  description = "Optional explicit name for the screenshot/image artifact bucket. Leave empty to derive a unique name from project/environment/account ID."
+  type        = string
+  default     = ""
+}
+
+variable "artifact_retention_days" {
+  description = "Expire artifacts after this many days. 0 keeps them forever."
+  type        = number
+  default     = 0
+}
+
+variable "artifact_cors_allowed_origins" {
+  description = "Origins allowed to GET/PUT artifact objects from a browser (e.g. the frontend URL)."
+  type        = list(string)
+  default     = ["*"]
+}
+
 # -----------------------------------------------------------------------------
 # GitHub OIDC (for the deploy.yml / terraform.yml Actions workflows)
 # -----------------------------------------------------------------------------
