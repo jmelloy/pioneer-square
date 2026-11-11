@@ -104,6 +104,12 @@ class Guild(SoftDeleteMixin, SQLModel, table=True):
     version: str | None = None
     # Per-guild foreman AI configuration. NULL = use process defaults.
     foreman_config: dict | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    # Guild-level default for the pre-agents.md prompt injected ahead of AGENTS.md.
+    # Lowest-precedence source (task override > worker TOML > worker env > guild).
+    pre_agents_prompt: str | None = None
+    pre_agents_prompt_updated_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
 
 
 class Agent(SQLModel, table=True):

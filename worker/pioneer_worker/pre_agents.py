@@ -6,6 +6,7 @@ reads the repository's AGENTS.md. Precedence (highest first):
 1. ``pre_agents_prompt`` in the task payload
 2. ``pre_agents_prompt`` in ``pioneer-worker.toml``
 3. ``PIONEER_PRE_AGENTS_PROMPT`` environment variable
+4. Guild-level default, delivered as ``guild_pre_agents_prompt`` in the task
 
 A source that is unset or whitespace-only is skipped. An explicitly empty
 string in the task payload (``""``) disables injection for that task.
@@ -19,6 +20,7 @@ from typing import Any
 
 ENV_VAR = "PIONEER_PRE_AGENTS_PROMPT"
 TASK_KEY = "pre_agents_prompt"
+GUILD_KEY = "guild_pre_agents_prompt"
 
 
 def resolve_prompt(
@@ -35,7 +37,14 @@ def resolve_prompt(
     if isinstance(toml_value, str) and toml_value.strip():
         return toml_value.strip()
     env = os.environ if environ is None else environ
-    return (env.get(ENV_VAR) or "").strip()
+    env_val = (env.get(ENV_VAR) or "").strip()
+    if env_val:
+        return env_val
+    if task is not None:
+        guild_val = task.get(GUILD_KEY)
+        if isinstance(guild_val, str):
+            return guild_val.strip()
+    return ""
 
 
 def apply_pre_agents(

@@ -1345,6 +1345,7 @@ class Worker:
                         "pr_url": msg.get("prUrl"),
                         "head_sha": msg.get("headSha"),
                         "repos": msg.get("repos") or [],
+                        "guild_pre_agents_prompt": msg.get("guildPreAgentsPrompt"),
                     }
                     if reason := self._assignment_capacity_reason(task):
                         await self._reject_assignment(task_id, reason)

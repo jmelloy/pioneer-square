@@ -538,3 +538,113 @@ def test_foreman_config_bedrock_with_model_accepted(client, monkeypatch):
         },
     )
     assert patch.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# guild settings — pre_agents_prompt
+# ---------------------------------------------------------------------------
+
+
+def _auth(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_guild_settings_default_empty(client):
+    test_client, db_url = client
+    token = make_auth_token(db_url)  # owner
+    insert_guild(db_url, "g-set1")
+    resp = test_client.get("/api/guilds/g-set1/settings", headers=_auth(token))
+    assert resp.status_code == 200
+    assert resp.json() == {"pre_agents_prompt": None, "pre_agents_prompt_updated_at": None}
+
+
+def test_guild_settings_patch_round_trip_and_clear(client):
+    test_client, db_url = client
+    token = make_auth_token(db_url)
+    insert_guild(db_url, "g-set2")
+    h = _auth(token)
+
+    patch = test_client.patch(
+        "/api/guilds/g-set2/settings", headers=h, json={"pre_agents_prompt": "Be careful."}
+    )
+    assert patch.status_code == 200
+    assert patch.json()["pre_agents_prompt"] == "Be careful."
+    assert patch.json()["pre_agents_prompt_updated_at"]
+
+    got = test_client.get("/api/guilds/g-set2/settings", headers=h).json()
+    assert got["pre_agents_prompt"] == "Be careful."
+
+    # null and whitespace-only both clear it
+    for cleared in (None, "   \n"):
+        test_client.patch("/api/guilds/g-set2/settings", headers=h, json={"pre_agents_prompt": "x"})
+        resp = test_client.patch(
+            "/api/guilds/g-set2/settings", headers=h, json={"pre_agents_prompt": cleared}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["pre_agents_prompt"] is None
+
+
+def test_guild_settings_patch_without_field_is_noop(client):
+    test_client, db_url = client
+    token = make_auth_token(db_url)
+    insert_guild(db_url, "g-set3")
+    h = _auth(token)
+    test_client.patch("/api/guilds/g-set3/settings", headers=h, json={"pre_agents_prompt": "keep"})
+    resp = test_client.patch("/api/guilds/g-set3/settings", headers=h, json={})
+    assert resp.status_code == 200
+    assert resp.json()["pre_agents_prompt"] == "keep"
+
+
+def test_guild_settings_patch_rejects_oversized(client):
+    test_client, db_url = client
+    token = make_auth_token(db_url)
+    insert_guild(db_url, "g-set4")
+    resp = test_client.patch(
+        "/api/guilds/g-set4/settings",
+        headers=_auth(token),
+        json={"pre_agents_prompt": "x" * 20_001},
+    )
+    assert resp.status_code == 422
+
+
+def test_guild_settings_patch_owner_only(client):
+    from helpers import insert_member
+
+    test_client, db_url = client
+    insert_guild(db_url, "g-set5")
+    insert_member(db_url, "g-set5", "plain-member", role="member")
+    member_token = make_auth_token(db_url, user_id="plain-member", username="pm")
+    h = _auth(member_token)
+    assert (
+        test_client.patch(
+            "/api/guilds/g-set5/settings", headers=h, json={"pre_agents_prompt": "nope"}
+        ).status_code
+        == 403
+    )
+    # members may read
+    assert test_client.get("/api/guilds/g-set5/settings", headers=h).status_code == 200
+
+
+def test_guild_settings_requires_membership(client):
+    test_client, db_url = client
+    insert_guild(db_url, "g-set6")
+    outsider = make_auth_token(db_url, user_id="outsider", username="out")
+    assert (
+        test_client.get("/api/guilds/g-set6/settings", headers=_auth(outsider)).status_code == 403
+    )
+    assert test_client.get("/api/guilds/g-set6/settings").status_code == 401
+
+
+def test_get_guild_pre_agents_prompt_helper(client):
+    import asyncio
+
+    from guild_settings import get_guild_pre_agents_prompt
+
+    test_client, db_url = client
+    token = make_auth_token(db_url)
+    insert_guild(db_url, "g-set7")
+    test_client.patch(
+        "/api/guilds/g-set7/settings", headers=_auth(token), json={"pre_agents_prompt": "hello"}
+    )
+    assert asyncio.run(get_guild_pre_agents_prompt("g-set7")) == "hello"
+    assert asyncio.run(get_guild_pre_agents_prompt("missing")) is None

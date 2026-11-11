@@ -226,6 +226,7 @@
       "branch",
       "conversationId",
       "description",
+      "guildPreAgentsPrompt",
       "headSha",
       "issueNumber",
       "issueRepo",

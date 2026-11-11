@@ -46,3 +46,15 @@ def test_apply_noop_without_prompt():
 
 def test_apply_whitespace_only_noop():
     assert apply_pre_agents("do it", {"pre_agents_prompt": "  "}, "x", {}) == "do it"
+
+
+def test_guild_prompt_is_lowest_precedence():
+    from pioneer_worker.pre_agents import resolve_prompt
+
+    task = {"guild_pre_agents_prompt": " guild "}
+    assert resolve_prompt(task, None, {}) == "guild"
+    assert resolve_prompt(task, None, {"PIONEER_PRE_AGENTS_PROMPT": "env"}) == "env"
+    assert resolve_prompt(task, "toml", {"PIONEER_PRE_AGENTS_PROMPT": "env"}) == "toml"
+    assert resolve_prompt({**task, "pre_agents_prompt": "task"}, "toml", {}) == "task"
+    # explicit empty task override disables injection, even the guild default
+    assert resolve_prompt({**task, "pre_agents_prompt": ""}, None, {}) == ""

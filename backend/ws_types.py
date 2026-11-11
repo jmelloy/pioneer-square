@@ -144,6 +144,8 @@ class TaskAssignedMsg(_WS):
     prUrl: str | None = None
     headSha: str | None = None
     repos: list[str] | None = None
+    # Guild-level pre-agents prompt; lowest-precedence source (worker resolves).
+    guildPreAgentsPrompt: str | None = None
 
 
 class TaskCreatedMsg(_WS):

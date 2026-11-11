@@ -48,6 +48,7 @@
               :guild-id="currentGuild.id"
               :config="foremanConfig"
             />
+            <GuildPreAgentsPrompt v-if="currentGuild" :guild-id="currentGuild.id" />
           </section>
 
           <!-- Members -->
@@ -72,6 +73,7 @@ import { useForemanConfig } from '../composables/useForemanConfig'
 import GuildGeneralSettings from './GuildGeneralSettings.vue'
 import GuildForemanSettings from './GuildForemanSettings.vue'
 import GuildWorkerSettings from './GuildWorkerSettings.vue'
+import GuildPreAgentsPrompt from './GuildPreAgentsPrompt.vue'
 import GuildMembers from './GuildMembers.vue'
 import GuildDiscordSettings from './GuildDiscordSettings.vue'
 
