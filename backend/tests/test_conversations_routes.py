@@ -150,6 +150,37 @@ class TestListConversationsRoute:
 
         assert [c.id for c in out] == [newer_id, older_id]
 
+    async def test_lists_preview_and_participants(self, db_session):
+        insert_guild(db_session, "g-conv-preview")
+        conv_id = insert_conversation(db_session, "g-conv-preview", user_id="user-1")
+        now = datetime.now(UTC)
+        async with database_module.AsyncSessionLocal() as db:
+            conversation = await db.get(Conversation, conv_id)
+            for i, (sender, user, role, content) in enumerate(
+                [
+                    (None, "user-1", None, "hello"),
+                    ("foreman", None, None, "latest reply"),
+                    ("foreman", None, "tool_use", "tool noise"),
+                ]
+            ):
+                db.add(
+                    Message(
+                        guild_id=conversation.guild_id,
+                        conversation_id=conv_id,
+                        from_agent=sender,
+                        user_id=user,
+                        role=role,
+                        content=content,
+                        message_type="chat",
+                        created_at=now + timedelta(seconds=i),
+                    )
+                )
+            await db.commit()
+            [out] = await list_conversations("g-conv-preview", None, "user-1", db)
+
+        assert out.preview == "latest reply"
+        assert out.participants == ["user-1", "foreman"]
+
     async def test_filters_by_status(self, db_session):
         insert_guild(db_session, "g-conv-list-status")
         conv_id = insert_conversation(db_session, "g-conv-list-status", user_id="user-1")

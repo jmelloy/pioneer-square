@@ -6,7 +6,7 @@ import { useGuildStore } from '../../../stores/guild'
 import { useConversationsStore } from '../../../stores/conversations'
 import { useUiStore } from '../../../stores/ui'
 import { api } from '../../../utils/api'
-import type { Conversation } from '../../../types'
+import type { Conversation, TaskTreeData, TaskTreeNode } from '../../../types'
 
 vi.mock('../../../utils/api', async () => {
   const actual = await vi.importActual<typeof import('../../../utils/api')>('../../../utils/api')
@@ -23,9 +23,23 @@ const conversations: Conversation[] = ['active', 'archived', 'closed'].map((stat
   updated_at: '2026-01-01T00:00:00Z',
 }))
 
+const task = (id: string, state: string, children: TaskTreeNode[] = []): TaskTreeNode =>
+  ({ id, name: `Task ${id}`, state, children }) as TaskTreeNode
+
+const tree: TaskTreeData = {
+  conversations: [
+    { ...conversations[0], tasks: [task('t-parent', 'running', [task('t-child', 'done')])] },
+  ],
+  ungrouped: [task('t-loose', 'done')],
+}
+
 async function mountList() {
   useGuildStore().currentGuild = { id: 'g1', name: 'Guild 1' }
-  vi.mocked(api).mockResolvedValue(conversations.map((conversation) => ({ ...conversation })))
+  vi.mocked(api).mockImplementation(async (path: string) =>
+    path.endsWith('/tasks/tree')
+      ? tree
+      : conversations.map((conversation) => ({ ...conversation })),
+  )
   const wrapper = mount(ConversationList)
   await flushPromises()
   return wrapper
@@ -61,8 +75,9 @@ describe('ConversationList', () => {
       expect(ui.selectedConversationId).toBe(selectedId)
       expect(ui.activeTab).toBe(activeTab)
     }
-    expect(api).toHaveBeenCalledTimes(1)
+    expect(api).toHaveBeenCalledTimes(2)
     expect(api).toHaveBeenCalledWith('/api/guilds/g1/conversations')
+    expect(api).toHaveBeenCalledWith('/guilds/g1/tasks/tree')
     wrapper.unmount()
   })
 
@@ -139,6 +154,41 @@ describe('ConversationList', () => {
     await wrapper.get('input[type="search"]').setValue('needle')
     await vi.advanceTimersByTimeAsync(250)
     expect(wrapper.get('[role="alert"]').text()).toContain('Search failed')
+    wrapper.unmount()
+  })
+
+  it('nests the task hierarchy under its conversation with expand/collapse and open', async () => {
+    const wrapper = await mountList()
+    const row = wrapper.findAll('.conversation-row')[0]
+    // Live work → expanded by default; parent task's own toggle reveals the child.
+    expect(wrapper.text()).toContain('Task t-parent')
+    expect(wrapper.text()).toContain('Task t-loose')
+    await row.trigger('click')
+    expect(wrapper.text()).not.toContain('Task t-parent')
+    expect(useUiStore().selectedConversationId).toBeNull()
+
+    await wrapper.findAll('.open-btn')[0].trigger('click')
+    expect(useUiStore().selectedConversationId).toBe(1)
+    wrapper.unmount()
+  })
+
+  it('filters by time range and caps to the last N', async () => {
+    const recent = new Date().toISOString()
+    conversations[0].updated_at = recent
+    const wrapper = await mountList()
+    conversations[0].updated_at = '2026-01-01T00:00:00Z'
+    const [range, limit] = wrapper.findAll('select')
+    await range.setValue('24')
+    expect(wrapper.findAll('.conversation-row')).toHaveLength(1)
+    await range.setValue('0')
+    useConversationsStore().conversations = Array.from({ length: 30 }, (_, i) => ({
+      ...conversations[1],
+      id: 100 + i,
+    }))
+    await flushPromises()
+    expect(wrapper.findAll('.conversation-row')).toHaveLength(25)
+    await limit.setValue('0')
+    expect(wrapper.findAll('.conversation-row')).toHaveLength(30)
     wrapper.unmount()
   })
 })

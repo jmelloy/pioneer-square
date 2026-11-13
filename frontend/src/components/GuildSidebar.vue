@@ -3,17 +3,10 @@
     <div class="tab-bar">
       <button
         class="tab-btn"
-        :class="{ active: activeTab === 'tasks' }"
-        @click="activeTab = 'tasks'"
-      >
-        <span class="tab-label">Tasks</span>
-      </button>
-      <button
-        class="tab-btn"
         :class="{ active: activeTab === 'conversations' }"
         @click="activeTab = 'conversations'"
       >
-        <span class="tab-label">Conversations</span>
+        <span class="tab-label">Conversations &amp; Tasks</span>
         <span v-if="activeConversationCount" class="tab-count">{{ activeConversationCount }}</span>
       </button>
       <button
@@ -28,7 +21,6 @@
     </div>
 
     <div class="tab-content">
-      <TaskTree v-if="activeTab === 'tasks'" />
       <ConversationList v-if="activeTab === 'conversations'" />
       <IssuesTab
         v-if="activeTab === 'issues' && ghStore.isConfigured"
@@ -52,7 +44,6 @@ import { useGuildStore } from '../stores/guild'
 import { useGitHubStore } from '../stores/github'
 import { useUiStore } from '../stores/ui'
 import { useConversationsStore } from '../stores/conversations'
-import TaskTree from './sidebar/TaskTree.vue'
 import ConversationList from './sidebar/ConversationList.vue'
 import IssuesTab from './chat-pane/IssuesTab.vue'
 import CostSummary from './sidebar/CostSummary.vue'
@@ -70,7 +61,7 @@ const openIssueCount = computed(() => ghStore.issues.filter((i) => i.state === '
 const activeConversationCount = computed(
   () => conversationsStore.conversations.filter((c) => c.status === 'active').length,
 )
-const activeTab = ref<'tasks' | 'conversations' | 'issues'>('tasks')
+const activeTab = ref<'conversations' | 'issues'>('conversations')
 
 onMounted(async () => {
   if (ghStore.repos.length === 0 && ghStore.token) {
