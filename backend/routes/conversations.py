@@ -51,6 +51,9 @@ class ConversationOut(BaseModel):
     discord_thread_id: str | None
     created_at: datetime
     updated_at: datetime
+    # List endpoint only: latest plain chat message and distinct senders.
+    preview: str | None = None
+    participants: list[str] = []
 
 
 def _to_out(conversation: Conversation) -> ConversationOut:
@@ -294,8 +297,26 @@ async def list_conversations(
         stmt = stmt.where(
             or_(col(Conversation.name).icontains(query, autoescape=True), matching_message)
         )
-    result = await db.exec(stmt.limit(200))
-    return [_to_out(c) for c in result.all()]
+    out = [_to_out(c) for c in (await db.exec(stmt.limit(200))).all()]
+    by_id = {c.id: c for c in out}
+    if by_id:
+        # ponytail: scans all plain chat rows of the listed conversations (≤200);
+        # add a last_message_id column on Conversation if this gets slow.
+        rows = await db.exec(
+            select(Message.conversation_id, Message.from_agent, Message.user_id, Message.content)
+            .where(
+                col(Message.conversation_id).in_(by_id),
+                col(Message.role).is_(None),
+            )
+            .order_by(col(Message.created_at), col(Message.id))
+        )
+        for conversation_id, from_agent, user_id, content in rows.all():
+            conv = by_id[conversation_id]
+            conv.preview = content[:200]
+            sender = from_agent or user_id
+            if sender and sender not in conv.participants:
+                conv.participants.append(sender)
+    return out
 
 
 @router.get("/api/guilds/{guild_id}/conversations/{conversation_id}/messages")

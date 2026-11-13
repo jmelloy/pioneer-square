@@ -121,6 +121,9 @@ export interface Conversation {
   status: ConversationStatus
   created_at: string
   updated_at: string
+  // List endpoint only: latest plain chat message and distinct senders.
+  preview?: string | null
+  participants?: string[]
 }
 
 export interface Guild {
