@@ -300,11 +300,12 @@ async def _publish(cwd: Path, context: PublishContext, message: str) -> str:
         credentials = await _credentials(client, context, repo)
         token = credentials["access_token"]
         logger.info(
-            "Publishing %s@%s as %s: author=%s (committer chosen by GitHub; expires %s)",
+            "Publishing %s@%s as %s: author=%s committer=%s (expires %s)",
             repo,
             context.branch,
             credentials["username"],
             context.author,
+            context.committer,
             credentials.get("expires_at"),
         )
         headers = {
@@ -463,9 +464,17 @@ async def _publish(cwd: Path, context: PublishContext, message: str) -> str:
                 "tree": tree,
                 "parents": [parent],
                 "message": message.rstrip() + "\n\n" + marker,
-                # Triggering user authors. Never send a committer: GitHub only signs
-                # when it picks the committer itself (web-flow); explicit ones are unsigned.
-                **({"author": _api_identity(context.author)} if context.author else {}),
+                # Triggering user authors; the App commits. An omitted committer is
+                # copied from author, which fails the App committer check below.
+                # No author: send neither so GitHub picks web-flow and signs.
+                **{
+                    key: _api_identity(pair)
+                    for key, pair in (
+                        ("author", context.author),
+                        ("committer", context.committer if context.author else None),
+                    )
+                    if pair
+                },
             },
         )
         logger.info(

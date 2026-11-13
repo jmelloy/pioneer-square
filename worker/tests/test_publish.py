@@ -132,9 +132,12 @@ class GitHub:
                 self.commits[oid] = {
                     "sha": oid,
                     "author": {"login": "app[bot]"},
+                    # Real GitHub: an omitted committer is copied from author.
                     "committer": {
                         "login": self.commit_committer
-                        or body.get("committer", {}).get("name", "web-flow")
+                        or (body.get("committer") or body.get("author") or {}).get(
+                            "name", "web-flow"
+                        )
                     },
                     "commit": {
                         "message": body["message"],
@@ -509,20 +512,29 @@ def test_unconfigured_cli_fails_without_network(monkeypatch, capsys):
     assert "PIONEER_" in capsys.readouterr().err
 
 
-async def test_user_authored_commit_is_signed_with_github_committer(publisher):
+async def test_user_authored_commit_sends_app_as_committer(publisher, monkeypatch):
     root, server, context = publisher
+    real_git = publish._git
+    pushed = []
+
+    async def no_push(args, **kwargs):
+        if args[0] == "push":
+            pushed.append(args)
+            return b""
+        return await real_git(args, **kwargs)
+
+    monkeypatch.setattr(publish, "_git", no_push)
     context = dataclasses.replace(
         context, author=("Ada", "ada@example.com"), committer=("app[bot]", "1+app@x")
     )
     (root / "original.txt").write_text("changed")
-    assert await publish.publish_checkpoint(root, context, "by ada") == "pushed"
+    await publish.publish_checkpoint(root, context, "by ada")
+    # Identity checks pass; GitHub leaves custom-identity commits unsigned -> Git fallback.
+    assert pushed
     body = server.seen_commit_bodies[-1]
     assert body["author"]["name"] == "Ada" and body["author"]["email"] == "ada@example.com"
-    # An explicit committer makes GitHub skip signing; it must be omitted.
-    assert "committer" not in body
-    commit = server.commits[server.remote]
-    assert commit["committer"]["login"] == "web-flow"
-    assert commit["commit"]["verification"]["verified"]
+    # Omitted, GitHub would copy the author into committer and fail the App check.
+    assert body["committer"]["name"] == "app[bot]" and body["committer"]["email"] == "1+app@x"
 
 
 async def test_commit_without_identity_sends_no_author(publisher):
