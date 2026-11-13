@@ -11,7 +11,6 @@ import os
 import re
 import sys
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -31,12 +30,6 @@ class PublishError(Exception):
 
 def _pair(name: str | None, email: str | None) -> tuple[str, str] | None:
     return (name, email) if name and email else None
-
-
-def _api_identity(pair: tuple[str, str] | None) -> dict | None:
-    if not pair:
-        return None
-    return {"name": pair[0], "email": pair[1], "date": datetime.now(UTC).isoformat()}
 
 
 def commit_env(context: PublishContext) -> dict[str, str]:
@@ -340,6 +333,9 @@ async def _publish(cwd: Path, context: PublishContext, message: str) -> str:
         await _git(["add", "-A"], cwd=cwd)
         tree = (await _git(["write-tree"], cwd=cwd)).decode().strip()
         parent_tree = (await _git(["rev-parse", parent + "^{tree}"], cwd=cwd)).decode().strip()
+        co_author = (
+            f"Co-authored-by: {context.author[0]} <{context.author[1]}>\n" if context.author else ""
+        )
         marker = f"Pioneer-Task: {context.task_id}\nPioneer-Source: {source}\nPioneer-Tree: {tree}"
 
         async def verified_commit(sha):
@@ -350,7 +346,7 @@ async def _publish(cwd: Path, context: PublishContext, message: str) -> str:
             # Signing may degrade to unsigned Git, but identity/content must still match.
             if committer not in (credentials["username"], WEB_FLOW):
                 raise PublishError("Commit committer does not match the configured GitHub App")
-            if not context.author and author != credentials["username"]:
+            if author != credentials["username"]:
                 raise PublishError("Commit author does not match the configured GitHub App")
             if commit["commit"]["tree"]["sha"] != tree:
                 raise PublishError("App commit does not contain the expected snapshot")
@@ -463,18 +459,10 @@ async def _publish(cwd: Path, context: PublishContext, message: str) -> str:
             json={
                 "tree": tree,
                 "parents": [parent],
-                "message": message.rstrip() + "\n\n" + marker,
-                # Triggering user authors; the App commits. An omitted committer is
-                # copied from author, which fails the App committer check below.
-                # No author: send neither so GitHub picks web-flow and signs.
-                **{
-                    key: _api_identity(pair)
-                    for key, pair in (
-                        ("author", context.author),
-                        ("committer", context.committer if context.author else None),
-                    )
-                    if pair
-                },
+                # GitHub signs only when it picks the identities: any explicit
+                # author/committer yields reason=unsigned. The App bot authors,
+                # web-flow commits, and the triggering user is credited as co-author.
+                "message": message.rstrip() + "\n\n" + co_author + marker,
             },
         )
         logger.info(

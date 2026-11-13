@@ -512,7 +512,7 @@ def test_unconfigured_cli_fails_without_network(monkeypatch, capsys):
     assert "PIONEER_" in capsys.readouterr().err
 
 
-async def test_user_authored_commit_sends_app_as_committer(publisher, monkeypatch):
+async def test_user_authored_commit_is_signed_with_user_as_co_author(publisher, monkeypatch):
     root, server, context = publisher
     real_git = publish._git
     pushed = []
@@ -529,12 +529,11 @@ async def test_user_authored_commit_sends_app_as_committer(publisher, monkeypatc
     )
     (root / "original.txt").write_text("changed")
     await publish.publish_checkpoint(root, context, "by ada")
-    # Identity checks pass; GitHub leaves custom-identity commits unsigned -> Git fallback.
-    assert pushed
+    # Explicit identities make GitHub skip signing, so none are sent and no Git fallback runs.
+    assert not pushed
     body = server.seen_commit_bodies[-1]
-    assert body["author"]["name"] == "Ada" and body["author"]["email"] == "ada@example.com"
-    # Omitted, GitHub would copy the author into committer and fail the App check.
-    assert body["committer"]["name"] == "app[bot]" and body["committer"]["email"] == "1+app@x"
+    assert "author" not in body and "committer" not in body
+    assert "\n\nCo-authored-by: Ada <ada@example.com>\nPioneer-Task: " in body["message"]
 
 
 async def test_commit_without_identity_sends_no_author(publisher):

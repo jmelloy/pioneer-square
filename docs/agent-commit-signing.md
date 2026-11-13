@@ -16,11 +16,11 @@ but cannot express a new executable file's mode. See live results below.
 
 For both APIs, the observed author was `pioneer-square[bot]` and the committer was
 `GitHub` (`web-flow`), not the bot in both fields. An explicit `committer` on the REST
-request makes GitHub skip signing (`reason: unsigned`). With no author the
-publisher sends no committer and accepts `web-flow`. With a human `author` it also
-sends the App bot as `committer`: omitted, GitHub copies the author into committer
-and the App committer check fails. That commit is unsigned, so publication falls
-back to unsigned Git. Set
+request makes GitHub skip signing (`reason: unsigned`), and an `author` alone gets
+copied into committer. So the publisher never sends either: the App bot authors,
+`web-flow` commits and signs, and the triggering user is credited with a
+`Co-authored-by:` trailer. Unsigned Git fallback still uses user author + bot
+committer. Set
 `PIONEER_PUBLISH_LOG_LEVEL=INFO` to trace identity, token expiry, and the
 create-commit verification response. Use an **installation access
 token** for bot authorship, not a human OAuth token. GitHub explicitly documents
