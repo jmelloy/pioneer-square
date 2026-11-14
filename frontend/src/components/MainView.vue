@@ -1,5 +1,5 @@
 <template>
-  <div class="main-view panel-bg">
+  <div class="main-view">
     <div class="tab-bar">
       <button
         class="tab"
@@ -7,7 +7,7 @@
         @click="uiStore.activeTab = 'factory'"
       >
         <span class="tab-icon">⚙</span>
-        <span class="tab-label">Dashboard</span>
+        <span class="tab-label">Factory Floor</span>
       </button>
       <!-- Agent tabs — opened from sidebar -->
       <button
@@ -71,7 +71,7 @@
       </button>
     </div>
     <div class="tab-content">
-      <DashboardView v-if="uiStore.activeTab === 'factory'" />
+      <FactoryFloor v-if="uiStore.activeTab === 'factory'" />
       <LogPane
         v-else-if="uiStore.activeTab.startsWith('agent-')"
         kind="agent"
@@ -107,7 +107,7 @@ import { useTasksStore } from '../stores/tasks'
 import { useConversationsStore } from '../stores/conversations'
 import { useUiStore, taskTabId, conversationTabId } from '../stores/ui'
 import { useGitHubStore } from '../stores/github'
-import DashboardView from './dashboard/DashboardView.vue'
+import FactoryFloor from './FactoryFloor.vue'
 import LogPane from './LogPane.vue'
 import IssueViewer from './IssueViewer.vue'
 import ConversationDetailPanel from './ConversationDetailPanel.vue'
@@ -207,6 +207,7 @@ function onIssueTabClick(event: MouseEvent, key: string) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  background: var(--color-bg);
 }
 
 .tab-bar {
