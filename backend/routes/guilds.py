@@ -17,6 +17,7 @@ from auth_deps import get_guild_pk, require_member, require_user, require_worker
 from database import get_db_dep
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException
+from message_artifacts import message_payloads
 from models import Agent, Guild, GuildInvite, GuildMember, Message, User, Worker
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete, func, text
@@ -385,7 +386,7 @@ async def get_guild(
         "agents": [
             {**row_to_dict(row.Agent), "worker_name": row.worker_name} for row in agent_rows
         ],
-        "messages": [_message_dict(m) for m in reversed(messages)],
+        "messages": await message_payloads(reversed(messages), db, guild_id, guild_pk),
     }
 
 

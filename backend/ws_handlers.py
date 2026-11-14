@@ -39,6 +39,7 @@ from foreman.runner import ensure_poll_loop, reset_foreman_poll
 from foreman.tools import maybe_post_plan_comment
 from guild_settings import get_guild_pre_agents_prompt
 from lock_service import LockService
+from message_artifacts import externalize_images
 from models import Agent, Message, Task, TaskEvent, TaskLog, User, Worker, task_conversation_id
 from pydantic import ValidationError
 from sqlalchemy import delete, func, update
@@ -612,6 +613,10 @@ async def handle_terminal_output(ctx: WSContext, msg: TerminalOutputMsg) -> None
     task_id = msg.taskId
     detail = msg.detail
     level = msg.level
+    payload, images_stored = await externalize_images(
+        {"line": line, "detail": detail}, ctx.db, ctx.guild_id, ctx.guild_pk, task_id
+    )
+    line, detail = payload["line"], payload["detail"]
     created_at = datetime.now(UTC)
     worker_id_for_log = msg_worker_id
     if worker_id_for_log is None and msg_agent_id:
@@ -624,13 +629,15 @@ async def handle_terminal_output(ctx: WSContext, msg: TerminalOutputMsg) -> None
             TaskLog(
                 task_id=task_id or None,
                 timestamp=created_at,
-                line=line,
+                # Keep recoverable image data in the raw log if storage is down.
+                line=line if images_stored else msg.line,
                 worker_id=worker_id_for_log,
                 agent_id=msg_agent_id,
-                data=json.dumps(detail) if detail else None,
+                data=json.dumps(detail if images_stored else msg.detail) if msg.detail else None,
                 level=level,
             )
         )
+    if line or ctx.db.new:
         await ctx.db.commit()
     await broadcast_msg(
         ctx.guild_id,

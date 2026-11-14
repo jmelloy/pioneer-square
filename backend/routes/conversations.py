@@ -31,9 +31,9 @@ from foreman.conversation_service import (
     touch_conversation,
 )
 from foreman.runner import reset_foreman_poll
+from message_artifacts import message_payloads
 from models import THREAD_STATUSES, Conversation, Message
 from pydantic import BaseModel
-from routes.guilds import _message_dict
 from sqlalchemy import or_
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -347,4 +347,4 @@ async def list_conversation_messages(
         query.order_by(col(Message.created_at).desc(), col(Message.id).desc()).limit(100)
     )
     messages = result.all()
-    return [_message_dict(m) for m in reversed(messages)]
+    return await message_payloads(reversed(messages), db, guild_id, conversation.guild_id)
