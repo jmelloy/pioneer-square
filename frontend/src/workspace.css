@@ -485,7 +485,7 @@
   min-height: 80px;
   background:
     linear-gradient(#120b04, #120b0420),
-    url('./assets/factory-floor.jpg') center bottom / cover;
+    url('./assets/workshop.jpg') center bottom / cover;
   opacity: 0.65;
 }
 .project-connection {
