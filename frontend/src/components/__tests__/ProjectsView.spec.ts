@@ -47,15 +47,17 @@ describe('ProjectsView', () => {
   })
   afterEach(() => vi.restoreAllMocks())
 
-  it('shows only configured repositories and sorts newest first', () => {
+  it('defaults to open issues in configured repositories, newest first', () => {
     const wrapper = render()
-    expect(wrapper.findAll('tbody tr').map((row) => row.find('td').text())).toEqual(['3', '2', '1'])
+    expect(wrapper.findAll('tbody tr').map((row) => row.find('td').text())).toEqual(['3', '1'])
     expect(wrapper.find('.viewer-stub').text()).toBe('factory #3')
     expect(useGitHubStore().fetchIssues).toHaveBeenCalledWith(['team/factory', 'team/engine'])
   })
 
   it('filters by project, state, and search and clears stale selection', async () => {
     const wrapper = render()
+    await wrapper.findAll('.issue-status-filters button')[0]!.trigger('click')
+    expect(wrapper.findAll('tbody tr')).toHaveLength(3)
     await wrapper.findAll('.issue-select')[1]!.trigger('click')
     expect(wrapper.find('.viewer-stub').text()).toBe('engine #2')
     await wrapper.findAll('.project-list .project-choice')[1]!.trigger('click')
