@@ -2266,6 +2266,9 @@ async def _handle_send_followup(inp: dict, ctx: ToolContext) -> tuple[str, bool]
                 # reappears in the live task list and isn't auto-purged.
                 update_vals["deleted_at"] = None
             await db.exec(update(Task).where(col(Task.id) == task_id).values(**update_vals))
+            # #1455: a follow-up sent from another conversation shows there too.
+            if ctx.conversation_id is not None:
+                await db.exec(link_conversation_task(ctx.conversation_id, task_id))
             await db.commit()
             await ctx.events.broadcast(
                 guild_id,

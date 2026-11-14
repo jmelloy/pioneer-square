@@ -45,6 +45,7 @@ from datetime import UTC, datetime, timedelta
 
 import discord_notifier
 from database import AsyncSessionLocal
+from db.github_events import link_task_context
 from discord.auth import is_member_authorized
 from events import broadcast_msg
 from fastapi import APIRouter, BackgroundTasks, Request, Response
@@ -471,6 +472,8 @@ async def _cmd_pickup(interaction: dict, guild_slug: str, issue_url: str) -> Non
             await db.flush()  # task row must exist before its link (FK)
             if conversation_id is not None:
                 db.add(ConversationTask(conversation_id=conversation_id, task_id=task_id))
+            await db.flush()
+            await link_task_context(db, task_id)  # also link the issue/PR's conversation (#1455)
             await db.commit()
 
         await broadcast_msg(
@@ -560,6 +563,8 @@ async def _cmd_review(interaction: dict, guild_slug: str, pr_url: str) -> None:
             await db.flush()  # task row must exist before its link (FK)
             if conversation_id is not None:
                 db.add(ConversationTask(conversation_id=conversation_id, task_id=task_id))
+            await db.flush()
+            await link_task_context(db, task_id)  # also link the issue/PR's conversation (#1455)
             await db.commit()
 
         pr_name = f"{pr_repo}#{pr_number}"

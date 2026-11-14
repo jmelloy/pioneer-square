@@ -15,7 +15,7 @@ from db.github_events import link_task_context, list_events_by_conversation
 from discord import router
 from foreman import runner, tools
 from foreman.conversation_service import create_conversation
-from helpers import insert_guild, insert_worker
+from helpers import insert_agent, insert_guild, insert_task, insert_worker
 from models import ConversationTask, GithubEvent, Task, task_conversation_id
 from routes.debug_query import _validate_readonly_query
 from sqlmodel import select
@@ -509,3 +509,37 @@ async def test_followup_task_links_to_issue_owner_conversation(client):
             await db.exec(select(task_conversation_id()).where(Task.id == "t-follow-7"))
         ).one()
         assert primary == followup_id
+
+
+async def test_send_followup_links_task_to_current_conversation(client):
+    """#1455: a follow-up sent from a new conversation also shows the task there."""
+    import database
+
+    _, db_url = client
+    slug = "g-followup-current-conv"
+    insert_guild(db_url, slug)
+    insert_worker(db_url, slug, "w-fcc")
+    insert_agent(db_url, slug, "a-fcc", worker_id="w-fcc", state="idle")
+    insert_task(db_url, slug, "t-fcc", worker_id="w-fcc", tool="claude", branch="b-fcc")
+    async with database.AsyncSessionLocal() as db:
+        guild_pk = await get_guild_pk(db, slug)
+        original = await create_conversation(db, guild_pk, "user")
+        current = await create_conversation(db, guild_pk, "user")
+        original_id, current_id = original.id, current.id
+        db.add(ConversationTask(conversation_id=original_id, task_id="t-fcc"))
+        await db.commit()
+    with patch("foreman.tools.broadcast", AsyncMock()):
+        tool = SimpleNamespace(
+            id="fu", name="send_followup", input={"task_id": "t-fcc", "instructions": "go"}
+        )
+        results = await tools.exec_tools(slug, [tool], user_id="user", conversation_id=current_id)
+    assert not results[0].get("is_error"), results
+    async with database.AsyncSessionLocal() as db:
+        links = (
+            await db.exec(
+                select(ConversationTask.conversation_id).where(ConversationTask.task_id == "t-fcc")
+            )
+        ).all()
+        primary = (await db.exec(select(task_conversation_id()).where(Task.id == "t-fcc"))).one()
+    assert sorted(links) == sorted([original_id, current_id])
+    assert primary == original_id
