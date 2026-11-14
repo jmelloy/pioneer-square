@@ -1,5 +1,5 @@
 <template>
-  <div class="main-view">
+  <div class="main-view panel-bg">
     <div class="tab-bar">
       <button
         class="tab"

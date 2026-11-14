@@ -88,7 +88,7 @@ const FILTER_OPTIONS: Array<{ value: ConversationStatus | undefined; label: stri
 const guildStore = useGuildStore()
 const conversationsStore = useConversationsStore()
 const loading = ref(false)
-const statusFilter = ref<ConversationStatus | undefined>(undefined)
+const statusFilter = ref<ConversationStatus | undefined>('active')
 const search = ref('')
 const timeRange = ref(0)
 const limit = ref(25)

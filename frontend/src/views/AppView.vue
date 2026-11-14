@@ -1,11 +1,12 @@
 <template>
-  <div class="app-layout" :data-tab="activeTab">
+  <div class="app-layout" :data-tab="activeTab" :data-workspace="uiStore.workspace">
     <TopBar :debug-active="showDebug" @toggle-debug="showDebug = !showDebug" />
-    <div class="app-body">
+    <div v-show="uiStore.workspace === 'work'" class="app-body">
       <GuildSidebar />
       <MainView />
       <ChatPane ref="chatPaneRef" />
     </div>
+    <ProjectsView v-if="uiStore.workspace === 'projects'" :key="props.guildId" />
     <teleport to="body">
       <DebugSidebar v-if="showDebug" @close="showDebug = false" />
     </teleport>
@@ -46,6 +47,9 @@ import MainView from '../components/MainView.vue'
 import ChatPane from '../components/ChatPane.vue'
 import TopBar from '../components/TopBar.vue'
 import DebugSidebar from '../components/DebugSidebar.vue'
+import ProjectsView from '../components/ProjectsView.vue'
+import { useUiStore } from '../stores/ui'
+import '../workspace.css'
 
 const props = defineProps<{ guildId?: string }>()
 
@@ -66,6 +70,14 @@ const ghStore = useGitHubStore()
 const tasksStore = useTasksStore()
 const conversationsStore = useConversationsStore()
 const usageStore = useUsageStore()
+const uiStore = useUiStore()
+
+watch(
+  () => uiStore.activeTab,
+  () => {
+    uiStore.workspace = 'work'
+  },
+)
 
 async function initGuild(guildId: string) {
   if (!authStore.isLoggedIn) {
@@ -253,20 +265,21 @@ watch(
     text-transform: uppercase;
   }
 
-  /* Each pane takes the full screen (minus top bar + bottom tab bar) and is hidden unless active */
+  .app-body {
+    margin-bottom: calc(52px + env(safe-area-inset-bottom));
+  }
+
+  /* Let the header determine the available height, including when its navigation wraps. */
   .sidebar,
   .main-view,
   .chat-pane {
-    position: fixed !important;
-    top: 44px;
-    left: 0;
-    right: 0;
-    bottom: calc(52px + env(safe-area-inset-bottom));
+    position: relative !important;
+    flex: 1;
     width: 100% !important;
     min-width: 0 !important;
     max-width: 100% !important;
-    height: calc(100dvh - 96px - env(safe-area-inset-bottom)) !important;
-    max-height: calc(100dvh - 96px - env(safe-area-inset-bottom)) !important;
+    height: auto !important;
+    max-height: 100% !important;
     display: none !important;
   }
 

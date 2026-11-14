@@ -16,6 +16,7 @@ export function conversationTabId(id: number): string {
 // are tracked separately in the github store, which owns issue-specific state.
 export const useUiStore = defineStore('ui', () => {
   const activeTab = ref<string>('factory')
+  const workspace = ref<'work' | 'projects'>('work')
 
   const selectedWorkerId = ref<string | null>(null)
   const openedWorkerIds = ref<string[]>([])
@@ -115,6 +116,7 @@ export const useUiStore = defineStore('ui', () => {
 
   return {
     activeTab,
+    workspace,
     selectedWorkerId,
     openedWorkerIds,
     selectedAgentId,

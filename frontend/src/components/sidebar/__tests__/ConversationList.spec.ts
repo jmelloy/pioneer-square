@@ -52,6 +52,17 @@ describe('ConversationList', () => {
     vi.useRealTimers()
   })
 
+  it('defaults to active conversations while retaining other statuses in the store', async () => {
+    const wrapper = await mountList()
+    expect(wrapper.find('.filter-btn.active').text()).toBe('Active')
+    expect(wrapper.findAll('.conversation-row')).toHaveLength(1)
+    expect(wrapper.text()).toContain('Deploy pipeline')
+    expect(wrapper.text()).not.toContain('Fix login')
+    expect(wrapper.text()).not.toContain('Old deployment')
+    expect(useConversationsStore().conversations).toEqual(conversations)
+    wrapper.unmount()
+  })
+
   it('filters only the sidebar without replacing tab data or changing selection', async () => {
     const wrapper = await mountList()
     const ui = useUiStore()
@@ -83,6 +94,7 @@ describe('ConversationList', () => {
 
   it('combines server search with status and live updates without replacing tab data', async () => {
     const wrapper = await mountList()
+    await wrapper.findAll('.filter-btn')[0].trigger('click')
     vi.useFakeTimers()
     vi.mocked(api).mockResolvedValueOnce([conversations[0], conversations[2]])
     const search = wrapper.get('input[type="search"]')
@@ -142,7 +154,7 @@ describe('ConversationList', () => {
     await search.setValue('')
     resolve([])
     await vi.advanceTimersByTimeAsync(0)
-    expect(wrapper.findAll('.conversation-row')).toHaveLength(3)
+    expect(wrapper.findAll('.conversation-row')).toHaveLength(1)
     wrapper.unmount()
   })
 
@@ -159,6 +171,7 @@ describe('ConversationList', () => {
 
   it('nests the task hierarchy under its conversation with expand/collapse and open', async () => {
     const wrapper = await mountList()
+    await wrapper.findAll('.filter-btn')[0].trigger('click')
     const row = wrapper.findAll('.conversation-row')[0]
     // Live work → expanded by default; parent task's own toggle reveals the child.
     expect(wrapper.text()).toContain('Task t-parent')
@@ -181,6 +194,7 @@ describe('ConversationList', () => {
     await range.setValue('24')
     expect(wrapper.findAll('.conversation-row')).toHaveLength(1)
     await range.setValue('0')
+    await wrapper.findAll('.filter-btn')[0].trigger('click')
     useConversationsStore().conversations = Array.from({ length: 30 }, (_, i) => ({
       ...conversations[1],
       id: 100 + i,

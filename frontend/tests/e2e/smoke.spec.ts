@@ -41,7 +41,7 @@ let baseUrl: string
 let browser: Awaited<ReturnType<typeof chromium.launch>>
 let page: Page
 
-describeIfBrowser('landing page smoke', () => {
+describeIfBrowser('browser smoke', () => {
   beforeAll(async () => {
     server = await createServer({
       configFile: path.join(FRONTEND_ROOT, 'vite.config.ts'),
@@ -83,9 +83,7 @@ describeIfBrowser('landing page smoke', () => {
     // expected when no backend is running alongside the dev server.
     const fatal = consoleErrors.filter(
       (e) =>
-        !e.includes('Failed to load resource') &&
-        !e.includes('/guilds') &&
-        !e.includes('favicon'),
+        !e.includes('Failed to load resource') && !e.includes('/guilds') && !e.includes('favicon'),
     )
     expect(fatal).toEqual([])
   }, 30_000)
@@ -119,5 +117,60 @@ describeIfBrowser('landing page smoke', () => {
     await expect
       .poll(() => page.locator('.session-card, .empty-state, .login-card').count())
       .toBeGreaterThan(0)
+  }, 30_000)
+
+  it('keeps overflowing issue rows and descriptions inside independently scrollable panes', async () => {
+    const now = new Date().toISOString()
+    const guild = { id: 'scroll', name: 'Scroll test', primary_repo: 'test/factory', agents: [] }
+    const issues = Array.from({ length: 25 }, (_, index) => ({
+      id: index + 1,
+      number: index + 1,
+      title: `Issue ${index + 1}`,
+      state: 'open',
+      labels: [],
+      created_at: now,
+      user: { login: 'tester', avatar_url: '' },
+      body: Array.from({ length: 100 }, (_, n) => `Paragraph ${n}: long description.`).join('\n\n'),
+    }))
+    await page.addInitScript(() => {
+      localStorage.setItem('auth_token', 'test-token')
+      localStorage.setItem('auth_user', JSON.stringify({ login: 'tester', id: '1' }))
+      localStorage.setItem('gh_token', 'test-token')
+    })
+    await page.route('**/*', async (route) => {
+      const url = new URL(route.request().url())
+      let data: unknown
+      if (url.hostname === 'api.github.com') data = issues
+      else if (url.pathname === '/guilds') data = [guild]
+      else if (url.pathname === '/guilds/scroll') data = guild
+      else if (url.pathname.endsWith('/tasks/tree')) data = { conversations: [], ungrouped: [] }
+      else if (url.pathname.startsWith('/api/issues/')) data = { issue: issues[0], comments: [] }
+      else if (url.pathname.startsWith('/guilds/') || url.pathname.startsWith('/api/guilds/'))
+        data = []
+      if (data === undefined) await route.continue()
+      else await route.fulfill({ json: data })
+    })
+    await page.setViewportSize({ width: 1280, height: 720 })
+    await page.goto(`${baseUrl}/scroll`)
+    await page.getByRole('button', { name: /Projects \/ Issues/ }).click()
+    await page.locator('.issue-title-row').waitFor()
+
+    async function expectScrollable(selector: string) {
+      const result = await page.locator(selector).evaluate((el) => {
+        el.scrollTop = el.scrollHeight
+        const bottom = el.getBoundingClientRect().bottom
+        const boardBottom = document.querySelector('.project-main')!.getBoundingClientRect().bottom
+        return { scrollTop: el.scrollTop, bottom, boardBottom }
+      })
+      expect(result.scrollTop).toBeGreaterThan(0)
+      expect(result.bottom).toBeLessThanOrEqual(result.boardBottom)
+    }
+
+    await expectScrollable('.project-table-scroll')
+    await expectScrollable('.issue-tab-content')
+    await page.setViewportSize({ width: 390, height: 844 })
+    await expectScrollable('.project-table-scroll')
+    await page.locator('.issue-select').first().click()
+    await expectScrollable('.issue-tab-content')
   }, 30_000)
 })
