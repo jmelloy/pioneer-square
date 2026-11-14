@@ -462,3 +462,50 @@ async def test_unowned_review_request_creates_pr_context_not_latest_chat(client)
             )
         ).one()
         assert cached.conversation_id == event.conversation_id == conversation_id
+
+
+async def test_followup_task_links_to_issue_owner_conversation(client):
+    """#1455: a task requested from a new conversation also shows under the
+    conversation that already owns its issue."""
+    import database
+
+    _, db_url = client
+    slug = "g-followup-owner-link"
+    insert_guild(db_url, slug)
+    async with database.AsyncSessionLocal() as db:
+        guild_pk = await get_guild_pk(db, slug)
+        original = await create_conversation(db, guild_pk, "user")
+        followup = await create_conversation(db, guild_pk, "user")
+        original_id, followup_id = original.id, followup.id
+        await github_cache.upsert_issue(db, "owner/repo", {"number": 7, "title": "Issue"})
+        for task_id, conv in (("t-orig-7", original_id), ("t-follow-7", followup_id)):
+            db.add(
+                Task(
+                    id=task_id,
+                    guild_id=guild_pk,
+                    name="Issue 7",
+                    description="work",
+                    issue_repo="owner/repo",
+                    issue_number=7,
+                    state="pending",
+                    created_at=datetime.now(UTC),
+                )
+            )
+            await db.flush()
+            db.add(ConversationTask(conversation_id=conv, task_id=task_id))
+            await db.flush()
+            await link_task_context(db, task_id)
+        await db.commit()
+        links = (
+            await db.exec(
+                select(ConversationTask.conversation_id).where(
+                    ConversationTask.task_id == "t-follow-7"
+                )
+            )
+        ).all()
+        assert sorted(links) == sorted([original_id, followup_id])
+        # Primary (earliest-linked) stays the conversation it was requested from.
+        primary = (
+            await db.exec(select(task_conversation_id()).where(Task.id == "t-follow-7"))
+        ).one()
+        assert primary == followup_id
