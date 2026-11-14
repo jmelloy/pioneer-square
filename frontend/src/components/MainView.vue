@@ -6,8 +6,8 @@
         :class="{ active: uiStore.activeTab === 'factory' }"
         @click="uiStore.activeTab = 'factory'"
       >
-        <span class="tab-icon">⚙</span>
-        <span class="tab-label">Factory Floor</span>
+        <span class="tab-icon">▦</span>
+        <span class="tab-label">Dashboard</span>
       </button>
       <!-- Agent tabs — opened from sidebar -->
       <button
@@ -71,7 +71,7 @@
       </button>
     </div>
     <div class="tab-content">
-      <FactoryFloor v-if="uiStore.activeTab === 'factory'" />
+      <DashboardView v-if="uiStore.activeTab === 'factory'" />
       <LogPane
         v-else-if="uiStore.activeTab.startsWith('agent-')"
         kind="agent"
@@ -107,7 +107,7 @@ import { useTasksStore } from '../stores/tasks'
 import { useConversationsStore } from '../stores/conversations'
 import { useUiStore, taskTabId, conversationTabId } from '../stores/ui'
 import { useGitHubStore } from '../stores/github'
-import FactoryFloor from './FactoryFloor.vue'
+import DashboardView from './DashboardView.vue'
 import LogPane from './LogPane.vue'
 import IssueViewer from './IssueViewer.vue'
 import ConversationDetailPanel from './ConversationDetailPanel.vue'
