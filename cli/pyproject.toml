@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pioneer-square"
-version = "2026.11.14+9cf6fca7"
+version = "2026.11.14+34e35f8c"
 description = "Pioneer Square unified CLI: one `pioneer` binary serving the HTTP backend, foreman, and worker."
 requires-python = ">=3.11"
 dependencies = [
