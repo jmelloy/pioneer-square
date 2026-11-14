@@ -1,0 +1,857 @@
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&display=swap');
+
+/* Workspace typography is deliberately separate from the pixel-art landing page. */
+.app-layout {
+  --font-heading: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  --font-pixel: var(--font-heading);
+  --color-text-dim: #b69a78;
+  --color-brass: #eab900;
+  --color-brass-light: #ffe45a;
+  --color-brass-dark: #866015;
+  --color-teal: #21d5ee;
+  --panel-frame-border: 18px;
+  font-size: 15px;
+}
+
+.app-layout .top-bar {
+  height: 68px;
+  padding: 0 18px;
+  gap: 16px;
+  background: linear-gradient(180deg, #271303, #120900);
+  border-bottom: 2px solid var(--color-brass);
+}
+
+.app-layout .guild-name {
+  font-size: 25px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+.app-layout .guild-id {
+  font-size: 12px;
+}
+.app-layout .home-btn {
+  background: transparent;
+  color: var(--color-brass-light);
+  border-color: var(--color-brass-dark);
+}
+.app-layout .home-label {
+  display: none;
+}
+.app-layout .home-icon {
+  font-size: 22px;
+}
+.workspace-nav {
+  display: flex;
+  gap: 12px;
+}
+.workspace-nav button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 22px;
+  border: 1px solid #865022;
+  border-radius: 18px 18px 10px 10px;
+  background: linear-gradient(#342011, #1c1006);
+  color: var(--color-text);
+  font: 600 22px var(--font-heading);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.workspace-nav button.active {
+  background: linear-gradient(#ffe963, #e9b600);
+  border-color: #ffdf3c;
+  color: #201400;
+  box-shadow:
+    inset 0 0 0 2px #ac7b00,
+    0 2px 8px #0008;
+}
+.project-gem {
+  color: #b97ce7;
+  text-shadow: 1px 1px #432360;
+}
+.app-layout .user-pill {
+  padding: 6px 10px;
+  gap: 9px;
+}
+.app-layout .user-avatar {
+  width: 29px;
+  height: 29px;
+}
+.app-layout .user-login {
+  font-size: 15px;
+}
+.app-layout .settings-btn,
+.app-layout .debug-btn {
+  width: 38px;
+  height: 38px;
+}
+.app-layout .app-body {
+  padding: 4px;
+  gap: 0;
+}
+.app-layout .sidebar,
+.app-layout .chat-pane {
+  width: clamp(290px, 26vw, 390px);
+  min-width: 290px;
+}
+.app-layout .main-view {
+  min-width: 0;
+}
+.app-layout .chat-pane.minimized {
+  width: 48px;
+  min-width: 48px;
+  border-width: 8px;
+}
+.app-layout .sidebar > *,
+.app-layout .chat-pane > *,
+.app-layout .main-view > * {
+  background-color: #120b04;
+}
+
+.sidebar-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 10px;
+  border-bottom: 1px solid var(--color-brass-dark);
+}
+.sidebar-heading h2 {
+  color: var(--color-brass-light);
+  font: 700 24px var(--font-heading);
+}
+.sidebar-heading h2 span {
+  margin-right: 7px;
+}
+.active-count {
+  color: var(--color-green);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.app-layout .list-toolbar {
+  gap: 8px;
+  padding: 10px 8px;
+}
+.app-layout .conversation-search {
+  order: -1;
+  font: 15px var(--font-mono);
+  padding: 9px;
+  border-radius: 4px;
+}
+.app-layout .filter-btn {
+  font: 600 16px var(--font-heading);
+  padding: 7px 5px;
+  border: 1px solid var(--color-brass-dark);
+  border-radius: 4px;
+}
+.app-layout .filter-btn.active,
+.app-layout .issue-tab-btn.active {
+  color: #1b1000;
+  background: linear-gradient(#ffe867, #d8a900);
+  border-color: var(--color-brass-light);
+  box-shadow: inset 0 0 0 1px #a77900;
+}
+.app-layout .filter-select {
+  font: 12px var(--font-mono);
+  padding: 5px;
+}
+.app-layout .conversation-row {
+  padding: 12px 8px;
+  border-bottom: 1px solid #49301480;
+}
+.app-layout .conversation-row.selected {
+  background: linear-gradient(100deg, #71500980, #3c240744);
+  box-shadow: inset 0 0 0 1px var(--color-brass);
+  border-radius: 3px;
+}
+.app-layout .conversation-line {
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.app-layout .conversation-name {
+  font: 600 19px var(--font-heading);
+  flex: 1;
+  min-width: 100px;
+}
+.app-layout .conversation-preview {
+  font-size: 13px;
+  line-height: 1.45;
+}
+.app-layout .conversation-meta {
+  font-size: 11px;
+  line-height: 1.4;
+}
+.app-layout .conversation-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+.app-layout .status-pill {
+  font: 600 12px var(--font-heading);
+  padding: 2px 5px;
+  border: 1px solid currentColor;
+}
+.app-layout .open-btn {
+  font: 600 12px var(--font-heading);
+}
+.app-layout .connection-status,
+.app-layout .cost-summary {
+  font-size: 13px;
+}
+.app-layout .tab {
+  padding: 10px 13px;
+}
+.app-layout .tab .tab-label {
+  font: 600 15px var(--font-heading);
+}
+.app-layout .tab.active {
+  background: #49300966;
+}
+.app-layout .pane-header {
+  padding: 18px 16px 12px;
+}
+.app-layout .title-text {
+  font: 700 27px var(--font-heading);
+  color: var(--color-brass-light);
+}
+.app-layout .pane-subheader {
+  padding: 8px 16px;
+  font-size: 12px;
+}
+.app-layout .sub-field,
+.app-layout .sub-time {
+  font-size: 12px;
+}
+.app-layout .pane-tasks {
+  padding: 10px 16px;
+}
+.app-layout .linked-task {
+  padding: 6px 0;
+}
+.app-layout .linked-task-name {
+  font-size: 14px;
+}
+.app-layout .linked-task-label,
+.app-layout .linked-task-state {
+  font: 600 12px var(--font-heading);
+}
+.app-layout .chat-header {
+  padding: 12px 10px;
+  gap: 5px;
+}
+.app-layout .chat-title {
+  font: 700 20px var(--font-heading);
+  letter-spacing: 1px;
+  white-space: nowrap;
+}
+.app-layout .agent-status {
+  font-size: 11px;
+}
+.app-layout .poll-indicator {
+  font-size: 11px;
+  opacity: 1;
+}
+.app-layout .tab-count {
+  font-size: 12px;
+}
+.app-layout .chat-messages {
+  padding: 0 14px;
+}
+.app-layout .chat-messages .chat-message {
+  position: relative;
+  align-self: stretch;
+  max-width: 100%;
+  padding: 20px 0 20px 54px;
+  border: none;
+  border-bottom: 1px solid #50301580;
+  background: none;
+  border-radius: 0;
+}
+.app-layout .chat-messages .chat-message::before {
+  content: '';
+  position: absolute;
+  top: 20px;
+  left: 0;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--color-brass);
+  border-radius: 50%;
+  background: #1c1637
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 36 36'%3E%3Cpath d='m18 4 5 10 9 4-10 5-4 9-5-10-9-4 10-5z' fill='%23ae7cf0' stroke='%23573a84'/%3E%3Cpath d='M18 4v28M4 18h28' stroke='%233b285a'/%3E%3C/svg%3E")
+    center / 30px no-repeat;
+}
+.app-layout .chat-messages .chat-message.from-foreman::before {
+  background-color: #073b38;
+  border-color: var(--color-teal);
+}
+.app-layout .chat-messages .worker-continuation::before {
+  display: none;
+}
+.app-layout .chat-messages .worker-continuation {
+  padding-top: 2px;
+}
+.app-layout .msg-from--foreman {
+  background: none;
+  border: none;
+  padding: 0;
+}
+.app-layout .chat-body .workers-section .section-header {
+  padding: 10px 12px;
+}
+.app-layout .chat-empty,
+.app-layout .empty-state {
+  font-size: 14px;
+  line-height: 1.6;
+}
+.app-layout .pane-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.app-layout .pane-header .close-btn {
+  background: none;
+  color: var(--color-text-dim);
+  border: 1px solid var(--color-brass-dark);
+  font-size: 12px;
+  padding: 4px 8px;
+}
+.app-layout .msg-header {
+  gap: 10px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.app-layout .msg-from {
+  font: 700 18px var(--font-heading);
+  color: var(--color-brass-light);
+}
+.app-layout .msg-time,
+.app-layout .msg-source {
+  font-size: 12px;
+}
+.app-layout .msg-content {
+  font: 15px/1.65 var(--font-mono);
+}
+.app-layout .msg-content--markdown p {
+  margin-bottom: 10px;
+}
+.app-layout .conversation-link,
+.app-layout .pr-link {
+  font-size: 13px;
+  color: var(--color-teal);
+}
+.app-layout .reply-row,
+.app-layout .chat-input-row {
+  padding: 12px;
+  border-top: 1px solid var(--color-brass);
+}
+.app-layout .reply-input,
+.app-layout .chat-input {
+  font: 15px/1.5 var(--font-mono);
+  padding: 10px;
+  border: 1px solid var(--color-brass-dark);
+  background: #0d0703;
+}
+.app-layout .pixel-btn {
+  font: 700 15px var(--font-heading);
+  letter-spacing: 0.4px;
+  border-radius: 3px;
+}
+.app-layout .pixel-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+.app-layout .send-btn {
+  min-width: 42px;
+}
+.app-layout .section-label,
+.app-layout .section-title {
+  font: 700 19px var(--font-heading);
+}
+.app-layout .worker-row-name,
+.app-layout .agent-row-name {
+  font-size: 14px;
+}
+.app-layout .worker-row-state {
+  font: 600 12px var(--font-heading);
+}
+.app-layout .workers-section {
+  background: #120b04;
+}
+.app-layout :is(button, a, input, select, textarea):focus-visible {
+  outline: 2px solid var(--color-teal);
+  outline-offset: 2px;
+}
+
+/* Projects share the existing IssueViewer, including editing and task-log actions. */
+.projects-workspace {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  padding: 4px;
+}
+.project-sidebar {
+  width: 265px;
+  min-width: 230px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.project-sidebar > *,
+.project-main > * {
+  background-color: #120b04;
+}
+.project-search {
+  margin: 8px;
+  width: calc(100% - 16px);
+}
+.projects-workspace input,
+.projects-workspace select {
+  border: 1px solid var(--color-brass-dark);
+  border-radius: 3px;
+  color: var(--color-text);
+  background: #100a04;
+  font: 14px var(--font-mono);
+  padding: 9px;
+  min-width: 0;
+}
+.project-list {
+  overflow-y: auto;
+  flex-shrink: 0;
+  max-height: 36%;
+}
+.project-choice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 10px;
+  border: 1px solid transparent;
+  border-bottom-color: #49301470;
+  background: transparent;
+  color: var(--color-text);
+  font: 15px var(--font-mono);
+  text-align: left;
+  cursor: pointer;
+}
+.project-choice > span:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.project-choice.selected {
+  border-color: var(--color-brass);
+  background: linear-gradient(90deg, #6a460d, #302006);
+  box-shadow: inset 0 0 0 1px #a7761744;
+}
+.project-choice:hover,
+.project-table tr:hover {
+  background-color: #67420d40;
+}
+.count {
+  background: #53320f;
+  border: 1px solid #855117;
+  border-radius: 3px;
+  padding: 1px 5px;
+  color: #ffe0a0;
+  font-size: 12px;
+}
+.issue-status-filters {
+  margin-top: 22px;
+  border-top: 1px solid var(--color-brass-dark);
+}
+.issue-status-filters h3 {
+  padding: 12px 10px;
+  color: var(--color-brass-light);
+  font: 600 16px var(--font-heading);
+  text-transform: uppercase;
+}
+.issue-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--color-brass-light);
+}
+.issue-status-dot.open {
+  background: var(--color-green);
+}
+.issue-status-dot.closed {
+  background: var(--color-text-dim);
+}
+.project-art {
+  flex: 1;
+  min-height: 80px;
+  background:
+    linear-gradient(#120b04, #120b0420),
+    url('./assets/factory-floor.jpg') center bottom / cover;
+  opacity: 0.65;
+}
+.project-connection {
+  padding: 12px 10px;
+  border-top: 1px solid var(--color-brass-dark);
+  font-size: 12px;
+  color: var(--color-red);
+}
+.project-connection.connected {
+  color: var(--color-green);
+}
+.project-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.projects-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px;
+  border-bottom: 2px solid var(--color-brass-dark);
+}
+.projects-heading h1 {
+  flex: 1;
+  color: var(--color-brass-light);
+  font: 700 27px var(--font-heading);
+  white-space: nowrap;
+}
+.projects-heading h1 span {
+  margin-right: 8px;
+}
+.projects-heading input {
+  width: 190px;
+}
+.project-split {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(300px, 1fr);
+}
+.project-table-pane {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.project-table-scroll {
+  flex: 1;
+  overflow: auto;
+}
+.project-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.project-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #241506;
+  text-align: left;
+  padding: 13px 10px;
+  color: var(--color-brass-light);
+  font: 600 15px var(--font-heading);
+  border-bottom: 1px solid var(--color-brass-dark);
+}
+.project-table td {
+  padding: 12px 10px;
+  border-bottom: 1px solid #49301470;
+}
+.project-table td:first-child {
+  color: var(--color-brass-light);
+}
+.project-table td:nth-child(3),
+.project-table td:nth-child(4),
+.issue-created {
+  white-space: nowrap;
+}
+.issue-created {
+  font-size: 12px;
+  color: var(--color-text-dim);
+}
+.project-table tr.selected {
+  background: linear-gradient(90deg, #715009a0, #4c300860);
+  outline: 1px solid var(--color-brass);
+  outline-offset: -1px;
+}
+.issue-select {
+  display: block;
+  background: none;
+  border: none;
+  color: var(--color-text);
+  font: 600 17px/1.35 var(--font-heading);
+  text-align: left;
+  cursor: pointer;
+  min-width: 120px;
+}
+.project-state {
+  display: inline-block;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  padding: 1px 6px;
+  color: var(--color-text-dim);
+  font: 600 14px var(--font-heading);
+  text-transform: capitalize;
+}
+.project-state.open {
+  color: var(--color-teal);
+  background: #00b5d315;
+}
+.project-pagination {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border-top: 1px solid var(--color-brass-dark);
+  font-size: 12px;
+}
+.project-pagination > span:first-child {
+  margin-right: auto;
+}
+.project-detail {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-left: 3px double var(--color-brass-dark);
+}
+.project-back {
+  display: none;
+}
+.app-layout .issue-viewer {
+  flex: 1;
+  min-height: 0;
+}
+.app-layout .issue-header {
+  padding: 16px;
+}
+.app-layout .issue-title {
+  font: 700 24px/1.25 var(--font-heading);
+  color: var(--color-brass-light);
+}
+.app-layout .issue-meta-row,
+.app-layout .issue-submeta {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.app-layout .issue-repo-label,
+.app-layout .issue-date,
+.app-layout .issue-author {
+  font-size: 12px;
+}
+.app-layout .issue-number {
+  font: 700 17px var(--font-heading);
+}
+.app-layout .issue-tab-btn {
+  font: 600 16px var(--font-heading);
+  padding: 10px 12px;
+}
+.app-layout .issue-body,
+.app-layout .comment-body {
+  font-size: 14px;
+  line-height: 1.7;
+}
+.app-layout .issue-tab-content {
+  padding: 16px;
+}
+.workspace-empty {
+  padding: 24px 16px;
+  color: var(--color-text-dim);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+@media (max-width: 1250px) {
+  .app-layout .guild-id,
+  .app-layout .agent-status {
+    display: none;
+  }
+  .app-layout .top-bar {
+    gap: 10px;
+    padding: 0 10px;
+  }
+  .workspace-nav button {
+    font-size: 19px;
+    padding: 9px 14px;
+  }
+  .app-layout .sidebar,
+  .app-layout .chat-pane {
+    width: 290px;
+    min-width: 290px;
+  }
+  .project-sidebar {
+    width: 220px;
+    min-width: 200px;
+  }
+  .project-table th:nth-child(3),
+  .project-table td:nth-child(3),
+  .project-table th:nth-child(5),
+  .project-table td:nth-child(5) {
+    display: none;
+  }
+}
+
+@media (max-width: 1024px) {
+  .app-layout .sidebar,
+  .app-layout .chat-pane {
+    width: 100%;
+    min-width: 0;
+  }
+  .app-layout .main-view {
+    border: none;
+  }
+  .app-layout .app-body {
+    padding: 0;
+  }
+  .app-layout .guild-block {
+    max-width: 180px;
+  }
+  .app-layout .guild-name {
+    font-size: 19px;
+  }
+  .project-sidebar {
+    width: 185px;
+    min-width: 185px;
+    border-width: 10px;
+  }
+  .project-split {
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 1fr);
+  }
+  .projects-heading h1 {
+    width: 100%;
+    flex-basis: 100%;
+  }
+  .projects-heading input {
+    flex: 1;
+  }
+  .app-layout[data-workspace='projects'] .mobile-tab-bar {
+    display: none;
+  }
+  .app-layout .mobile-tab-bar .tab-label {
+    font: 600 12px var(--font-heading);
+  }
+}
+
+@media (max-width: 700px) {
+  .app-layout .top-bar {
+    height: auto;
+    min-height: 100px;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 10px;
+  }
+  .workspace-nav {
+    order: 10;
+    width: 100%;
+    gap: 8px;
+  }
+  .workspace-nav button {
+    flex: 1;
+    justify-content: center;
+    font-size: 18px;
+    padding: 8px;
+    gap: 7px;
+  }
+  .app-layout .top-bar-spacer {
+    display: none;
+  }
+  .app-layout .guild-block {
+    flex: 1;
+    max-width: none;
+  }
+  .app-layout .user-pill {
+    margin-left: auto;
+  }
+  .app-layout .user-login,
+  .app-layout .debug-btn {
+    display: none;
+  }
+  .app-layout .settings-btn {
+    width: 32px;
+    height: 32px;
+  }
+  .projects-workspace {
+    flex-direction: column;
+    padding: 0;
+  }
+  .project-sidebar {
+    width: 100%;
+    min-width: 0;
+    max-height: 145px;
+    border: none;
+    border-bottom: 1px solid var(--color-brass-dark);
+    flex-shrink: 0;
+  }
+  .project-sidebar .sidebar-heading,
+  .project-sidebar .project-art,
+  .project-sidebar .project-connection,
+  .project-sidebar .project-search {
+    display: none;
+  }
+  .project-list {
+    display: flex;
+    flex-shrink: 0;
+    max-height: none;
+    overflow-x: auto;
+  }
+  .project-list .project-choice {
+    width: auto;
+    flex-shrink: 0;
+  }
+  .issue-status-filters {
+    margin: 0;
+    display: flex;
+  }
+  .issue-status-filters h3 {
+    display: none;
+  }
+  .issue-status-filters .project-choice {
+    justify-content: center;
+    padding: 8px;
+  }
+  .project-main {
+    border-width: 8px;
+  }
+  .projects-heading {
+    gap: 6px;
+    padding: 8px;
+  }
+  .projects-heading h1 {
+    font-size: 23px;
+  }
+  .projects-heading input {
+    width: 100px;
+  }
+  .projects-heading select {
+    max-width: 125px;
+    font-size: 12px;
+  }
+  .project-split {
+    display: flex;
+  }
+  .project-table-pane {
+    flex: 1;
+  }
+  .project-detail {
+    display: none;
+    border: none;
+  }
+  .show-detail .project-detail {
+    display: flex;
+    flex: 1;
+  }
+  .show-detail .project-table-pane {
+    display: none;
+  }
+  .project-back {
+    display: block;
+    margin: 8px;
+    align-self: flex-start;
+  }
+  .project-table td {
+    padding: 12px 7px;
+  }
+}

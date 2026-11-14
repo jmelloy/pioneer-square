@@ -1,31 +1,12 @@
 <template>
   <aside class="sidebar panel-bg">
-    <div class="tab-bar">
-      <button
-        class="tab-btn"
-        :class="{ active: activeTab === 'conversations' }"
-        @click="activeTab = 'conversations'"
-      >
-        <span class="tab-label">Conversations &amp; Tasks</span>
-        <span v-if="activeConversationCount" class="tab-count">{{ activeConversationCount }}</span>
-      </button>
-      <button
-        v-if="ghStore.isConfigured"
-        class="tab-btn"
-        :class="{ active: activeTab === 'issues' }"
-        @click="activeTab = 'issues'"
-      >
-        <span class="tab-label">Issues</span>
-        <span v-if="openIssueCount" class="tab-count">{{ openIssueCount }}</span>
-      </button>
+    <div class="sidebar-heading">
+      <h2><span aria-hidden="true">☷</span> Conversations</h2>
+      <span class="active-count">● {{ activeConversationCount }} active</span>
     </div>
 
     <div class="tab-content">
-      <ConversationList v-if="activeTab === 'conversations'" />
-      <IssuesTab
-        v-if="activeTab === 'issues' && ghStore.isConfigured"
-        @select-issue="onSelectIssue"
-      />
+      <ConversationList />
     </div>
 
     <div class="sidebar-footer">
@@ -39,35 +20,23 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, onMounted, ref, watch } from 'vue'
+import { computed, inject, watch } from 'vue'
 import { useGuildStore } from '../stores/guild'
-import { useGitHubStore } from '../stores/github'
 import { useUiStore } from '../stores/ui'
 import { useConversationsStore } from '../stores/conversations'
 import ConversationList from './sidebar/ConversationList.vue'
-import IssuesTab from './chat-pane/IssuesTab.vue'
 import CostSummary from './sidebar/CostSummary.vue'
-import type { GitHubIssue } from '../types'
 
 const guildStore = useGuildStore()
-const ghStore = useGitHubStore()
 const uiStore = useUiStore()
 const conversationsStore = useConversationsStore()
 
 const switchMobileTab = inject<(tab: string) => void>('switchMobileTab', () => {})
 
 const isConnected = computed(() => guildStore.isConnected)
-const openIssueCount = computed(() => ghStore.issues.filter((i) => i.state === 'open').length)
 const activeConversationCount = computed(
   () => conversationsStore.conversations.filter((c) => c.status === 'active').length,
 )
-const activeTab = ref<'conversations' | 'issues'>('conversations')
-
-onMounted(async () => {
-  if (ghStore.repos.length === 0 && ghStore.token) {
-    await ghStore.fetchRepos()
-  }
-})
 
 watch(
   () => uiStore.selectedTaskId,
@@ -85,16 +54,6 @@ watch(
     }
   },
 )
-
-function onSelectIssue(issue: GitHubIssue) {
-  // Parse owner/repo from issue.repo ("owner/repo" format)
-  const slashIdx = issue.repo.indexOf('/')
-  if (slashIdx === -1) return
-  const owner = issue.repo.slice(0, slashIdx)
-  const repo = issue.repo.slice(slashIdx + 1)
-  ghStore.openIssueTab(owner, repo, issue.number)
-  switchMobileTab('work')
-}
 </script>
 
 <style scoped>
@@ -106,77 +65,12 @@ function onSelectIssue(issue: GitHubIssue) {
   overflow: hidden;
 }
 
-.tab-bar {
-  display: flex;
-  border-bottom: 2px solid var(--color-brass-dark);
-  background: var(--color-bg-tertiary);
-  flex-shrink: 0;
-}
-
-.tab-btn {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  padding: 8px 4px 7px;
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -2px;
-  cursor: pointer;
-  color: var(--color-text-dim);
-  transition:
-    color 0.12s,
-    background 0.12s;
-}
-
-@media (max-width: 1024px) {
-  .tab-btn {
-    min-height: 44px;
-    padding: 12px 4px 11px;
-  }
-}
-
-.tab-btn:hover {
-  color: var(--color-brass);
-  background: rgba(232, 170, 0, 0.06);
-}
-
-.tab-btn.active {
-  color: var(--color-brass-light);
-  border-bottom-color: var(--color-brass);
-  background: rgba(232, 170, 0, 0.08);
-}
-
-.tab-label {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 1.5px;
-  text-transform: uppercase;
-}
-
-.tab-count {
-  font-size: 9px;
-  color: var(--color-text-dim);
-  background: var(--color-bg);
-  padding: 1px 4px;
-  border-radius: 2px;
-}
-
 .tab-content {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-
-/* IssuesTab list: fill remaining space, no fixed height constraints */
-.tab-content :deep(.issues-list) {
-  min-height: 0;
-  max-height: none;
-  flex: 1;
 }
 
 .sidebar-footer {

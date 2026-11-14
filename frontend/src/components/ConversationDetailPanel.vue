@@ -12,6 +12,14 @@
           <span class="status-pill" :class="'status-' + conversation.status">
             {{ conversationsStore.statusLabel(conversation.status) }}
           </span>
+          <button
+            v-if="conversation.status !== 'closed'"
+            class="pixel-btn close-btn"
+            :disabled="acting"
+            @click="onClose"
+          >
+            Close
+          </button>
         </div>
       </div>
 
@@ -168,17 +176,6 @@
           </button>
         </div>
         <div v-if="replyError" class="reply-error">{{ replyError }}</div>
-      </div>
-
-      <div class="actions">
-        <button
-          v-if="conversation.status !== 'closed'"
-          class="pixel-btn close-btn"
-          :disabled="acting"
-          @click="onClose"
-        >
-          Close
-        </button>
       </div>
     </template>
   </div>
@@ -998,16 +995,6 @@ watch(
 .reply-error {
   font-size: 10px;
   color: var(--color-red);
-}
-
-.actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  padding: 12px 16px;
-  border-top: 2px solid var(--color-brass-dark);
-  background: var(--color-bg-tertiary);
-  flex-shrink: 0;
 }
 
 .close-btn {

@@ -15,6 +15,23 @@
       <span class="guild-name">Pioneer Square</span>
     </div>
 
+    <nav class="workspace-nav" aria-label="Workspace">
+      <button
+        :class="{ active: uiStore.workspace === 'work' }"
+        :aria-pressed="uiStore.workspace === 'work'"
+        @click="uiStore.workspace = 'work'"
+      >
+        <span aria-hidden="true">☷</span> Tasks / Work
+      </button>
+      <button
+        :class="{ active: uiStore.workspace === 'projects' }"
+        :aria-pressed="uiStore.workspace === 'projects'"
+        @click="uiStore.workspace = 'projects'"
+      >
+        <span class="project-gem" aria-hidden="true">◆</span> Projects / Issues
+      </button>
+    </nav>
+
     <div class="top-bar-spacer"></div>
 
     <button
@@ -62,6 +79,7 @@ import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useGuildStore } from '../stores/guild'
 import { useAuthStore } from '../stores/auth'
+import { useUiStore } from '../stores/ui'
 import UserPreferencesModal from './UserPreferencesModal.vue'
 import GuildSettingsPanel from './GuildSettingsPanel.vue'
 
@@ -71,6 +89,7 @@ const emit = defineEmits<{ 'toggle-debug': [] }>()
 const router = useRouter()
 const guildStore = useGuildStore()
 const authStore = useAuthStore()
+const uiStore = useUiStore()
 
 const currentGuild = computed(() => guildStore.currentGuild)
 

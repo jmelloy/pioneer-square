@@ -1,7 +1,7 @@
 <template>
   <div class="chat-pane panel-bg" :class="{ minimized }">
     <div class="chat-header" @click="toggleMinimize">
-      <span class="chat-title">⚙ FOREMAN COMMS</span>
+      <span class="chat-title">⚙ FOREMAN</span>
       <div class="header-controls">
         <span class="agent-status" v-if="foreman">
           <span class="status-dot" :class="foreman.state"></span>
@@ -13,25 +13,10 @@
     </div>
 
     <div v-if="!minimized" class="chat-body">
-      <div class="pane-tabs">
-        <button
-          class="pane-tab"
-          :class="{ active: activeTab === 'chat' }"
-          @click="activeTab = 'chat'"
-        >
-          Chat
-        </button>
-        <button
-          class="pane-tab"
-          :class="{ active: activeTab === 'workers' }"
-          @click="activeTab = 'workers'"
-        >
-          Workers
-          <span v-if="workerCount" class="tab-count">{{ workerCount }}</span>
-        </button>
+      <div class="foreman-feed">
+        <ChatTab ref="chatTabRef" />
       </div>
-      <ChatTab v-if="activeTab === 'chat'" ref="chatTabRef" />
-      <WorkerList v-else />
+      <WorkerList />
     </div>
 
     <button
@@ -60,11 +45,9 @@ const guildStore = useGuildStore()
 const agentsStore = useAgentsStore()
 
 const minimized = ref(false)
-const activeTab = ref<'chat' | 'workers'>('chat')
 const chatTabRef = ref<InstanceType<typeof ChatTab> | null>(null)
 
 const foreman = computed(() => agentsStore.agents.find((a) => a.type === 'foreman'))
-const workerCount = computed(() => agentsStore.workers.filter((w) => w.state !== 'offline').length)
 
 // Poll countdown: guildStore.nextPollAt holds the epoch ms when the next foreman
 // check fires (set from foreman-poll-status WS frames); pollTick forces this
@@ -253,54 +236,17 @@ onUnmounted(() => {
   min-height: 0;
 }
 
-.pane-tabs {
-  display: flex;
-  border-bottom: 1px solid var(--color-brass-dark);
-  background: var(--color-bg-tertiary);
-  flex-shrink: 0;
-}
-
-.pane-tab {
+.foreman-feed {
   flex: 1;
+  min-height: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  padding: 7px 4px;
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  cursor: pointer;
-  color: var(--color-text-dim);
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 1px;
-  text-transform: uppercase;
+  flex-direction: column;
 }
 
-.pane-tab.active {
-  color: var(--color-brass-light);
-  border-bottom-color: var(--color-brass);
-  background: rgba(232, 170, 0, 0.08);
-}
-
-.tab-count {
-  min-width: 16px;
-  padding: 1px 4px;
-  border-radius: 8px;
-  background: var(--color-brass-dark);
-  color: var(--color-bg);
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-weight: bold;
-}
-
-/* WorkerList: remove its top border and let it fill the tab */
 .chat-body :deep(.workers-section) {
-  border-top: none;
-  flex: 1;
-  max-height: none;
+  flex: 0 1 auto;
+  max-height: 28%;
+  min-height: 44px;
   overflow-y: auto;
 }
 
