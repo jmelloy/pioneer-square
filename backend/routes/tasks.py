@@ -18,6 +18,7 @@ from foreman import triggers
 from lock_service import LockService
 from models import (
     Conversation,
+    ConversationTask,
     Guild,
     Task,
     TaskLog,
@@ -25,7 +26,7 @@ from models import (
     task_conversation_id,
 )
 from pydantic import BaseModel
-from sqlalchemy import update
+from sqlalchemy import func, update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from task_lifecycle import TERMINAL_STATES, finalize_task
@@ -110,6 +111,12 @@ async def list_guild_tasks(
             col(Task.issue_number),
             col(Task.issue_repo),
             task_conversation_id().label("conversation_id"),
+            # Every linked conversation (N:N, #1431/#1455), not just the primary.
+            select(func.array_agg(col(ConversationTask.conversation_id)))
+            .where(col(ConversationTask.task_id) == col(Task.id))
+            .correlate(Task)
+            .scalar_subquery()
+            .label("conversation_ids"),
             col(Task.created_at),
             col(Task.deleted_at),
         )

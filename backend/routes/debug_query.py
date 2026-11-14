@@ -64,6 +64,7 @@ _ALLOWED_TABLES = frozenset(
         "llm_usage",
         "foreman_turns",
         "conversations",
+        "conversation_tasks",
         "messages",
         "github_issues",
         "github_pull_requests",

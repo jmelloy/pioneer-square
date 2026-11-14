@@ -220,8 +220,12 @@ const conversation = computed(() => conversationsStore.conversations.find((c) =>
 
 const tasksError = ref(false)
 
-// Tasks spawned from / linked to this conversation (tasks.conversation_id).
-const linkedTasks = computed(() => tasksStore.tasks.filter((t) => t.conversation_id === props.id))
+// Tasks linked to this conversation (conversation_tasks is N:N; conversation_id is the primary).
+const linkedTasks = computed(() =>
+  tasksStore.tasks.filter(
+    (t) => t.conversation_id === props.id || t.conversation_ids?.includes(props.id),
+  ),
+)
 
 function openTask(taskId: string) {
   uiStore.selectTask(taskId)

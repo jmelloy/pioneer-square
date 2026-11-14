@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 import worker_runtime
 from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
+from db.github_events import link_task_context
 from events import broadcast_msg, emit_terminal_line
 from fastapi import APIRouter, Depends, HTTPException
 from foreman.conversation_service import resolve_conversation_id
@@ -412,6 +413,8 @@ async def assign_task(
     await db.flush()  # task row must exist before its link (FK)
     if conversation_id is not None:
         db.add(ConversationTask(conversation_id=conversation_id, task_id=task_id))
+    await db.flush()
+    await link_task_context(db, task_id)  # also link the issue/PR's conversation (#1455)
     await db.commit()
 
     await broadcast_msg(

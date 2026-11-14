@@ -35,6 +35,14 @@ def _sign(private_key, timestamp: str, body: bytes) -> str:
     return private_key.sign(timestamp.encode() + body).hex()
 
 
+@pytest.fixture(autouse=True)
+def _stub_link_task_context():
+    """These tests mock the whole DB session; link_task_context needs a real one
+    (covered in test_conversation_routing_regressions)."""
+    with patch("routes.discord.link_task_context", AsyncMock()):
+        yield
+
+
 @pytest.fixture()
 def keypair():
     return _generate_keypair()

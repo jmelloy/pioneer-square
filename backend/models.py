@@ -60,7 +60,9 @@ def link_conversation_task(conversation_id: int, task_id: str):
     """Idempotent INSERT linking a task to a conversation (no-op if already linked)."""
     return (
         pg_insert(ConversationTask)
-        .values(conversation_id=conversation_id, task_id=task_id)
+        # Python clock like the ORM default: server now() is transaction start and
+        # would sort this link before an ORM-added one in the same transaction.
+        .values(conversation_id=conversation_id, task_id=task_id, created_at=datetime.now(UTC))
         .on_conflict_do_nothing()
     )
 

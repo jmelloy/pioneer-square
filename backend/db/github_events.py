@@ -8,10 +8,12 @@ module reads the append-only per-delivery ``GithubEvent`` rows written by
 from __future__ import annotations
 
 from models import (
+    Conversation,
     GithubEvent,
     GithubIssue,
     GithubPullRequest,
     Task,
+    link_conversation_task,
     live_tasks_filter,
     task_conversation_id,
     task_in_conversation,
@@ -68,6 +70,22 @@ async def link_task_context(db: AsyncSession, task_id: str) -> None:
                 )
                 .values(conversation_id=conversation_id)
             )
+            # #1455: a follow-up task requested from a new conversation also
+            # belongs under the conversation that already owns this issue/PR.
+            owner_id = (
+                await db.exec(
+                    select(col(Conversation.id)).where(
+                        col(Conversation.guild_id) == task.guild_id,
+                        col(Conversation.id).in_(
+                            select(col(model.conversation_id)).where(
+                                col(model.repo) == repo, col(model.number) == number
+                            )
+                        ),
+                    )
+                )
+            ).first()
+            if owner_id is not None and owner_id != conversation_id:
+                await db.exec(link_conversation_task(owner_id, task.id))
     if task.pr_repo and task.pr_number is not None:
         await db.exec(
             update(GithubEvent)
