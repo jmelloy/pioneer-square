@@ -52,7 +52,21 @@ def test_upload_route(client, monkeypatch):
     monkeypatch.setattr(artifact_service, "store", fake_store)
     r = c.post("/guilds/art1/artifacts", files={"file": ("s.png", PNG, "image/png")}, headers=h)
     assert r.status_code == 200, r.text
-    assert r.json()["url"] == "https://x/y.png"
+    # Payload always carries the permanent proxy URL, never the S3 one.
+    assert r.json()["url"] == "/api/artifacts/id-1/public"
+
+    class Body:
+        def iter_chunks(self, size):
+            yield PNG
+
+    seen = []
+    monkeypatch.setattr(artifact_service, "open_object", lambda key: seen.append(key) or Body())
+    pub = c.get("/api/artifacts/id-1/public")  # no auth: the UUID is the capability
+    assert pub.status_code == 200, pub.text
+    assert pub.content == PNG and seen == ["a/art1/id-1.png"]
+    assert pub.headers["content-type"] == "image/png"
+    assert "immutable" in pub.headers["cache-control"]
+    assert c.get("/api/artifacts/nope/public").status_code == 404
     bad = c.post("/guilds/art1/artifacts", files={"file": ("s.png", b"zz", "image/png")}, headers=h)
     assert bad.status_code == 415
     assert (

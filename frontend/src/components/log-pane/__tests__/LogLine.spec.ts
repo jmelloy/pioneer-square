@@ -1,7 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
 import { mount } from '@vue/test-utils'
 import LogLine from '../LogLine.vue'
 import type { LogEntry } from '../../../types'
+
+// LogLine hydrates artifact:// links via the guild store.
+beforeEach(() => setActivePinia(createPinia()))
 
 function makeLog(overrides: Partial<LogEntry> = {}): LogEntry {
   return {

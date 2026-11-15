@@ -1,5 +1,5 @@
 import type { Directive } from 'vue'
-import { api } from './api'
+import { api, API_BASE } from './api'
 import { openLightbox } from '../composables/useLightbox'
 
 // Messages reference artifacts as markdown links: `[shot.png](artifact://<uuid>)`.
@@ -11,7 +11,7 @@ interface ArtifactMeta {
   contentType: string
 }
 
-const TTL_MS = 10 * 60 * 1000 // presigned URLs expire; refetch periodically
+const TTL_MS = 10 * 60 * 1000 // URLs are permanent; TTL only retries missing artifacts
 const cache = new Map<string, { at: number; promise: Promise<ArtifactMeta | null> }>()
 
 export function parseArtifactId(href: string | null): string | null {
@@ -25,13 +25,16 @@ export function fetchArtifact(guildId: string, id: string): Promise<ArtifactMeta
   if (hit && Date.now() - hit.at < TTL_MS) return hit.promise
   const promise = api<ArtifactMeta>(
     `/guilds/${encodeURIComponent(guildId)}/artifacts/${encodeURIComponent(id)}`,
-  ).catch(() => null) // missing/expired/forbidden -> graceful fallback
+  )
+    // Backend returns a permanent relative path (/api/artifacts/<id>/public).
+    .then((m) => (m.url?.startsWith('/') ? { ...m, url: `${API_BASE}${m.url}` } : m))
+    .catch(() => null) // missing/forbidden -> graceful fallback
   cache.set(key, { at: Date.now(), promise })
   return promise
 }
 
 function isSafeHttpUrl(url: string): boolean {
-  return /^https?:\/\//i.test(url)
+  return /^(https?:\/\/|\/(?!\/))/i.test(url)
 }
 
 export async function hydrateArtifactLinks(root: HTMLElement, guildId: string): Promise<void> {

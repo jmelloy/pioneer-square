@@ -1,8 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import LogList from '../LogList.vue'
 import type { LogEntry } from '../../../types'
+
+// LogLine hydrates artifact:// links via the guild store.
+beforeEach(() => setActivePinia(createPinia()))
 
 function toolLog(name: string, toolType: 'tool_use' | 'tool_result' = 'tool_use'): LogEntry {
   return {
