@@ -6,6 +6,7 @@ bytes in S3 (see ``artifact_service``) and records an ``artifacts`` row.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 
@@ -13,6 +14,7 @@ import artifact_service
 from auth_deps import get_guild_pk, require_worker_or_member_path
 from database import get_db_dep
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from models import Artifact, Task, Worker
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -31,7 +33,8 @@ def _payload(a: Artifact, name: str | None = None) -> dict:
     return {
         "id": a.id,
         "key": a.key,
-        "url": a.url,
+        # Stored url may be a legacy presigned link; always hand out the permanent one.
+        "url": artifact_service.public_url(a.id),
         "contentType": a.content_type,
         "sizeBytes": a.size_bytes,
         "taskId": a.task_id,
@@ -108,6 +111,26 @@ async def get_artifact(
     ).first()
     if row is None:
         raise HTTPException(status_code=404, detail="Artifact not found")
-    # Pre-signed URLs expire; mint a fresh one on read.
-    row.url = artifact_service.refresh_url(row.key) or row.url
     return _payload(row)
+
+
+@router.get("/api/artifacts/{artifact_id}/public")
+async def public_artifact(artifact_id: str, db: AsyncSession = Depends(get_db_dep)):
+    """Permanent public link. Unauthenticated: the random UUID is the capability, like the
+    S3 presigned URL it replaces. Streams from S3 so bucket details stay private."""
+    row = (await db.exec(select(Artifact).where(col(Artifact.id) == artifact_id))).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    try:
+        body = await asyncio.to_thread(artifact_service.open_object, row.key)
+    except artifact_service.ArtifactError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return StreamingResponse(
+        body.iter_chunks(64 * 1024),  # sync iterator; Starlette runs it in a threadpool
+        media_type=row.content_type,  # validated image type from upload
+        headers={
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "X-Content-Type-Options": "nosniff",
+            **({"Content-Length": str(row.size_bytes)} if row.size_bytes else {}),
+        },
+    )

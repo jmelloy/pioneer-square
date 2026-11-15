@@ -6,8 +6,11 @@ IAM role in ECS or ``AWS_ACCESS_KEY_ID``/``AWS_SECRET_ACCESS_KEY`` locally):
 - ``PIONEER_ARTIFACT_BUCKET``   bucket name (falls back to ``PIONEER_S3_BUCKET``)
 - ``PIONEER_ARTIFACT_PREFIX``   key prefix (default ``artifacts``)
 - ``PIONEER_ARTIFACT_REGION``   optional region override
-- ``PIONEER_ARTIFACT_PUBLIC_BASE_URL``  if set (e.g. a CloudFront domain), public URLs are
-  ``<base>/<key>``; otherwise a pre-signed GET URL is generated.
+- ``PIONEER_ARTIFACT_PUBLIC_BASE_URL``  if set (e.g. a CloudFront domain), ``build_url`` returns
+  ``<base>/<key>``; otherwise a pre-signed GET URL (internal use only).
+
+Clients get ``public_url(id)``: a permanent backend path that streams the object from S3, so
+links never expire and never expose bucket details.
 - ``PIONEER_ARTIFACT_MAX_BYTES``  size limit (default 10 MiB)
 """
 
@@ -107,6 +110,25 @@ def _s3(cfg: ArtifactConfig):
     return _client
 
 
+def public_url(artifact_id: str) -> str:
+    """Permanent, backend-relative URL served by ``GET /api/artifacts/{id}/public``."""
+    return f"/api/artifacts/{artifact_id}/public"
+
+
+def open_object(key: str):
+    """Return the S3 ``StreamingBody`` for ``key``; raise ``ArtifactError`` if unavailable."""
+    cfg = load_config()
+    if cfg is None:
+        raise ArtifactError("Artifact storage is not configured", 503)
+    try:
+        return _s3(cfg).get_object(Bucket=cfg.bucket, Key=key)["Body"]
+    except Exception as exc:  # botocore NoSuchKey / ClientError
+        code = getattr(exc, "response", {}).get("Error", {}).get("Code")
+        if code in ("NoSuchKey", "404"):
+            raise ArtifactError("Artifact not found", 404) from exc
+        raise ArtifactError(f"Download failed: {exc}", 502) from exc
+
+
 def build_url(cfg: ArtifactConfig, key: str) -> str:
     if cfg.public_base_url:
         return f"{cfg.public_base_url}/{key}"
@@ -137,7 +159,7 @@ async def store(
     parts = [p for p in (cfg.prefix, guild_slug, task_id or "misc") if p]
     key = "/".join(parts) + f"/{artifact_id}.{ALLOWED_TYPES[content_type]}"
 
-    def _put() -> str:
+    def _put() -> None:
         _s3(cfg).put_object(
             Bucket=cfg.bucket,
             Key=key,
@@ -145,15 +167,9 @@ async def store(
             ContentType=content_type,
             CacheControl="public, max-age=31536000, immutable",
         )
-        return build_url(cfg, key)
 
     try:
-        url = await asyncio.to_thread(_put)
+        await asyncio.to_thread(_put)
     except Exception as exc:  # botocore errors
         raise ArtifactError(f"Upload failed: {exc}", 502) from exc
-    return StoredObject(artifact_id, key, url, content_type, len(data))
-
-
-def refresh_url(key: str) -> str | None:
-    cfg = load_config()
-    return build_url(cfg, key) if cfg else None
+    return StoredObject(artifact_id, key, public_url(artifact_id), content_type, len(data))

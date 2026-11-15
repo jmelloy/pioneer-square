@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-vi.mock('../api', () => ({ api: vi.fn() }))
+vi.mock('../api', () => ({ api: vi.fn(), API_BASE: '' }))
 
 import { api } from '../api'
 import { renderMarkdown } from '../markdown'
@@ -30,6 +30,17 @@ describe('artifact:// links', () => {
     document.body.append(ok)
     await hydrateArtifactLinks(ok, 'g-ok')
     expect(ok.querySelector('img')?.getAttribute('src')).toBe('https://s3.example/x.png')
+
+    vi.mocked(api).mockResolvedValueOnce({
+      id: `${ID}-rel`,
+      url: `/api/artifacts/${ID}-rel/public`,
+      contentType: 'image/png',
+    })
+    const rel = document.createElement('div')
+    rel.innerHTML = renderMarkdown(`[rel.png](artifact://${ID}-rel)`)
+    document.body.append(rel)
+    await hydrateArtifactLinks(rel, 'g-rel')
+    expect(rel.querySelector('img')?.getAttribute('src')).toBe(`/api/artifacts/${ID}-rel/public`)
 
     vi.mocked(api).mockRejectedValueOnce(new Error('404'))
     const bad = document.createElement('div')
