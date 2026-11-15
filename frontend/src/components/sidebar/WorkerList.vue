@@ -1,8 +1,25 @@
 <template>
   <div class="workers-section" :class="{ 'workers-section--empty': onlineWorkers.length === 0 }">
     <div class="section-header">
-      <span class="section-label">Workers</span>
+      <button
+        class="collapse-btn"
+        :aria-expanded="!sectionCollapsed"
+        :title="sectionCollapsed ? 'Expand workers' : 'Collapse workers'"
+        @click="sectionCollapsed = !sectionCollapsed"
+      >
+        <span class="collapse-icon">{{ sectionCollapsed ? '▸' : '▾' }}</span>
+        <span class="section-label">Workers</span>
+      </button>
       <span class="section-count" v-if="onlineWorkers.length > 0">{{ onlineWorkers.length }}</span>
+      <span v-if="sectionCollapsed" class="status-dots section-dots">
+        <span
+          v-for="agent in onlineAgents"
+          :key="agent.id"
+          class="agent-dot"
+          :class="'wdot-' + agent.state"
+          :title="`${agent.name}: ${agent.state}`"
+        ></span>
+      </span>
       <button
         class="spawn-btn"
         @click="showSpawnForm = !showSpawnForm"
@@ -18,14 +35,31 @@
       @close="showSpawnForm = false"
     />
 
-    <template v-for="worker in onlineWorkers" :key="worker.id">
+    <template v-for="worker in sectionCollapsed ? [] : onlineWorkers" :key="worker.id">
       <div class="worker-row" :class="worker.state" @click="uiStore.selectWorker(worker.id)">
+        <button
+          class="collapse-btn"
+          :aria-expanded="!collapsedWorkers.has(worker.id)"
+          :title="collapsedWorkers.has(worker.id) ? 'Show agents' : 'Hide agents'"
+          @click.stop="toggleWorker(worker.id)"
+        >
+          <span class="collapse-icon">{{ collapsedWorkers.has(worker.id) ? '▸' : '▾' }}</span>
+        </button>
         <span class="worker-dot" :class="'wdot-' + worker.state"></span>
         <span class="worker-row-name">{{ worker.name }}</span>
+        <span v-if="collapsedWorkers.has(worker.id)" class="status-dots">
+          <span
+            v-for="agent in agentsForWorker(worker.id)"
+            :key="agent.id"
+            class="agent-dot"
+            :class="'wdot-' + agent.state"
+            :title="`${agent.name}: ${agent.state}`"
+          ></span>
+        </span>
         <span class="worker-row-state">{{ worker.state }}</span>
       </div>
       <div
-        v-for="agent in agentsForWorker(worker.id)"
+        v-for="agent in collapsedWorkers.has(worker.id) ? [] : agentsForWorker(worker.id)"
         :key="agent.id"
         class="agent-row"
         :class="{ selected: uiStore.selectedAgentId === agent.id }"
@@ -61,8 +95,22 @@ const tasksStore = useTasksStore()
 const uiStore = useUiStore()
 
 const showSpawnForm = ref(false)
+// ponytail: collapse state is per-session; persist to localStorage if users ask
+const sectionCollapsed = ref(false)
+const collapsedWorkers = ref(new Set<string>())
+
+function toggleWorker(workerId: string) {
+  const next = new Set(collapsedWorkers.value)
+  if (!next.delete(workerId)) next.add(workerId)
+  collapsedWorkers.value = next
+}
 
 const onlineWorkers = computed(() => agentsStore.workers.filter((w) => w.state !== 'offline'))
+
+const onlineAgents = computed(() => {
+  const ids = new Set(onlineWorkers.value.map((w) => w.id))
+  return agentsStore.agents.filter((a) => a.workerId && ids.has(a.workerId))
+})
 
 function agentsForWorker(workerId: string) {
   return agentsStore.agents.filter((a) => a.workerId === workerId)
@@ -114,6 +162,33 @@ function openAgentTask(workerId: string) {
   color: var(--color-teal);
   letter-spacing: 1.5px;
   text-transform: uppercase;
+}
+
+.collapse-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.collapse-icon {
+  font-size: 10px;
+  color: var(--color-text-dim);
+}
+
+.status-dots {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+}
+
+.section-dots {
+  flex: 1;
+  margin: 0 8px;
 }
 
 .section-count {
