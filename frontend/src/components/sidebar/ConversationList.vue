@@ -1,34 +1,41 @@
 <template>
   <div class="conversation-list">
-    <div class="list-toolbar">
-      <div class="status-filter">
-        <button
-          v-for="opt in FILTER_OPTIONS"
-          :key="opt.value"
-          class="filter-btn"
-          :class="{ active: statusFilter === opt.value }"
-          @click="setFilter(opt.value)"
-        >
-          {{ opt.label }}
-        </button>
-      </div>
-      <div class="range-filter">
-        <select v-model="timeRange" class="filter-select" aria-label="Time range">
-          <option v-for="opt in TIME_RANGES" :key="opt.label" :value="opt.hours">
+    <div
+      id="conversation-filters"
+      class="toolbar-collapse"
+      :class="{ collapsed: filtersCollapsed }"
+      :inert="filtersCollapsed"
+    >
+      <div class="list-toolbar">
+        <div class="status-filter">
+          <button
+            v-for="opt in FILTER_OPTIONS"
+            :key="opt.value"
+            class="filter-btn"
+            :class="{ active: statusFilter === opt.value }"
+            @click="setFilter(opt.value)"
+          >
             {{ opt.label }}
-          </option>
-        </select>
-        <select v-model="limit" class="filter-select" aria-label="Number of conversations">
-          <option v-for="n in LIMITS" :key="n" :value="n">{{ n ? `Last ${n}` : 'All' }}</option>
-        </select>
+          </button>
+        </div>
+        <div class="range-filter">
+          <select v-model="timeRange" class="filter-select" aria-label="Time range">
+            <option v-for="opt in TIME_RANGES" :key="opt.label" :value="opt.hours">
+              {{ opt.label }}
+            </option>
+          </select>
+          <select v-model="limit" class="filter-select" aria-label="Number of conversations">
+            <option v-for="n in LIMITS" :key="n" :value="n">{{ n ? `Last ${n}` : 'All' }}</option>
+          </select>
+        </div>
+        <input
+          v-model="search"
+          class="conversation-search"
+          type="search"
+          aria-label="Search conversation names and messages"
+          placeholder="Search names and messages…"
+        />
       </div>
-      <input
-        v-model="search"
-        class="conversation-search"
-        type="search"
-        aria-label="Search conversation names and messages"
-        placeholder="Search names and messages…"
-      />
     </div>
 
     <div class="rows">
@@ -69,6 +76,8 @@ import { api } from '../../utils/api'
 import type { Conversation, ConversationStatus, TaskTreeData, TaskTreeNode } from '../../types'
 import ConversationListRow from './ConversationListRow.vue'
 import TaskTreeRow from './TaskTreeRow.vue'
+
+defineProps<{ filtersCollapsed?: boolean }>()
 
 const TIME_RANGES: Array<{ hours: number; label: string }> = [
   { hours: 0, label: 'Any time' },
@@ -200,7 +209,39 @@ watch(() => guildStore.currentGuild?.id, load)
   overflow: hidden;
 }
 
+/* grid 1fr→0fr animates to the content's natural height without a magic max-height */
+.toolbar-collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+  flex-shrink: 0;
+  transition: grid-template-rows 0.2s ease;
+}
+
+.toolbar-collapse.collapsed {
+  grid-template-rows: 0fr;
+}
+
+.toolbar-collapse > .list-toolbar {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.toolbar-collapse.collapsed > .list-toolbar {
+  padding-block: 0;
+  border-bottom-width: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toolbar-collapse,
+  .toolbar-collapse > .list-toolbar {
+    transition: none;
+  }
+}
+
 .list-toolbar {
+  transition:
+    padding 0.2s ease,
+    border-bottom-width 0.2s ease;
   display: flex;
   flex-direction: column;
   gap: 8px;
