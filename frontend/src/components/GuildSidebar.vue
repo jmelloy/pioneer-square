@@ -47,10 +47,10 @@ const switchMobileTab = inject<(tab: string) => void>('switchMobileTab', () => {
 
 const FILTERS_STORAGE_KEY = 'conversationFiltersCollapsed'
 const storedFilters = localStorage.getItem(FILTERS_STORAGE_KEY)
-// No saved preference: start collapsed on phones, where the toolbar eats the viewport.
+// No saved preference: start collapsed on phones (portrait or landscape), where the toolbar eats the viewport.
 const filtersCollapsed = ref(
   storedFilters === null
-    ? (window.matchMedia?.('(max-width: 767px)').matches ?? false)
+    ? (window.matchMedia?.('(max-width: 767px), (max-height: 500px)').matches ?? false)
     : storedFilters === 'true',
 )
 function toggleFilters() {
@@ -88,6 +88,10 @@ watch(
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.active-count {
+  margin-left: auto;
 }
 
 .filters-toggle {
