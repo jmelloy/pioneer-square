@@ -96,7 +96,7 @@ const uiStore = useUiStore()
 
 const showSpawnForm = ref(false)
 // ponytail: collapse state is per-session; persist to localStorage if users ask
-const sectionCollapsed = ref(false)
+const sectionCollapsed = ref(true)
 const collapsedWorkers = ref(new Set<string>())
 
 function toggleWorker(workerId: string) {
@@ -157,9 +157,9 @@ function openAgentTask(workerId: string) {
 }
 
 .section-label {
-  font: 600 var(--text-section-title) / var(--leading-heading) var(--font-ui);
-  color: var(--color-teal);
-  text-transform: uppercase;
+  /* matches .sidebar-heading h2 (Conversations) and .chat-title (FOREMAN) */
+  font: 400 var(--text-section-title) / var(--leading-heading) var(--font-display);
+  color: var(--color-brass-light);
 }
 
 .collapse-btn {
