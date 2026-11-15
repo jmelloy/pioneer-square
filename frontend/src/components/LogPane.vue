@@ -166,7 +166,7 @@ watch(
   display: flex;
   flex-direction: column;
   background: #080500;
-  font-family: var(--font-mono);
+  font: var(--text-body) / var(--leading-body) var(--font-ui);
   overflow: hidden;
 }
 
@@ -223,15 +223,13 @@ watch(
 }
 
 .info-toggle-label {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 2px;
-  color: var(--color-brass-dark);
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
+  color: var(--color-text-dim);
 }
 
 .info-toggle-chevron {
-  font-size: 8px;
-  color: var(--color-brass-dark);
+  font-size: var(--text-caption);
+  color: var(--color-text-dim);
   transition: transform 0.2s ease;
   display: inline-block;
   transform: rotate(-90deg);
@@ -242,17 +240,18 @@ watch(
 }
 
 .info-pane-content {
-  flex-shrink: 0;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 35%;
+  overflow-y: auto;
 }
 
 /* Task header badges */
 .phase-badge {
-  font-family: var(--font-pixel);
-  font-size: 6px;
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
   padding: 2px 5px;
   border: 1px solid;
   text-transform: uppercase;
-  letter-spacing: 1px;
   flex-shrink: 0;
 }
 .phase-badge.plan {
@@ -273,12 +272,11 @@ watch(
 }
 
 .state-badge {
-  font-size: 6px;
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
   padding: 2px 6px;
   background: none;
   border: 1px solid;
-  font-family: var(--font-pixel);
-  letter-spacing: 1px;
+
   text-transform: uppercase;
 }
 .state-pending {

@@ -4,6 +4,7 @@ import { createServer, type ViteDevServer } from 'vite'
 import { existsSync } from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { installTypographyFixture, logs, task } from './typography-fixture'
 
 // Resolve the frontend root regardless of where vitest is invoked.
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -348,5 +349,153 @@ describeIfBrowser('browser smoke', () => {
       expect(await input.evaluate((el) => getComputedStyle(el).outlineStyle)).toBe('solid')
       await page.keyboard.press('Escape')
     }
+  }, 30_000)
+
+  it('uses readable standalone log typography without widening the page', async () => {
+    await installTypographyFixture(page)
+    await page.goto(`${baseUrl}/task/${task.id}/log`)
+    await page.locator('.log-text--markdown h1').waitFor()
+    for (const width of [1440, 700, 390, 320]) {
+      await page.setViewportSize({ width, height: 900 })
+      const metrics = await page.locator('.task-log').evaluate((el) => {
+        const prose = el.querySelector('.markdown-prose')!
+        const size = (selector: string) =>
+          parseFloat(getComputedStyle(el.querySelector(selector)!).fontSize)
+        return {
+          body: parseFloat(getComputedStyle(prose).fontSize),
+          proseColor: getComputedStyle(prose).color,
+          textColor: getComputedStyle(el).color,
+          h1: size('h1'),
+          h2: size('h2'),
+          h3: size('h3'),
+          raw: getComputedStyle(el.querySelector('.log-text:not(.log-text--markdown)')!).fontFamily,
+          overflow: el.scrollWidth - el.clientWidth,
+          proseOverflow: prose.scrollWidth - prose.clientWidth,
+          logHeight: el.querySelector('.pane-body')!.clientHeight,
+        }
+      })
+      expect(metrics.body).toBeGreaterThanOrEqual(width <= 700 ? 16 : 15)
+      expect(metrics.h1).toBeGreaterThan(metrics.h2)
+      expect(metrics.h2).toBeGreaterThan(metrics.h3)
+      expect(metrics.raw).toContain('monospace')
+      expect(metrics.proseColor).toBe(metrics.textColor)
+      expect(metrics.overflow).toBeLessThanOrEqual(1)
+      expect(metrics.proseOverflow).toBeLessThanOrEqual(1)
+      expect(metrics.logHeight).toBeGreaterThan(0)
+      expect(await page.locator('.markdown-prose pre code').textContent()).toContain(
+        '    preserve_indentation',
+      )
+      expect(await page.locator('.log-text:not(.log-text--markdown)').first().textContent()).toBe(
+        logs[1]!.line,
+      )
+    }
+    await page.locator('.log-line--expandable').click()
+    expect(await page.locator('.log-detail-body').textContent()).toContain('    echo example')
+  }, 30_000)
+
+  it('keeps task actions, metadata, and teleported debug text readable on phones', async () => {
+    page.setDefaultTimeout(5000)
+    await installTypographyFixture(page)
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto(`${baseUrl}/${task.guild_id}`)
+    await page.getByRole('button', { name: 'All', exact: true }).click()
+    await page.locator('.task-row').first().waitFor()
+    for (const width of [1440, 700, 390, 320]) {
+      await page.setViewportSize({ width, height: 900 })
+      if (width <= 1024)
+        await page.locator('.mobile-tab-bar').getByRole('button', { name: 'Tasks' }).click()
+      const rows = await page
+        .locator('.task-row')
+        .evaluateAll((els) =>
+          els.map((el) => ({ overflow: el.scrollWidth - el.clientWidth, height: el.clientHeight })),
+        )
+      expect(rows.length).toBeGreaterThan(6)
+      for (const row of rows) {
+        expect(row.overflow).toBeLessThanOrEqual(1)
+        expect(row.height).toBeGreaterThanOrEqual(43)
+      }
+      await page.locator('.task-name').filter({ hasText: task.name }).click()
+      if (width <= 1024)
+        await page.locator('.mobile-tab-bar').getByRole('button', { name: 'Work' }).click()
+      await page.locator('.followup-input').waitFor()
+      const metrics = await page.locator('.log-pane').evaluate((el) => ({
+        overflow: el.scrollWidth - el.clientWidth,
+        logHeight: el.querySelector('.pane-body')!.clientHeight,
+        input: parseFloat(getComputedStyle(el.querySelector('.followup-input')!).fontSize),
+        label: parseFloat(getComputedStyle(el.querySelector('.phase-badge')!).fontSize),
+      }))
+      expect(metrics.overflow).toBeLessThanOrEqual(1)
+      expect(metrics.logHeight).toBeGreaterThan(0)
+      expect(metrics.input).toBeGreaterThanOrEqual(16)
+      expect(metrics.label).toBeGreaterThanOrEqual(12)
+    }
+
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.getByTitle('Debug: foreman context').click()
+    await page.locator('.debug-pre').waitFor()
+    for (const width of [1440, 700, 390, 320]) {
+      await page.setViewportSize({ width, height: 900 })
+      const metrics = await page.locator('.debug-sidebar').evaluate((el) => ({
+        inWorkspace: Boolean(el.closest('.app-layout')),
+        overflow: el.scrollWidth - el.clientWidth,
+        text: parseFloat(getComputedStyle(el.querySelector('.debug-text')!).fontSize),
+        role: parseFloat(getComputedStyle(el.querySelector('.debug-role')!).fontSize),
+        code: getComputedStyle(el.querySelector('.debug-pre')!).fontFamily,
+      }))
+      expect(metrics.inWorkspace).toBe(false)
+      expect(metrics.overflow).toBeLessThanOrEqual(1)
+      expect(metrics.text).toBeGreaterThanOrEqual(width <= 700 ? 16 : 15)
+      expect(metrics.role).toBeGreaterThanOrEqual(12)
+      expect(metrics.code).toContain('monospace')
+    }
+    await page.locator('.debug-sidebar .close-btn').click()
+
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.getByTitle('Expand workers', { exact: true }).click()
+    await page.locator('.agent-row-name').filter({ hasText: 'Type Agent' }).click()
+    await page.locator('.tool-select').selectOption('pi')
+    for (const width of [1440, 700, 390, 320]) {
+      await page.setViewportSize({ width, height: 900 })
+      if (width <= 1024)
+        await page.locator('.mobile-tab-bar').getByRole('button', { name: 'Work' }).click()
+      const metrics = await page.locator('.actions-panel').evaluate((el) => ({
+        overflow: el.scrollWidth - el.clientWidth,
+        inputs: Array.from(el.querySelectorAll('input, select')).map((input) =>
+          parseFloat(getComputedStyle(input).fontSize),
+        ),
+      }))
+      expect(metrics.overflow).toBeLessThanOrEqual(1)
+      for (const size of metrics.inputs) expect(size).toBeGreaterThanOrEqual(16)
+    }
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.locator('.worker-row-name').filter({ hasText: 'Type Worker' }).click()
+    await page.locator('.expand-toggle').click()
+    await page.setViewportSize({ width: 320, height: 900 })
+    await page.locator('.cancel-btn').scrollIntoViewIfNeeded()
+    expect(
+      await page.locator('.log-pane .pane-body').evaluate((el) => el.clientHeight),
+    ).toBeGreaterThan(0)
+    const actionBounds = await page.locator('.actions-panel').boundingBox()
+    const cancelBounds = await page.locator('.cancel-btn').boundingBox()
+    expect(cancelBounds!.y + cancelBounds!.height).toBeLessThanOrEqual(
+      actionBounds!.y + actionBounds!.height + 1,
+    )
+
+    await page.getByRole('button', { name: /Projects \/ Issues/ }).click()
+    await page.locator('.issue-select').first().click()
+    await page
+      .locator('.issue-tab-bar')
+      .getByRole('button', { name: /Comments/ })
+      .click()
+    await page.locator('.comment-date').waitFor()
+    expect(
+      await page
+        .locator('.comment-date')
+        .evaluate((el) => parseFloat(getComputedStyle(el).fontSize)),
+    ).toBeGreaterThanOrEqual(12)
+    const issueOverflow = await page
+      .locator('.issue-tab-content')
+      .evaluate((el) => el.scrollWidth - el.clientWidth)
+    expect(issueOverflow).toBeLessThanOrEqual(1)
   }, 30_000)
 })

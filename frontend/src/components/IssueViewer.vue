@@ -93,7 +93,7 @@
           <template v-if="!editingBody">
             <div
               v-if="issue.body"
-              class="issue-body markdown-body"
+              class="issue-body markdown-body markdown-prose"
               v-html="renderMarkdown(issue.body)"
             ></div>
             <div v-else class="issue-body-empty">No description provided.</div>
@@ -178,7 +178,10 @@
                     >↗</a
                   >
                 </div>
-                <div class="comment-body markdown-body" v-html="renderMarkdown(comment.body)"></div>
+                <div
+                  class="comment-body markdown-body markdown-prose"
+                  v-html="renderMarkdown(comment.body)"
+                ></div>
               </div>
               <div v-if="comments.length === 0" class="no-comments">No comments yet.</div>
             </div>
@@ -412,7 +415,7 @@ onMounted(loadIssue)
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  font-size: 13px;
+  font: var(--text-body) / var(--leading-body) var(--font-ui);
   color: var(--color-text);
 }
 
@@ -457,7 +460,7 @@ onMounted(loadIssue)
 }
 
 .issue-state {
-  font-size: 9px;
+  font-size: var(--text-caption);
   padding: 2px 6px;
   border-radius: 10px;
   border: 1px solid;
@@ -474,7 +477,7 @@ onMounted(loadIssue)
 }
 
 .gh-link {
-  font-size: 10px;
+  font-size: var(--text-small);
   color: var(--color-teal);
   text-decoration: none;
   margin-left: auto;
@@ -484,7 +487,7 @@ onMounted(loadIssue)
 }
 
 .gh-link-sm {
-  font-size: 10px;
+  font-size: var(--text-small);
   color: var(--color-teal);
   text-decoration: none;
   margin-left: auto;
@@ -556,7 +559,9 @@ onMounted(loadIssue)
 }
 
 .issue-label {
-  font-size: 9px;
+  font-size: var(--text-caption);
+  min-width: 0;
+  overflow-wrap: anywhere;
   border: 1px solid;
   padding: 1px 6px;
   border-radius: 3px;
@@ -565,12 +570,15 @@ onMounted(loadIssue)
 /* Tab bar */
 .issue-tab-bar {
   display: flex;
+  overflow-x: auto;
   background: var(--color-bg-secondary);
   border-bottom: 1px solid var(--color-brass-dark);
   flex-shrink: 0;
 }
 
 .issue-tab-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
   padding: 8px 16px;
   background: none;
   border: none;
@@ -625,7 +633,6 @@ onMounted(loadIssue)
 }
 
 .edit-btn {
-  font-size: 10px;
   padding: 2px 6px;
   margin-left: auto;
 }
@@ -641,7 +648,7 @@ onMounted(loadIssue)
 .issue-body-empty {
   color: var(--color-text-dim);
   font-style: italic;
-  font-size: 12px;
+  font-size: var(--text-small);
   padding: 8px;
 }
 
@@ -673,6 +680,7 @@ onMounted(loadIssue)
 .edit-actions,
 .post-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
@@ -712,7 +720,8 @@ onMounted(loadIssue)
 }
 
 .post-error {
-  font-size: 11px;
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
   color: var(--color-red);
 }
 
@@ -731,6 +740,7 @@ onMounted(loadIssue)
 
 .comment-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
@@ -739,12 +749,14 @@ onMounted(loadIssue)
 }
 
 .comment-author {
-  font-size: 11px;
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
   font-weight: 600;
 }
 
 .comment-date {
-  font-size: 10px;
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
   color: var(--color-text-dim);
 }
 
@@ -753,118 +765,18 @@ onMounted(loadIssue)
 }
 
 .no-comments {
-  font-size: 11px;
+  font-size: var(--text-small);
   color: var(--color-text-dim);
   font-style: italic;
   text-align: center;
   padding: 12px;
 }
 
-/* Markdown styles shared by body and comments */
-.markdown-body {
-  font: var(--text-body) / var(--leading-body) var(--font-ui);
-  overflow-wrap: anywhere;
-}
-
-.markdown-body :deep(p) {
-  margin: 0 0 8px;
-}
-
-.markdown-body :deep(p:last-child) {
-  margin-bottom: 0;
-}
-
-.markdown-body :deep(ul),
-.markdown-body :deep(ol) {
-  margin: 0 0 8px;
-  padding-left: 20px;
-}
-
-.markdown-body :deep(li) {
-  margin-bottom: 3px;
-}
-
-.markdown-body :deep(code) {
-  font-family: var(--font-mono);
-  font-size: 0.9em;
-  background: var(--color-bg-tertiary);
-  padding: 1px 4px;
-  border-radius: 2px;
-}
-
-.markdown-body :deep(pre) {
-  background: var(--color-bg-tertiary);
-  border: 1px solid var(--color-bg);
-  border-radius: 3px;
-  padding: 10px;
-  overflow-x: auto;
-  margin: 0 0 8px;
-}
-
-.markdown-body :deep(pre code) {
-  background: none;
-  padding: 0;
-}
-
-.markdown-body :deep(blockquote) {
-  border-left: 3px solid var(--color-brass-dark);
-  margin: 0 0 8px;
-  padding: 4px 10px;
-  color: var(--color-text-dim);
-}
-
-.markdown-body :deep(h1),
-.markdown-body :deep(h2),
-.markdown-body :deep(h3) {
-  margin: 10px 0 6px;
-  font: 600 var(--text-card-title) / var(--leading-heading) var(--font-ui);
-  color: var(--color-brass-light);
-}
-
-.markdown-body :deep(h1) {
-  font-size: var(--text-page-title);
-}
-
-.markdown-body :deep(h2) {
-  font-size: var(--text-section-title);
-}
-
-.markdown-body :deep(a) {
-  color: var(--color-teal);
-  text-decoration: none;
-}
-
-.markdown-body :deep(a:hover) {
-  text-decoration: underline;
-}
-
-.markdown-body :deep(hr) {
-  border: none;
-  border-top: 1px solid var(--color-bg-tertiary);
-  margin: 10px 0;
-}
-
-.markdown-body :deep(table) {
-  border-collapse: collapse;
-  margin: 0 0 8px;
-  font-size: 12px;
-}
-
-.markdown-body :deep(th),
-.markdown-body :deep(td) {
-  border: 1px solid var(--color-bg-tertiary);
-  padding: 4px 8px;
-}
-
-.markdown-body :deep(th) {
-  background: var(--color-bg-secondary);
-}
-
 /* Task Log tab */
 .tl-empty {
   color: var(--color-text-dim);
   font-style: italic;
-  font-size: 12px;
+  font-size: var(--text-small);
   text-align: center;
   padding: 20px 0;
 }
@@ -896,14 +808,14 @@ onMounted(loadIssue)
 }
 
 .tl-expand {
-  font-size: 10px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
   flex-shrink: 0;
   width: 10px;
 }
 
 .tl-name {
-  font-size: 11px;
+  font-size: var(--text-small);
   font-weight: 600;
   color: var(--color-text);
   flex: 1;
@@ -914,7 +826,7 @@ onMounted(loadIssue)
 }
 
 .tl-phase {
-  font-size: 9px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
   padding: 1px 5px;
   background: var(--color-bg-tertiary);
@@ -923,7 +835,7 @@ onMounted(loadIssue)
 }
 
 .tl-state {
-  font-size: 9px;
+  font-size: var(--text-caption);
   padding: 1px 5px;
   border-radius: 2px;
   border: 1px solid;
@@ -961,14 +873,14 @@ onMounted(loadIssue)
 }
 
 .tl-worker {
-  font-size: 9px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
   font-family: var(--font-mono);
   flex-shrink: 0;
 }
 
 .tl-pr {
-  font-size: 9px;
+  font-size: var(--text-small);
   color: var(--color-teal);
   text-decoration: none;
   flex-shrink: 0;
@@ -978,7 +890,8 @@ onMounted(loadIssue)
 }
 
 .tl-date {
-  font-size: 9px;
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
   color: var(--color-text-dim);
   margin-left: auto;
   flex-shrink: 0;
@@ -990,7 +903,7 @@ onMounted(loadIssue)
 
 .tl-logs-loading,
 .tl-logs-empty {
-  font-size: 11px;
+  font-size: var(--text-small);
   color: var(--color-text-dim);
   font-style: italic;
   padding: 8px 12px;
@@ -1000,9 +913,7 @@ onMounted(loadIssue)
   margin: 0;
   padding: 10px 12px;
   background: var(--color-bg);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  line-height: 1.5;
+  font: var(--text-small) / var(--leading-body) var(--font-mono);
   overflow-x: auto;
   max-height: 260px;
   overflow-y: auto;

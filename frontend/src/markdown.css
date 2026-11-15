@@ -1,0 +1,112 @@
+/* Shared rendered prose, not terminal output or editable source. */
+.markdown-prose {
+  font: var(--text-body) / var(--leading-body) var(--font-ui);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.markdown-prose p {
+  margin: 0 0 10px;
+}
+
+.markdown-prose p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-prose :is(ul, ol) {
+  margin: 4px 0 6px;
+  padding-left: 20px;
+}
+
+.markdown-prose li {
+  margin-bottom: 3px;
+}
+
+.markdown-prose code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--color-brass-dark);
+  padding: 0 4px;
+  border-radius: 2px;
+  color: var(--color-amber);
+}
+
+.markdown-prose pre {
+  font: var(--text-small) / var(--leading-body) var(--font-mono);
+  white-space: pre;
+  overflow-wrap: normal;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--color-brass-dark);
+  padding: 8px 10px;
+  overflow-x: auto;
+  margin: 6px 0;
+}
+
+.markdown-prose pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+  color: var(--color-green);
+}
+
+.markdown-prose :is(h1, h2, h3, h4, h5, h6) {
+  font: 600 var(--text-card-title) / var(--leading-heading) var(--font-ui);
+  color: var(--color-teal);
+  margin: 12px 0 6px;
+}
+
+.markdown-prose h1 {
+  font-size: var(--text-page-title);
+}
+
+.markdown-prose h2 {
+  font-size: var(--text-section-title);
+}
+
+.markdown-prose strong {
+  color: var(--color-amber);
+  font-weight: 700;
+}
+
+.markdown-prose em {
+  color: var(--color-text-dim);
+}
+
+.markdown-prose a {
+  color: var(--color-teal);
+  text-decoration: underline;
+}
+
+.markdown-prose blockquote {
+  border-left: 3px solid var(--color-brass-dark);
+  margin: 6px 0;
+  padding: 2px 10px;
+  color: var(--color-text-dim);
+}
+
+.markdown-prose hr {
+  border: none;
+  border-top: 1px solid var(--color-brass-dark);
+  margin: 10px 0;
+}
+
+/* Wide tables scroll inside the prose, not the surrounding pane. */
+.markdown-prose table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 6px 0;
+  font-size: var(--text-small);
+}
+
+.markdown-prose :is(th, td) {
+  border: 1px solid var(--color-brass-dark);
+  padding: 4px 8px;
+}
+
+.markdown-prose th {
+  background: var(--color-bg-secondary);
+}

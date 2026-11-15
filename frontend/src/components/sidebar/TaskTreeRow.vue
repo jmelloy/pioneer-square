@@ -7,7 +7,7 @@
         'has-indent': depth > 0,
         'issue-root-row': isIssueRoot,
       }"
-      :style="{ paddingLeft: `${10 + depth * 14}px` }"
+      :style="{ paddingLeft: `min(${10 + depth * 14}px, 20%)` }"
       @click="uiStore.selectTask(task.id)"
     >
       <span
@@ -126,6 +126,8 @@ function isActiveState(state: string): boolean {
 .task-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  min-height: 44px;
   gap: 5px;
   padding-top: 5px;
   padding-bottom: 5px;
@@ -157,21 +159,15 @@ function isActiveState(state: string): boolean {
   flex-shrink: 0;
 }
 
-.issue-root-name {
-  font-weight: 600;
-}
-
 .issue-link {
-  font-family: var(--font-pixel);
-  font-size: 0.7rem;
-  letter-spacing: 0.5px;
+  font: var(--text-caption) / 1.4 var(--font-mono);
   color: var(--color-brass);
   background: rgba(232, 170, 0, 0.15);
   padding: 2px 5px;
   border-radius: 2px;
-  flex-shrink: 0;
+  min-width: 0;
   text-decoration: none;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .issue-link:hover {
@@ -179,7 +175,7 @@ function isActiveState(state: string): boolean {
 }
 
 .row-toggle {
-  font-size: 9px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
   flex-shrink: 0;
   width: 12px;
@@ -232,19 +228,16 @@ function isActiveState(state: string): boolean {
 }
 
 .task-name {
-  font-size: 11px;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
   color: var(--color-text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1;
+  overflow-wrap: anywhere;
+  flex: 1 1 8rem;
   min-width: 0;
 }
 
-.phase-pill {
-  font-family: var(--font-pixel);
-  font-size: 5px;
-  letter-spacing: 0.5px;
+.phase-pill,
+.state-pill {
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
   text-transform: uppercase;
   padding: 1px 3px;
   border-radius: 2px;
@@ -268,17 +261,6 @@ function isActiveState(state: string): boolean {
   color: var(--color-orange);
 }
 
-.state-pill {
-  font-family: var(--font-pixel);
-  font-size: 5px;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  padding: 1px 3px;
-  border-radius: 2px;
-  flex-shrink: 0;
-  opacity: 0.75;
-}
-
 .state-working,
 .state-planning {
   color: var(--color-green);
@@ -298,10 +280,10 @@ function isActiveState(state: string): boolean {
 }
 
 .worker-id {
-  font-size: 9px;
+  font: var(--text-caption) / 1.4 var(--font-mono);
   color: var(--color-text-dim);
-  flex-shrink: 0;
-  font-family: monospace;
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 @keyframes pulse {
