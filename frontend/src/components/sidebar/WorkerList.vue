@@ -157,10 +157,8 @@ function openAgentTask(workerId: string) {
 }
 
 .section-label {
-  font-family: var(--font-pixel);
-  font-size: 6px;
+  font: 600 var(--text-section-title) / var(--leading-heading) var(--font-ui);
   color: var(--color-teal);
-  letter-spacing: 1.5px;
   text-transform: uppercase;
 }
 
@@ -240,22 +238,19 @@ function openAgentTask(workerId: string) {
 }
 
 .worker-row-name {
-  font-size: 10px;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
   color: var(--color-teal);
   flex: 1;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-family: var(--font-pixel);
-  letter-spacing: 0.5px;
 }
 
 .worker-row-state {
-  font-family: var(--font-pixel);
-  font-size: 6px;
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
   color: var(--color-text-dim);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.03em;
 }
 
 .agent-row {
@@ -286,7 +281,7 @@ function openAgentTask(workerId: string) {
 }
 
 .agent-row-name {
-  font-size: 10px;
+  font-size: var(--text-small);
   color: var(--color-text);
   flex: 1;
   white-space: nowrap;

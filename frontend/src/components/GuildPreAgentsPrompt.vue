@@ -146,18 +146,17 @@ function clear() {
 }
 .gpap-title,
 .gpap-sublabel {
-  font-family: var(--font-pixel);
-  font-size: 7px;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
   color: var(--color-teal);
-  letter-spacing: 1px;
   text-transform: uppercase;
 }
 .gpap-intro,
 .gpap-hint,
 .gpap-precedence {
-  font-size: 10px;
+  font-size: var(--text-small);
   color: var(--color-text-dim);
-  line-height: 1.4;
+  line-height: var(--leading-body);
+  overflow-wrap: anywhere;
   margin: 0;
 }
 .gpap-precedence ol {
@@ -173,13 +172,14 @@ function clear() {
   border: 1px solid var(--color-brass-dark);
   border-radius: 2px;
   padding: 6px;
-  font-family: var(--font-mono, monospace);
-  font-size: 11px;
+  font: var(--text-input) / 1.5 var(--font-ui);
 }
 .gpap-meta {
   display: flex;
   justify-content: space-between;
-  font-size: 9px;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
 }
 .gpap-actions {
@@ -188,7 +188,8 @@ function clear() {
   gap: 8px;
 }
 .gpap-error {
-  font-size: 10px;
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
   color: var(--color-red, #e55);
 }
 </style>

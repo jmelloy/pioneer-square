@@ -88,7 +88,8 @@ function formatDateTime(iso?: string) {
 }
 
 .sub-time {
-  font-size: 10px;
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
   color: var(--color-text-dim);
   margin-left: auto;
 }

@@ -154,12 +154,11 @@ onBeforeUnmount(() => {
 }
 
 .settings-panel-title {
-  font-family: var(--font-pixel);
-  font-size: 9px;
+  font: 400 var(--text-section-title) / var(--leading-heading) var(--font-display);
   color: var(--color-brass-light);
-  letter-spacing: 2px;
   text-transform: uppercase;
-  flex-shrink: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .settings-panel-guild {
@@ -171,19 +170,14 @@ onBeforeUnmount(() => {
 }
 
 .settings-panel-guild-name {
-  font-family: var(--font-pixel);
-  font-size: 8px;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
   color: var(--color-brass);
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 
 .settings-panel-guild-id {
   font-family: var(--font-mono, monospace);
-  font-size: 10px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
   flex-shrink: 0;
 }
@@ -193,10 +187,10 @@ onBeforeUnmount(() => {
   border: 1px solid var(--color-brass-dark);
   color: var(--color-brass);
   cursor: pointer;
-  width: 28px;
-  height: 28px;
+  width: 44px;
+  height: 44px;
   border-radius: 2px;
-  font-size: 12px;
+  font-size: var(--text-card-title);
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
@@ -234,12 +228,10 @@ onBeforeUnmount(() => {
 .settings-tab {
   background: none;
   border: 1px solid transparent;
-  color: var(--color-brass-dark);
+  color: var(--color-text-dim);
   cursor: pointer;
-  font-family: var(--font-pixel);
-  font-size: 7px;
-  letter-spacing: 1px;
-  text-transform: uppercase;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
+  min-height: 44px;
   text-align: left;
   padding: 9px 10px;
   border-radius: 2px;
@@ -263,6 +255,7 @@ onBeforeUnmount(() => {
 .settings-content {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   overflow-y: auto;
   padding: 16px 18px;
 }
@@ -274,7 +267,7 @@ onBeforeUnmount(() => {
   max-width: 560px;
 }
 
-@media (max-width: 720px) {
+@media (max-width: 700px) {
   .settings-overlay {
     padding: 0;
   }
@@ -284,6 +277,21 @@ onBeforeUnmount(() => {
     height: 100dvh;
     max-height: 100dvh;
     border: none;
+  }
+
+  .settings-panel-header {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .settings-panel-guild {
+    order: 1;
+    flex-basis: 100%;
+    flex-wrap: wrap;
+  }
+
+  .settings-close-btn {
+    margin-left: auto;
   }
 
   .settings-panel-body {

@@ -190,69 +190,25 @@ onBeforeUnmount(() => {
 }
 
 .settings-label {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  color: var(--color-brass-dark);
-  letter-spacing: 1px;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
+  color: var(--color-text-dim);
   text-transform: uppercase;
 }
 
 .settings-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
-.settings-input {
-  flex: 1;
-  background: var(--color-bg);
-  border: 1px solid var(--color-brass-dark);
-  color: var(--color-text);
-  font-family: var(--font-mono, monospace);
-  font-size: 11px;
-  padding: 5px 7px;
-  outline: none;
-  border-radius: 2px;
-  min-width: 0;
-}
-
-.settings-input:focus {
-  border-color: var(--color-brass);
-}
-
-.settings-save-btn {
-  font-size: 7px;
-  padding: 5px 9px;
-  flex-shrink: 0;
-}
-
-.settings-save-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.save-status {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 0.5px;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.save-status-saved {
-  color: var(--color-green);
-}
-.save-status-error {
-  color: var(--color-red);
-}
-
 .settings-hint {
-  font-family: var(--font-mono, monospace);
-  font-size: 9px;
+  font-size: var(--text-small);
   color: var(--color-text-dim);
   font-style: italic;
   margin: 0 0 3px;
-  line-height: 1.4;
+  line-height: var(--leading-body);
+  overflow-wrap: anywhere;
 }
 
 .settings-meta {
@@ -266,16 +222,14 @@ onBeforeUnmount(() => {
 }
 
 .settings-meta-label {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  color: var(--color-brass-dark);
-  letter-spacing: 1px;
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
+  color: var(--color-text-dim);
   text-transform: uppercase;
 }
 
 .settings-meta-value {
   font-family: var(--font-mono, monospace);
-  font-size: 11px;
+  font-size: var(--text-small);
   color: var(--color-brass);
   background: var(--color-bg);
   border: 1px solid var(--color-brass-dark);

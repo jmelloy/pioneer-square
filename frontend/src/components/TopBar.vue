@@ -124,7 +124,7 @@ function goHome() {
 }
 
 .home-icon {
-  font-size: 12px;
+  font-size: 22px;
   line-height: 1;
 }
 
@@ -148,10 +148,9 @@ function goHome() {
 }
 
 .guild-name {
-  font-family: var(--font-pixel);
-  font-size: 9px;
+  font: 400 var(--text-page-title) / var(--leading-heading) var(--font-display);
   color: var(--color-brass-light);
-  letter-spacing: 1.5px;
+  letter-spacing: 0.02em;
   text-transform: uppercase;
   white-space: nowrap;
   overflow: hidden;
@@ -161,7 +160,7 @@ function goHome() {
 
 .guild-id {
   font-family: var(--font-mono, monospace);
-  font-size: 10px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
   white-space: nowrap;
   flex-shrink: 0;
@@ -200,7 +199,7 @@ function goHome() {
 }
 
 .user-login {
-  font-size: 11px;
+  font-size: var(--text-body);
   color: var(--color-teal);
   white-space: nowrap;
   max-width: 140px;

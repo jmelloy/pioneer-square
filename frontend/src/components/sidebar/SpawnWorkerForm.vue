@@ -776,12 +776,11 @@ async function launch() {
 }
 
 .settings-panel-title {
-  font-family: var(--font-pixel);
-  font-size: 9px;
+  font: 400 var(--text-section-title) / var(--leading-heading) var(--font-display);
   color: var(--color-brass-light);
-  letter-spacing: 2px;
   text-transform: uppercase;
-  flex-shrink: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .settings-panel-guild {
@@ -793,19 +792,14 @@ async function launch() {
 }
 
 .settings-panel-guild-name {
-  font-family: var(--font-pixel);
-  font-size: 8px;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
   color: var(--color-brass);
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 
 .settings-panel-guild-id {
   font-family: var(--font-mono, monospace);
-  font-size: 10px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
   flex-shrink: 0;
 }
@@ -815,10 +809,10 @@ async function launch() {
   border: 1px solid var(--color-brass-dark);
   color: var(--color-brass);
   cursor: pointer;
-  width: 28px;
-  height: 28px;
+  width: 44px;
+  height: 44px;
   border-radius: 2px;
-  font-size: 12px;
+  font-size: var(--text-card-title);
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
@@ -856,12 +850,10 @@ async function launch() {
 .settings-tab {
   background: none;
   border: 1px solid transparent;
-  color: var(--color-brass-dark);
+  color: var(--color-text-dim);
   cursor: pointer;
-  font-family: var(--font-pixel);
-  font-size: 7px;
-  letter-spacing: 1px;
-  text-transform: uppercase;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
+  min-height: 44px;
   text-align: left;
   padding: 9px 10px;
   border-radius: 2px;
@@ -940,44 +932,38 @@ async function launch() {
 }
 
 .spawn-success-label {
-  font-family: var(--font-pixel);
-  font-size: 7px;
+  font: 600 var(--text-card-title) / var(--leading-heading) var(--font-ui);
   color: var(--color-green, #4caf50);
-  letter-spacing: 1.5px;
   text-transform: uppercase;
 }
 
 .spawn-success-id {
   font-family: var(--font-mono, monospace);
-  font-size: 11px;
+  font-size: var(--text-small);
   color: var(--color-teal);
   letter-spacing: 0.5px;
 }
 
 .spawn-label {
-  font-family: var(--font-pixel);
-  font-size: 6px;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
   color: var(--color-teal);
-  letter-spacing: 1px;
   text-transform: uppercase;
 }
 
 .spawn-hint {
   color: var(--color-text-dim);
-  font-family: var(--font-mono, monospace);
+  font-weight: 400;
   text-transform: none;
-  letter-spacing: 0;
-  font-size: 8px;
+  font-size: var(--text-caption);
 }
 
 .spawn-input {
   background: var(--color-bg);
   border: 1px solid var(--color-brass-dark);
   color: var(--color-text);
-  font-family: var(--font-mono, monospace);
-  font-size: 10px;
-  padding: 4px 6px;
-  outline: none;
+  font: var(--text-input) / 1.5 var(--font-ui);
+  padding: 7px;
+  min-width: 0;
   border-radius: 2px;
   width: 100%;
   box-sizing: border-box;
@@ -992,7 +978,6 @@ async function launch() {
 }
 
 .spawn-launch-btn {
-  font-size: 7px;
   padding: 5px 12px;
   flex-shrink: 0;
 }
@@ -1003,13 +988,13 @@ async function launch() {
 }
 
 .spawn-error {
-  font-size: 10px;
+  font-size: var(--text-small);
   color: var(--color-red);
   word-break: break-word;
 }
 
 .spawn-hint-text {
-  font-size: 10px;
+  font-size: var(--text-small);
   color: var(--color-text-dim);
   padding: 4px 0;
   font-style: italic;
@@ -1028,6 +1013,7 @@ async function launch() {
 
 .spawn-tool-list {
   display: flex;
+  flex-wrap: wrap;
   flex-direction: row;
   gap: 2px;
   border: 1px solid var(--color-brass-dark);
@@ -1037,6 +1023,7 @@ async function launch() {
 
 .spawn-tool-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   margin-bottom: 4px;
 }
@@ -1044,11 +1031,9 @@ async function launch() {
 .spawn-tool-tab {
   background: none;
   border: 1px solid var(--color-brass-dark);
-  color: var(--color-brass-dark);
+  color: var(--color-text-dim);
   cursor: pointer;
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 1px;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
   text-transform: uppercase;
   padding: 5px 10px;
   border-radius: 2px;
@@ -1098,10 +1083,8 @@ async function launch() {
 }
 
 .spawn-org-name {
-  font-family: var(--font-pixel);
-  font-size: 7px;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
   color: var(--color-teal);
-  letter-spacing: 0.5px;
 }
 
 .spawn-repo-indent {
@@ -1110,18 +1093,17 @@ async function launch() {
 
 .spawn-repo-check {
   accent-color: var(--color-brass);
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
   cursor: pointer;
   flex-shrink: 0;
 }
 
 .spawn-repo-name {
-  font-size: 10px;
+  font-size: var(--text-small);
   color: var(--color-text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .spawn-defaults-row {
@@ -1146,7 +1128,7 @@ async function launch() {
 }
 
 .spawn-source-note {
-  font-size: 9px;
+  font-size: var(--text-small);
   color: var(--color-text-dim);
   font-style: italic;
   min-width: 0;
@@ -1154,14 +1136,14 @@ async function launch() {
 
 .spawn-source-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
-  flex-shrink: 0;
+  min-width: 0;
 }
 
 .spawn-badge {
-  font-family: var(--font-mono, monospace);
-  font-size: 8px;
+  font: var(--text-caption) / 1.4 var(--font-ui);
   color: var(--color-brass);
   border: 1px solid var(--color-brass-dark);
   border-radius: 2px;
@@ -1184,7 +1166,7 @@ async function launch() {
 }
 
 .spawn-defaults-note {
-  font-size: 9px;
+  font-size: var(--text-small);
   color: var(--color-text-dim);
   font-style: italic;
 }
@@ -1194,8 +1176,7 @@ async function launch() {
   border: none;
   color: var(--color-teal);
   cursor: pointer;
-  font-family: var(--font-mono, monospace);
-  font-size: 9px;
+  font: var(--text-small) / 1.5 var(--font-ui);
   padding: 0;
   text-decoration: underline;
   flex-shrink: 0;
@@ -1206,11 +1187,12 @@ async function launch() {
 }
 
 .spawn-env-hint {
-  font-size: 9px;
+  font-size: var(--text-small);
   color: var(--color-text-dim);
   font-style: italic;
   margin: 0 0 2px;
-  line-height: 1.4;
+  line-height: var(--leading-body);
+  overflow-wrap: anywhere;
 }
 
 .spawn-env-list {
@@ -1231,7 +1213,6 @@ async function launch() {
 
 .spawn-env-input {
   padding: 3px 4px;
-  font-size: 9px;
   width: auto;
 }
 
@@ -1246,7 +1227,7 @@ async function launch() {
 }
 
 .spawn-env-sep {
-  font-size: 10px;
+  font-size: var(--text-small);
   color: var(--color-text-dim);
   flex-shrink: 0;
 }
@@ -1256,8 +1237,9 @@ async function launch() {
   border: none;
   color: var(--color-red, #e53935);
   cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
+  font: var(--text-section-title) / 1 var(--font-ui);
+  min-width: 44px;
+  min-height: 44px;
   padding: 0 2px;
   flex-shrink: 0;
 }
@@ -1267,7 +1249,6 @@ async function launch() {
 }
 
 .spawn-env-add {
-  font-size: 7px;
   padding: 3px 7px;
   align-self: flex-start;
   margin-top: 1px;
@@ -1292,7 +1273,7 @@ async function launch() {
 }
 
 .spawn-cred-value {
-  font-size: 9px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
   font-family: var(--font-mono, monospace);
   overflow: hidden;
@@ -1300,7 +1281,7 @@ async function launch() {
   white-space: nowrap;
 }
 
-@media (max-width: 720px) {
+@media (max-width: 700px) {
   .settings-overlay {
     padding: 0;
     right: auto;
@@ -1347,8 +1328,20 @@ async function launch() {
   }
 
   .settings-panel-header {
+    flex-wrap: wrap;
+    gap: 8px;
     padding-left: max(14px, env(safe-area-inset-left));
     padding-right: max(14px, env(safe-area-inset-right));
+  }
+
+  .settings-panel-guild {
+    order: 1;
+    flex-basis: 100%;
+    flex-wrap: wrap;
+  }
+
+  .settings-close-btn {
+    margin-left: auto;
   }
 
   .settings-content {
@@ -1368,12 +1361,9 @@ async function launch() {
   /* A 12px checkbox is well under the ~44px minimum tap target; the row is the
      real target, so give it height and the box enough size to hit reliably. */
   .spawn-repo-row {
+    min-height: 44px;
+    flex-wrap: wrap;
     padding: 8px 7px;
-  }
-
-  .spawn-repo-check {
-    width: 16px;
-    height: 16px;
   }
 
   /* KEY = VALUE doesn't fit one phone-width line — stack the two inputs, and
@@ -1403,7 +1393,6 @@ async function launch() {
   }
 
   .spawn-launch-btn {
-    font-size: 8px;
     padding: 10px 20px;
   }
 }

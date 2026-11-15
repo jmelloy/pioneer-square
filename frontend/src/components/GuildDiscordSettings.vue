@@ -472,6 +472,7 @@ watch(() => props.guildId, loadAll, { immediate: true })
 
 .foreman-tool-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   margin-bottom: 2px;
 }
@@ -479,11 +480,9 @@ watch(() => props.guildId, loadAll, { immediate: true })
 .foreman-tool-tab {
   background: none;
   border: 1px solid var(--color-brass-dark);
-  color: var(--color-brass-dark);
+  color: var(--color-text-dim);
   cursor: pointer;
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 1px;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
   text-transform: uppercase;
   padding: 6px 12px;
   border-radius: 2px;
@@ -505,24 +504,23 @@ watch(() => props.guildId, loadAll, { immediate: true })
 }
 
 .foreman-hint {
-  font-family: var(--font-mono, monospace);
-  font-size: 9px;
+  font-size: var(--text-small);
   color: var(--color-text-dim);
   font-style: italic;
   margin: 0 0 3px;
-  line-height: 1.4;
+  line-height: var(--leading-body);
+  overflow-wrap: anywhere;
 }
 
 .discord-loading,
 .discord-empty {
-  font-family: var(--font-mono, monospace);
-  font-size: 10px;
+  font-size: var(--text-small);
   color: var(--color-text-dim);
 }
 
 .discord-error {
-  font-family: var(--font-mono, monospace);
-  font-size: 10px;
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
   color: var(--color-red, #e74c3c);
 }
 
@@ -538,16 +536,15 @@ watch(() => props.guildId, loadAll, { immediate: true })
 
 .discord-status-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
   gap: 10px;
 }
 
 .discord-status-label {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  color: var(--color-brass-dark);
-  letter-spacing: 1px;
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
+  color: var(--color-text-dim);
   text-transform: uppercase;
   flex-shrink: 0;
 }
@@ -556,9 +553,10 @@ watch(() => props.guildId, loadAll, { immediate: true })
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-family: var(--font-mono, monospace);
-  font-size: 11px;
+  font-size: var(--text-small);
   color: var(--color-text);
+  min-width: 0;
+  overflow-wrap: anywhere;
   text-align: right;
 }
 
@@ -615,8 +613,7 @@ watch(() => props.guildId, loadAll, { immediate: true })
   justify-content: center;
   background: var(--color-bg-secondary);
   color: var(--color-text-dim);
-  font-family: var(--font-mono, monospace);
-  font-size: 8px;
+  font-size: var(--text-caption);
 }
 
 .discord-row-main {
@@ -628,28 +625,24 @@ watch(() => props.guildId, loadAll, { immediate: true })
 }
 
 .discord-row-title {
-  font-family: var(--font-mono, monospace);
-  font-size: 11px;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
   color: var(--color-text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 
 .discord-row-title--mono {
-  font-size: 10px;
+  font-family: var(--font-mono);
+  font-weight: 400;
 }
 
 .discord-row-sub {
-  font-family: var(--font-mono, monospace);
-  font-size: 9px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
+  overflow-wrap: anywhere;
 }
 
 .discord-role-badge {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 0.5px;
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
   text-transform: uppercase;
   padding: 3px 6px;
   border: 1px solid var(--color-brass-dark);
@@ -668,13 +661,13 @@ watch(() => props.guildId, loadAll, { immediate: true })
   border: 1px solid var(--color-brass-dark);
   color: var(--color-text-dim);
   cursor: pointer;
-  width: 22px;
-  height: 22px;
+  width: 44px;
+  height: 44px;
   border-radius: 2px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  font-size: var(--text-card-title);
   flex-shrink: 0;
   transition:
     border-color 0.12s,
@@ -705,21 +698,15 @@ watch(() => props.guildId, loadAll, { immediate: true })
   gap: 4px;
 }
 
-.settings-input {
-  flex: 1;
-  background: var(--color-bg);
-  border: 1px solid var(--color-brass-dark);
-  color: var(--color-text);
-  font-family: var(--font-mono, monospace);
-  font-size: 11px;
-  padding: 5px 7px;
-  outline: none;
-  border-radius: 2px;
-  min-width: 0;
-}
+@media (max-width: 700px) {
+  .discord-add-row,
+  .discord-row {
+    flex-wrap: wrap;
+  }
 
-.settings-input:focus {
-  border-color: var(--color-brass);
+  .discord-row-main {
+    flex-basis: calc(100% - 38px);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

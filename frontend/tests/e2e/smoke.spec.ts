@@ -173,4 +173,180 @@ describeIfBrowser('browser smoke', () => {
     await page.locator('.issue-select').first().click()
     await expectScrollable('.issue-tab-content')
   }, 30_000)
+
+  it('keeps workspace text readable and contained across phone and desktop widths', async () => {
+    const now = new Date().toISOString()
+    const conversation = {
+      id: 1,
+      name: `Investigate ${'long-unbroken-title'.repeat(8)}`,
+      status: 'active',
+      created_at: now,
+      updated_at: now,
+    }
+    const messages = [
+      {
+        type: 'chat',
+        from: 'foreman',
+        conversationId: 1,
+        createdAt: now,
+        content: `# Summary\n\n## Findings\n\n### Next steps\n\nRead this message and ${'long-url-segment'.repeat(30)}\n\n\`\`\`\n${'code'.repeat(100)}\n\`\`\``,
+      },
+    ]
+    const guild = { id: 'type', name: 'Typography workspace', agents: [], messages }
+    await page.addInitScript(() => {
+      localStorage.setItem('auth_token', 'test-token')
+      localStorage.setItem('auth_user', JSON.stringify({ login: 'tester', id: '1' }))
+    })
+    await page.route('**/*', async (route) => {
+      const url = new URL(route.request().url())
+      let data: unknown
+      if (url.pathname === '/guilds') data = [guild]
+      else if (url.pathname === '/guilds/type') data = guild
+      else if (url.pathname.endsWith('/conversations/1/messages')) data = messages
+      else if (url.pathname.endsWith('/conversations/1')) data = conversation
+      else if (url.pathname.endsWith('/conversations')) data = [conversation]
+      else if (url.pathname.endsWith('/tasks/tree')) data = { conversations: [], ungrouped: [] }
+      else if (url.pathname.startsWith('/guilds/') || url.pathname.startsWith('/api/guilds/'))
+        data = []
+      if (data === undefined) await route.continue()
+      else await route.fulfill({ json: data })
+    })
+
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto(`${baseUrl}/type`)
+    await page.locator('.conversation-row .open-btn').click()
+    await page.locator('.conversation-tab').click()
+    await page.locator('.conversation-detail .msg-content h1').waitFor()
+
+    for (const width of [1440, 1024, 700, 390, 320]) {
+      await page.setViewportSize({ width, height: 900 })
+      if (width <= 1024)
+        await page.locator('.mobile-tab-bar').getByRole('button', { name: 'Work' }).click()
+      const metrics = await page.locator('.conversation-detail').evaluate((pane) => {
+        const content = pane.querySelector('.msg-content')!
+        const size = (selector: string) =>
+          parseFloat(getComputedStyle(pane.querySelector(selector)!).fontSize)
+        const bounds = pane.getBoundingClientRect()
+        return {
+          body: parseFloat(getComputedStyle(content).fontSize),
+          input: size('.reply-input'),
+          h1: size('h1'),
+          h2: size('h2'),
+          h3: size('h3'),
+          width: bounds.width,
+          right: bounds.right,
+          overflow: content.scrollWidth - content.clientWidth,
+          titleOverflow:
+            pane.querySelector('.pane-title')!.scrollWidth -
+            pane.querySelector('.pane-title')!.clientWidth,
+        }
+      })
+      expect(metrics.body).toBeGreaterThanOrEqual(width <= 700 ? 16 : 15)
+      expect(metrics.input).toBeGreaterThanOrEqual(16)
+      expect(metrics.h1).toBeGreaterThan(metrics.h2)
+      expect(metrics.h2).toBeGreaterThan(metrics.h3)
+      expect(metrics.width).toBeGreaterThan(0)
+      expect(metrics.right).toBeLessThanOrEqual(width)
+      expect(metrics.overflow).toBeLessThanOrEqual(1)
+      expect(metrics.titleOverflow).toBeLessThanOrEqual(1)
+
+      if (width <= 1024)
+        await page.locator('.mobile-tab-bar').getByRole('button', { name: 'Chat' }).click()
+      const input = page.locator('.chat-input')
+      expect(
+        await input.evaluate((el) => parseFloat(getComputedStyle(el).fontSize)),
+      ).toBeGreaterThanOrEqual(16)
+      if (width <= 700) {
+        const send = await page.locator('.chat-input-row .send-btn').boundingBox()
+        expect(send!.height).toBeGreaterThanOrEqual(44)
+      }
+    }
+  }, 30_000)
+
+  it('keeps settings, preferences, and spawn controls readable without horizontal overflow', async () => {
+    const guild = { id: 'settings', name: 'A guild with a long name '.repeat(3), agents: [] }
+    const env = [{ key: 'EXAMPLE_SETTING', value: 'example-value' }]
+    await page.addInitScript(() => {
+      localStorage.setItem('auth_token', 'test-token')
+      localStorage.setItem('auth_user', JSON.stringify({ login: 'tester', id: '1' }))
+      localStorage.setItem('gh_token', 'test-token')
+    })
+    await page.route('**/*', async (route) => {
+      const url = new URL(route.request().url())
+      let data: unknown
+      if (url.pathname === '/guilds') data = [guild]
+      else if (url.pathname === '/guilds/settings') data = guild
+      else if (url.pathname.endsWith('/foreman-config')) data = { env_vars: env }
+      else if (url.pathname.endsWith('/spawn-settings')) data = { envVars: env }
+      else if (url.pathname.endsWith('/spawn-defaults'))
+        data = { repos: [], tools: [], agent_count: 4 }
+      else if (url.pathname.endsWith('/spawn-credentials')) data = { guild_env_vars: [] }
+      else if (url.pathname.endsWith('/members'))
+        data = [
+          { user_id: '1', github_login: 'tester', role: 'owner' },
+          { user_id: '2', github_login: 'long-member-name'.repeat(8), role: 'member' },
+        ]
+      else if (url.pathname.endsWith('/discord/status'))
+        data = { gateway: { enabled: false, running: false }, allowed_role_ids: [] }
+      else if (url.pathname.endsWith('/tasks/tree')) data = { conversations: [], ungrouped: [] }
+      else if (url.hostname === 'api.github.com' || url.pathname === '/api/models') data = []
+      else if (url.pathname.startsWith('/guilds/') || url.pathname.startsWith('/api/guilds/'))
+        data = []
+      if (data === undefined) await route.continue()
+      else await route.fulfill({ json: data })
+    })
+    await page.goto(`${baseUrl}/settings`)
+
+    async function expectReadableDialog(width: number) {
+      const metrics = await page.locator('.settings-panel').evaluate((panel) => {
+        const content = panel.querySelector('.settings-content')!
+        const inputs = Array.from(
+          panel.querySelectorAll('input:not([type="checkbox"]), select, textarea'),
+        ).filter((el) => el.getBoundingClientRect().width > 0)
+        return {
+          right: panel.getBoundingClientRect().right,
+          overflow: content.scrollWidth - content.clientWidth,
+          titleSize: parseFloat(
+            getComputedStyle(panel.querySelector('.settings-panel-title')!).fontSize,
+          ),
+          inputs: inputs.map((el) => parseFloat(getComputedStyle(el).fontSize)),
+          buttons: Array.from(panel.querySelectorAll('button'))
+            .filter((el) => el.getBoundingClientRect().width > 0)
+            .map((el) => el.getBoundingClientRect().height),
+        }
+      })
+      expect(metrics.right).toBeLessThanOrEqual(width)
+      expect(metrics.overflow).toBeLessThanOrEqual(1)
+      expect(metrics.titleSize).toBeGreaterThanOrEqual(18)
+      for (const size of metrics.inputs) expect(size).toBeGreaterThanOrEqual(16)
+      if (width <= 700)
+        for (const height of metrics.buttons) expect(height).toBeGreaterThanOrEqual(44)
+    }
+
+    for (const width of [1440, 700, 390, 320]) {
+      await page.setViewportSize({ width, height: 900 })
+      await page.getByTitle('Guild settings', { exact: true }).click()
+      for (const tab of ['General', 'Foreman', 'Worker Settings', 'Members', 'Discord']) {
+        await page.locator('.settings-tabs').getByRole('button', { name: tab, exact: true }).click()
+        await expectReadableDialog(width)
+      }
+      await page.keyboard.press('Escape')
+      await page.getByTitle('Preferences for tester', { exact: true }).click()
+      await page.locator('.settings-tabs').getByRole('button', { name: 'Worker Settings' }).click()
+      await page.locator('.uws-input').first().waitFor()
+      await expectReadableDialog(width)
+      await page.keyboard.press('Escape')
+      if (width <= 1024)
+        await page.locator('.mobile-tab-bar').getByRole('button', { name: 'Chat' }).click()
+      await page.getByTitle('Launch a new worker container', { exact: true }).click()
+      for (const tab of ['General', 'Tools', 'Environment']) {
+        await page.locator('.settings-tabs').getByRole('button', { name: tab, exact: true }).click()
+        await expectReadableDialog(width)
+      }
+      const input = page.locator('.spawn-env-key').first()
+      await input.focus()
+      expect(await input.evaluate((el) => getComputedStyle(el).outlineStyle)).toBe('solid')
+      await page.keyboard.press('Escape')
+    }
+  }, 30_000)
 })
