@@ -35,41 +35,43 @@
         </button>
       </div>
 
-      <div v-show="!headerCollapsed" class="pane-subheader">
-        <span class="sub-time-group">
-          <span class="sub-time">created {{ formatRelative(conversation.created_at) }}</span>
-          <span class="sub-time">updated {{ formatRelative(conversation.updated_at) }}</span>
-        </span>
-      </div>
-
-      <div v-if="linkedTasks.length" v-show="!headerCollapsed" class="pane-tasks">
-        <div v-for="task in linkedTasks" :key="task.id" class="linked-task">
-          <span class="linked-task-label">TASK</span>
-          <a
-            href="#"
-            class="linked-task-name"
-            :title="'Open task ' + task.id"
-            @click.prevent="openTask(task.id)"
-            >{{ task.name || task.id }}</a
-          >
-          <span
-            class="linked-task-state"
-            :class="'task-color-' + tasksStore.stateColor(task.state)"
-            >{{ tasksStore.stateLabel(task.state) }}</span
-          >
-          <code v-if="task.branch" class="linked-task-branch">{{ task.branch }}</code>
-          <a
-            v-if="task.pr_url"
-            :href="task.pr_url"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="linked-task-pr"
-            >PR ↗</a
-          >
+      <div v-show="!headerCollapsed" class="header-details">
+        <div class="pane-subheader">
+          <span class="sub-time-group">
+            <span class="sub-time">created {{ formatRelative(conversation.created_at) }}</span>
+            <span class="sub-time">updated {{ formatRelative(conversation.updated_at) }}</span>
+          </span>
         </div>
-      </div>
-      <div v-else-if="tasksError" v-show="!headerCollapsed" class="pane-tasks pane-tasks-error">
-        Task details unavailable
+
+        <div v-if="linkedTasks.length" class="pane-tasks">
+          <div v-for="task in linkedTasks" :key="task.id" class="linked-task">
+            <span class="linked-task-label">TASK</span>
+            <a
+              href="#"
+              class="linked-task-name"
+              :title="'Open task ' + task.id"
+              @click.prevent="openTask(task.id)"
+              >{{ task.name || task.id }}</a
+            >
+            <span
+              class="linked-task-state"
+              :class="'task-color-' + tasksStore.stateColor(task.state)"
+              >{{ tasksStore.stateLabel(task.state) }}</span
+            >
+            <code v-if="task.branch" class="linked-task-branch">{{ task.branch }}</code>
+            <a
+              v-if="task.pr_url"
+              :href="task.pr_url"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="linked-task-pr"
+              >PR ↗</a
+            >
+          </div>
+        </div>
+        <div v-else-if="tasksError" class="pane-tasks pane-tasks-error">
+          Task details unavailable
+        </div>
       </div>
 
       <div class="body chat-messages" ref="messagesEl">
@@ -518,6 +520,10 @@ watch(
   gap: 8px;
   flex-shrink: 0;
   margin-left: 12px;
+}
+
+.header-details {
+  flex-shrink: 0;
 }
 
 .header-toggle {
