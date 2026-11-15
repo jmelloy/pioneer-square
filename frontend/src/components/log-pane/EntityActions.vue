@@ -701,6 +701,37 @@ async function sendRedirect() {
 </script>
 
 <style scoped>
+.actions-panel,
+.redirect-panel,
+.followup-panel {
+  max-height: 50%;
+  overflow-y: auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.actions-header,
+.expand-label,
+.section-header,
+.redirect-header,
+.followup-header {
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
+}
+
+.tool-select,
+.model-input,
+.provider-input,
+.prompt-input,
+.prompt-textarea,
+.task-select,
+.phase-select,
+.redirect-input,
+.followup-input {
+  font: var(--text-input) / 1.5 var(--font-ui);
+  min-width: 0;
+  min-height: 44px;
+}
+
 .actions-panel {
   flex-shrink: 0;
   padding: 8px 12px;
@@ -712,14 +743,12 @@ async function sendRedirect() {
 }
 
 .actions-header {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 2px;
   color: var(--color-amber);
 }
 
 .run-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
 }
@@ -728,10 +757,7 @@ async function sendRedirect() {
   background: var(--color-bg);
   border: 2px solid var(--color-brass-dark);
   color: var(--color-amber);
-  font-family: var(--font-mono);
-  font-size: 11px;
   padding: 5px 6px;
-  outline: none;
   cursor: pointer;
   flex-shrink: 0;
 }
@@ -744,12 +770,8 @@ async function sendRedirect() {
   background: var(--color-bg);
   border: 2px solid var(--color-brass-dark);
   color: var(--color-text);
-  font-family: var(--font-mono);
-  font-size: 11px;
   padding: 5px 8px;
-  outline: none;
-  width: 120px;
-  flex-shrink: 0;
+  flex: 1 1 8rem;
 }
 .model-input:focus,
 .provider-input:focus {
@@ -762,15 +784,11 @@ async function sendRedirect() {
 }
 
 .prompt-input {
-  flex: 1;
+  flex: 1 1 12rem;
   background: var(--color-bg);
   border: 2px solid var(--color-brass-dark);
   color: var(--color-text);
-  font-family: var(--font-mono);
-  font-size: 12px;
   padding: 5px 10px;
-  outline: none;
-  min-width: 0;
 }
 .prompt-input:focus {
   border-color: var(--color-brass);
@@ -790,7 +808,6 @@ async function sendRedirect() {
 
 .run-btn {
   padding: 5px 12px;
-  font-size: 10px;
   color: var(--color-green);
   border-color: var(--color-green);
   flex-shrink: 0;
@@ -806,7 +823,6 @@ async function sendRedirect() {
 
 .stop-btn {
   padding: 5px 12px;
-  font-size: 10px;
   color: var(--color-red);
   border-color: var(--color-red);
   flex-shrink: 0;
@@ -827,12 +843,14 @@ async function sendRedirect() {
 
 .action-error {
   padding: 4px 0 0;
-  font-size: 11px;
+  font-size: var(--text-small);
   color: var(--color-red);
+  overflow-wrap: anywhere;
 }
 
 .action-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
 }
@@ -848,11 +866,8 @@ async function sendRedirect() {
   background: var(--color-bg);
   border: 2px solid var(--color-brass-dark);
   color: var(--color-text);
-  font-family: var(--font-mono);
-  font-size: 12px;
   padding: 5px 10px;
-  outline: none;
-  resize: none;
+  resize: vertical;
   box-sizing: border-box;
 }
 .prompt-textarea:focus {
@@ -866,9 +881,8 @@ async function sendRedirect() {
 
 .icon-btn {
   padding: 5px 10px;
-  font-size: 12px;
   flex-shrink: 0;
-  min-width: 32px;
+  min-width: 44px;
 }
 
 .message-btn {
@@ -900,6 +914,7 @@ async function sendRedirect() {
 /* Expand toggle */
 .expand-toggle {
   display: flex;
+  min-height: 44px;
   align-items: center;
   gap: 6px;
   cursor: pointer;
@@ -912,13 +927,10 @@ async function sendRedirect() {
   opacity: 1;
 }
 .expand-chevron {
-  font-size: 8px;
+  font-size: var(--text-caption);
   color: var(--color-teal);
 }
 .expand-label {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 2px;
   color: var(--color-teal);
 }
 
@@ -941,15 +953,13 @@ async function sendRedirect() {
 }
 
 .section-header {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 2px;
-  color: var(--color-brass-dark);
+  color: var(--color-text-dim);
   margin-bottom: 2px;
 }
 
 .section-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
 }
@@ -960,10 +970,7 @@ async function sendRedirect() {
   background: var(--color-bg);
   border: 2px solid var(--color-brass-dark);
   color: var(--color-text);
-  font-family: var(--font-mono);
-  font-size: 11px;
   padding: 4px 8px;
-  outline: none;
   box-sizing: border-box;
 }
 .phase-select {
@@ -977,7 +984,6 @@ async function sendRedirect() {
 .assign-btn {
   color: var(--color-teal);
   border-color: var(--color-teal);
-  font-size: 9px;
   padding: 4px 10px;
   flex-shrink: 0;
 }
@@ -993,7 +999,6 @@ async function sendRedirect() {
 .worker-followup-btn {
   color: var(--color-amber);
   border-color: var(--color-amber);
-  font-size: 9px;
   padding: 4px 10px;
   align-self: flex-start;
 }
@@ -1009,7 +1014,6 @@ async function sendRedirect() {
 .worker-redirect-btn {
   color: var(--color-blue);
   border-color: var(--color-blue);
-  font-size: 9px;
   padding: 4px 10px;
   align-self: flex-start;
 }
@@ -1025,7 +1029,6 @@ async function sendRedirect() {
 .cancel-btn {
   color: var(--color-red);
   border-color: var(--color-red);
-  font-size: 9px;
   padding: 4px 10px;
   align-self: flex-start;
 }
@@ -1046,10 +1049,7 @@ async function sendRedirect() {
 }
 
 .redirect-header {
-  font-family: var(--font-pixel);
-  font-size: 6px;
   color: var(--color-blue);
-  letter-spacing: 2px;
   margin-bottom: 8px;
 }
 
@@ -1063,11 +1063,8 @@ async function sendRedirect() {
   background: var(--color-bg);
   border: 2px solid var(--color-brass-dark);
   color: var(--color-text);
-  font-family: var(--font-mono);
-  font-size: 12px;
   padding: 6px 10px;
-  outline: none;
-  resize: none;
+  resize: vertical;
   box-sizing: border-box;
 }
 .redirect-input:focus {
@@ -1087,6 +1084,7 @@ async function sendRedirect() {
 .redirect-actions,
 .followup-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -1094,7 +1092,6 @@ async function sendRedirect() {
   background: linear-gradient(180deg, rgba(80, 120, 255, 0.2) 0%, rgba(50, 80, 200, 0.3) 100%);
   border-color: var(--color-blue);
   color: var(--color-blue);
-  font-size: 8px;
   padding: 5px 12px;
 }
 .redirect-btn:hover:not(:disabled) {
@@ -1108,6 +1105,7 @@ async function sendRedirect() {
 
 .cancel-panel {
   flex-shrink: 0;
+  flex-wrap: wrap;
   padding: 6px 14px;
   border-top: 1px solid var(--color-brass-dark);
   display: flex;
@@ -1117,8 +1115,9 @@ async function sendRedirect() {
 }
 
 .cancel-error {
-  font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-small);
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: var(--color-red);
   flex: 1;
 }
@@ -1132,7 +1131,6 @@ async function sendRedirect() {
   background: linear-gradient(180deg, rgba(220, 50, 50, 0.15) 0%, rgba(160, 30, 30, 0.25) 100%);
   border-color: var(--color-red);
   color: var(--color-red);
-  font-size: 8px;
   padding: 4px 10px;
 }
 .cancel-task-btn:hover:not(:disabled) {
@@ -1152,10 +1150,7 @@ async function sendRedirect() {
 }
 
 .followup-header {
-  font-family: var(--font-pixel);
-  font-size: 6px;
   color: var(--color-amber);
-  letter-spacing: 2px;
   margin-bottom: 8px;
 }
 
@@ -1167,7 +1162,6 @@ async function sendRedirect() {
   background: linear-gradient(180deg, rgba(255, 204, 0, 0.2) 0%, rgba(180, 140, 0, 0.3) 100%);
   border-color: var(--color-amber);
   color: var(--color-amber);
-  font-size: 8px;
   padding: 5px 12px;
 }
 .followup-btn:hover:not(:disabled) {
@@ -1183,7 +1177,6 @@ async function sendRedirect() {
   background: linear-gradient(180deg, rgba(0, 187, 170, 0.2) 0%, rgba(0, 120, 110, 0.3) 100%);
   border-color: var(--color-teal);
   color: var(--color-teal);
-  font-size: 8px;
   padding: 5px 12px;
 }
 .finalize-btn:hover {

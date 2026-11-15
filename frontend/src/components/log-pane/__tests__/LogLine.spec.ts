@@ -197,6 +197,21 @@ describe('LogLine Pi tools', () => {
   })
 })
 
+describe('LogLine prose and raw output', () => {
+  it('uses shared prose styles for assistant markdown', () => {
+    const log = makeLog({ level: 'claude', line: '# Summary\n\nReadable text.' })
+    const wrapper = mount(LogLine, { props: { log, expanded: false } })
+    expect(wrapper.find('.log-text').classes()).toContain('markdown-prose')
+  })
+
+  it('keeps raw output outside prose styles and preserves whitespace', () => {
+    const log = makeLog({ level: 'worker', line: '[worker]    first\n    second' })
+    const wrapper = mount(LogLine, { props: { log, expanded: false } })
+    expect(wrapper.find('.markdown-prose').exists()).toBe(false)
+    expect(wrapper.find('.log-text').element.textContent).toBe(log.line)
+  })
+})
+
 describe('LogLine expansion toggle', () => {
   it('emits toggle event when clicked on expandable line', async () => {
     const log = makeLog({

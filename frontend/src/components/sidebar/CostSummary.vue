@@ -93,6 +93,8 @@ watch(expanded, (val) => {
 
 .cost-header {
   display: flex;
+  flex-wrap: wrap;
+  min-height: 44px;
   align-items: center;
   gap: 6px;
   padding: 6px 12px;
@@ -105,31 +107,30 @@ watch(expanded, (val) => {
 }
 
 .cost-title {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 1.5px;
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
   text-transform: uppercase;
   color: var(--color-text-dim);
   flex: 1;
 }
 
 .cost-total {
-  font-size: 10px;
+  font-size: var(--text-small);
+  font-variant-numeric: tabular-nums;
   color: var(--color-green);
-  font-family: monospace;
 }
 
 .collapse-icon {
-  font-size: 10px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
 }
 
 .cost-table-wrap {
   padding: 0 8px 8px;
+  overflow-x: auto;
 }
 
 .cost-empty {
-  font-size: 10px;
+  font-size: var(--text-small);
   color: var(--color-text-dim);
   padding: 4px 4px 0;
 }
@@ -137,7 +138,7 @@ watch(expanded, (val) => {
 .cost-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 9px;
+  font-size: var(--text-caption);
 }
 
 .cost-table th {
@@ -156,12 +157,12 @@ watch(expanded, (val) => {
 
 .cost-table .num {
   text-align: right;
-  font-family: monospace;
+  font-variant-numeric: tabular-nums;
 }
 
 .model-cell {
-  font-family: monospace;
-  font-size: 8px;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
   max-width: 100px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -172,9 +173,8 @@ watch(expanded, (val) => {
   display: inline-block;
   padding: 1px 4px;
   border-radius: 2px;
-  font-size: 8px;
+  font-size: var(--text-caption);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
 }
 
 .tier-cheap {

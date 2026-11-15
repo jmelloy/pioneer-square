@@ -238,6 +238,8 @@ watch(
 <style scoped>
 .pane-body {
   flex: 1;
+  min-height: 0;
+  min-width: 0;
   overflow-y: auto;
   padding: 12px 16px;
   display: flex;
@@ -247,7 +249,7 @@ watch(
 
 .logs-empty {
   color: var(--color-text-dim);
-  font-size: 13px;
+  font: var(--text-small) / var(--leading-body) var(--font-ui);
   display: flex;
   align-items: center;
   gap: 4px;
@@ -279,8 +281,9 @@ watch(
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
-  line-height: 1.6;
+  font: var(--text-small) / var(--leading-body) var(--font-ui);
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: var(--color-amber);
   cursor: pointer;
   border-radius: 2px;
@@ -289,7 +292,6 @@ watch(
   background: none;
   border: 0;
   padding: 0;
-  font-family: inherit;
   text-align: left;
   width: 100%;
 }
@@ -299,12 +301,13 @@ watch(
 }
 
 .turn-summary-icon {
-  font-size: 10px;
+  font-size: var(--text-caption);
   flex-shrink: 0;
   opacity: 0.7;
 }
 
 .turn-summary-text {
+  min-width: 0;
   color: var(--color-text-dim);
 }
 

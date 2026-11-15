@@ -94,27 +94,27 @@ const mismatch = computed(() => {
 .usage-panel {
   padding: 6px 10px 8px;
   border-top: 1px solid var(--color-brass-dark);
-  font-family: var(--font-mono);
-  font-size: 10px;
+  font: var(--text-caption) / var(--leading-body) var(--font-ui);
+  font-variant-numeric: tabular-nums;
+  overflow-x: auto;
   color: var(--color-text-dim);
 }
 
 .usage-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
 
 .usage-label {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 1px;
+  font-weight: 600;
   color: var(--color-brass-light);
 }
 
 .usage-meta {
-  font-size: 9px;
+  overflow-wrap: anywhere;
   color: var(--color-text-dim);
 }
 
@@ -128,8 +128,6 @@ const mismatch = computed(() => {
   font-weight: normal;
   text-align: right;
   color: var(--color-text-dim);
-  opacity: 0.7;
-  font-size: 9px;
   padding: 1px 4px;
 }
 
@@ -159,6 +157,5 @@ const mismatch = computed(() => {
 
 .usage-warn {
   color: var(--color-brass-light);
-  font-size: 9px;
 }
 </style>

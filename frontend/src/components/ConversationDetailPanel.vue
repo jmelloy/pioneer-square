@@ -128,7 +128,7 @@
                 msgSender(msg as ChatMessage) !== 'user' &&
                 msgSender(msg as ChatMessage) !== 'system'
               "
-              class="msg-content msg-content--markdown"
+              class="msg-content msg-content--markdown markdown-prose"
               v-artifacts="guildStore.currentGuild?.id"
               v-html="renderMarkdown((msg as ChatMessage).content)"
             ></span>
@@ -477,6 +477,8 @@ watch(
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
   padding: 8px 16px;
   background: #0f0a02;
   border-bottom: 2px solid #2a1a05;
@@ -771,76 +773,6 @@ watch(
 
 .msg-from--github {
   color: var(--color-blue);
-}
-
-.msg-content--markdown :deep(p) {
-  margin: 0 0 10px;
-}
-.msg-content--markdown :deep(p:last-child) {
-  margin-bottom: 0;
-}
-.msg-content--markdown :deep(ul),
-.msg-content--markdown :deep(ol) {
-  margin: 4px 0 6px;
-  padding-left: 18px;
-}
-.msg-content--markdown :deep(li) {
-  margin-bottom: 2px;
-}
-.msg-content--markdown :deep(code) {
-  font-family: var(--font-mono);
-  font-size: 0.9em;
-  background: rgba(0, 0, 0, 0.35);
-  border: 1px solid var(--color-brass-dark);
-  padding: 0 4px;
-  border-radius: 2px;
-  color: var(--color-amber);
-}
-.msg-content--markdown :deep(pre) {
-  background: rgba(0, 0, 0, 0.4);
-  border: 1px solid var(--color-brass-dark);
-  padding: 8px 10px;
-  overflow-x: auto;
-  margin: 4px 0;
-}
-.msg-content--markdown :deep(pre code) {
-  background: none;
-  border: none;
-  padding: 0;
-  font-size: inherit;
-  color: var(--color-green);
-}
-.msg-content--markdown :deep(h1),
-.msg-content--markdown :deep(h2),
-.msg-content--markdown :deep(h3) {
-  font: 600 var(--text-card-title) / var(--leading-heading) var(--font-ui);
-  color: var(--color-teal);
-  margin: 12px 0 6px;
-}
-.msg-content--markdown :deep(h1) {
-  font-size: var(--text-page-title);
-}
-.msg-content--markdown :deep(h2) {
-  font-size: var(--text-section-title);
-}
-.msg-content--markdown :deep(strong) {
-  color: var(--color-amber);
-  font-weight: bold;
-}
-.msg-content--markdown :deep(em) {
-  color: var(--color-text-dim);
-  font-style: italic;
-}
-.msg-content--markdown :deep(a) {
-  color: var(--color-teal);
-  text-decoration: underline;
-}
-.msg-content--markdown :deep(blockquote) {
-  border-left: 3px solid var(--color-brass-dark);
-  margin: 4px 0;
-  padding: 2px 8px;
-  color: var(--color-text-dim);
-  font-style: italic;
 }
 
 .msg-source {

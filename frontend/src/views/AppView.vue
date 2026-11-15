@@ -1,5 +1,5 @@
 <template>
-  <div class="app-layout" :data-tab="activeTab" :data-workspace="uiStore.workspace">
+  <div class="app-layout ui-surface" :data-tab="activeTab" :data-workspace="uiStore.workspace">
     <TopBar :debug-active="showDebug" @toggle-debug="showDebug = !showDebug" />
     <div v-show="uiStore.workspace === 'work'" class="app-body">
       <GuildSidebar />

@@ -1,5 +1,5 @@
 <template>
-  <div class="debug-sidebar-overlay" @click.self="emit('close')">
+  <div class="debug-sidebar-overlay ui-surface" @click.self="emit('close')">
     <div class="debug-sidebar">
       <div class="debug-sidebar-header">
         <span class="debug-sidebar-title">⚙ FOREMAN DEBUG</span>
@@ -205,31 +205,31 @@ onMounted(() => refreshDebug())
   border-bottom: 2px solid var(--color-brass-dark);
   flex-shrink: 0;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .debug-sidebar-title {
-  font-family: var(--font-pixel);
-  font-size: 7px;
+  font: 400 var(--text-section-title) / var(--leading-heading) var(--font-display);
   color: var(--color-brass-light);
-  letter-spacing: 2px;
   text-shadow: 0 0 6px rgba(255, 214, 68, 0.4);
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .debug-sidebar-actions {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-shrink: 0;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .debug-count {
-  font-size: 10px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
 }
 
 .refresh-btn {
-  font-size: 10px;
   padding: 3px 7px;
 }
 
@@ -239,7 +239,6 @@ onMounted(() => refreshDebug())
 }
 
 .clear-btn {
-  font-size: 7px;
   padding: 3px 6px;
   border-color: var(--color-red, #c0392b);
   color: var(--color-red, #c0392b);
@@ -259,13 +258,13 @@ onMounted(() => refreshDebug())
   border: 1px solid var(--color-brass-dark);
   color: var(--color-text-dim);
   cursor: pointer;
-  width: 26px;
-  height: 26px;
+  width: 44px;
+  height: 44px;
   border-radius: 2px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: var(--text-card-title);
   transition:
     border-color 0.12s,
     color 0.12s;
@@ -283,13 +282,12 @@ onMounted(() => refreshDebug())
   display: flex;
   flex-direction: column;
   gap: 8px;
-  font-family: var(--font-mono);
-  font-size: 11px;
+  min-height: 0;
 }
 
 .debug-empty {
   color: var(--color-text-dim);
-  font-size: 11px;
+  font-size: var(--text-small);
   text-align: center;
   margin-top: 20px;
   font-style: italic;
@@ -305,6 +303,7 @@ onMounted(() => refreshDebug())
 
 .debug-msg-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
@@ -332,9 +331,7 @@ onMounted(() => refreshDebug())
 }
 
 .debug-role {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 1px;
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
   color: var(--color-text-dim);
 }
 
@@ -352,8 +349,8 @@ onMounted(() => refreshDebug())
 }
 
 .debug-tokens {
-  font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
   color: var(--color-teal);
   opacity: 0.8;
   white-space: nowrap;
@@ -361,8 +358,8 @@ onMounted(() => refreshDebug())
 
 .debug-text {
   color: var(--color-text);
-  line-height: 1.4;
-  word-break: break-word;
+  font: var(--text-body) / var(--leading-body) var(--font-ui);
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
@@ -386,9 +383,7 @@ onMounted(() => refreshDebug())
 }
 
 .debug-block-type {
-  font-family: var(--font-pixel);
-  font-size: 5px;
-  letter-spacing: 1px;
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
   color: var(--color-text-dim);
   text-transform: uppercase;
 }
@@ -403,20 +398,21 @@ onMounted(() => refreshDebug())
 .debug-tool-name {
   font-weight: bold;
   color: #ff8c00;
-  font-size: 12px;
+  font-size: var(--text-small);
 }
 
 .debug-tool-id {
-  font-size: 9px;
+  font: var(--text-caption) / 1.4 var(--font-mono);
+  overflow-wrap: anywhere;
   color: #50c878;
 }
 
 .debug-pre {
   margin: 0;
   white-space: pre-wrap;
-  word-break: break-all;
+  overflow-wrap: anywhere;
   color: var(--color-text-dim);
-  font-size: 10px;
+  font: var(--text-small) / var(--leading-body) var(--font-mono);
   max-height: 120px;
   overflow-y: auto;
 }
