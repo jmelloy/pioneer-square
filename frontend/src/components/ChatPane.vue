@@ -145,9 +145,8 @@ onUnmounted(() => {
 
 .collapsed-label {
   writing-mode: vertical-rl;
-  font-family: var(--font-pixel);
-  font-size: 7px;
-  letter-spacing: 3px;
+  font: 400 var(--text-section-title) / var(--leading-heading) var(--font-display);
+  letter-spacing: 0.02em;
 }
 
 .chat-pane.minimized .chat-title,
@@ -172,10 +171,9 @@ onUnmounted(() => {
 }
 
 .chat-title {
-  font-family: var(--font-pixel);
-  font-size: 7px;
+  font: 400 var(--text-section-title) / var(--leading-heading) var(--font-display);
   color: var(--color-brass-light);
-  letter-spacing: 2px;
+  letter-spacing: 0.02em;
   text-shadow: 0 0 6px rgba(255, 214, 68, 0.4);
 }
 
@@ -189,7 +187,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 10px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
 }
 
@@ -217,7 +215,7 @@ onUnmounted(() => {
 }
 
 .poll-indicator {
-  font-size: 9px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
   opacity: 0.7;
   white-space: nowrap;

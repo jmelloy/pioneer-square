@@ -251,7 +251,7 @@ function onIssueTabClick(event: MouseEvent, key: string) {
   font-size: 14px;
 }
 .tab-label {
-  font-size: 11px;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
 }
 
 .state-dot {

@@ -446,14 +446,14 @@ onMounted(loadIssue)
 }
 
 .issue-repo-label {
-  font-size: 10px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
 }
 
 .issue-number {
-  font-family: var(--font-pixel);
-  font-size: 8px;
-  color: var(--color-brass-dark);
+  font: var(--text-caption) / 1.4 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-dim);
 }
 
 .issue-state {
@@ -502,9 +502,10 @@ onMounted(loadIssue)
 
 .issue-title {
   margin: 0;
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 1.35;
+  font: 600 var(--text-page-title) / var(--leading-heading) var(--font-ui);
+  color: var(--color-brass-light);
+  overflow-wrap: anywhere;
+  min-width: 0;
   flex: 1;
 }
 
@@ -515,8 +516,7 @@ onMounted(loadIssue)
 }
 
 .title-input {
-  font-size: 15px;
-  font-family: var(--font-mono);
+  font: var(--text-input) / 1.5 var(--font-ui);
   padding: 6px 8px;
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-brass-dark);
@@ -545,13 +545,13 @@ onMounted(loadIssue)
 }
 
 .issue-author {
-  font-size: 11px;
+  font-size: var(--text-caption);
   font-weight: 600;
   color: var(--color-text);
 }
 
 .issue-date {
-  font-size: 10px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
 }
 
@@ -577,8 +577,7 @@ onMounted(loadIssue)
   border-bottom: 2px solid transparent;
   color: var(--color-text-dim);
   cursor: pointer;
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
   transition: all 0.15s;
   margin-bottom: -1px;
 }
@@ -620,10 +619,8 @@ onMounted(loadIssue)
 }
 
 .section-title {
-  font-family: var(--font-pixel);
-  font-size: 7px;
+  font: 600 var(--text-section-title) / var(--leading-heading) var(--font-ui);
   color: var(--color-brass-light);
-  letter-spacing: 1.5px;
   text-transform: uppercase;
 }
 
@@ -656,8 +653,7 @@ onMounted(loadIssue)
 
 .body-textarea,
 .comment-textarea {
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font: var(--text-input) / 1.5 var(--font-ui);
   padding: 8px;
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-brass-dark);
@@ -765,9 +761,13 @@ onMounted(loadIssue)
 }
 
 /* Markdown styles shared by body and comments */
+.markdown-body {
+  font: var(--text-body) / var(--leading-body) var(--font-ui);
+  overflow-wrap: anywhere;
+}
+
 .markdown-body :deep(p) {
   margin: 0 0 8px;
-  line-height: 1.5;
 }
 
 .markdown-body :deep(p:last-child) {
@@ -782,12 +782,11 @@ onMounted(loadIssue)
 
 .markdown-body :deep(li) {
   margin-bottom: 3px;
-  line-height: 1.5;
 }
 
 .markdown-body :deep(code) {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 0.9em;
   background: var(--color-bg-tertiary);
   padding: 1px 4px;
   border-radius: 2px;
@@ -818,8 +817,16 @@ onMounted(loadIssue)
 .markdown-body :deep(h2),
 .markdown-body :deep(h3) {
   margin: 10px 0 6px;
-  font-size: 13px;
+  font: 600 var(--text-card-title) / var(--leading-heading) var(--font-ui);
   color: var(--color-brass-light);
+}
+
+.markdown-body :deep(h1) {
+  font-size: var(--text-page-title);
+}
+
+.markdown-body :deep(h2) {
+  font-size: var(--text-section-title);
 }
 
 .markdown-body :deep(a) {

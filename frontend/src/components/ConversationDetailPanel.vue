@@ -472,7 +472,8 @@ watch(
   padding: 24px;
   text-align: center;
   color: var(--color-text-dim);
-  font-size: 12px;
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
   font-style: italic;
 }
 
@@ -489,8 +490,9 @@ watch(
 .pane-title {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
   gap: 8px;
-  font-size: 13px;
 }
 
 .title-icon {
@@ -498,12 +500,15 @@ watch(
 }
 
 .title-text {
-  color: var(--color-text);
+  font: 400 var(--text-page-title) / var(--leading-heading) var(--font-display);
+  overflow-wrap: anywhere;
+  min-width: 0;
+  color: var(--color-brass-light);
 }
 
 .entity-id-chip {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid var(--color-brass-dark);
@@ -513,9 +518,8 @@ watch(
 }
 
 .status-pill {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 1px;
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
+  letter-spacing: 0.03em;
   text-transform: uppercase;
   padding: 2px 6px;
   border-radius: 2px;
@@ -546,7 +550,7 @@ watch(
 }
 
 .sub-field {
-  font-size: 10px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
   font-family: var(--font-mono);
 }
@@ -589,13 +593,13 @@ watch(
 }
 
 .linked-task-label {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 1px;
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
+  letter-spacing: 0.03em;
   color: var(--color-amber);
 }
 
 .linked-task-name {
+  font-size: var(--text-small);
   color: var(--color-text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -604,9 +608,8 @@ watch(
 }
 
 .linked-task-state {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 1px;
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
+  letter-spacing: 0.03em;
   text-transform: uppercase;
   padding: 2px 6px;
   border-radius: 2px;
@@ -635,7 +638,7 @@ watch(
 
 .linked-task-branch {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -650,7 +653,8 @@ watch(
 }
 
 .sub-time {
-  font-size: 10px;
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
   color: var(--color-text-dim);
 }
 
@@ -666,7 +670,8 @@ watch(
 
 .chat-empty {
   color: var(--color-text-dim);
-  font-size: 11px;
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
   text-align: center;
   margin-top: 20px;
   font-style: italic;
@@ -727,9 +732,7 @@ watch(
 }
 
 .msg-from {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 1px;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
   color: var(--color-brass);
 }
 
@@ -742,25 +745,24 @@ watch(
   background: rgba(0, 187, 170, 0.15);
   border: 1px solid rgba(0, 187, 170, 0.4);
   padding: 1px 5px;
-  letter-spacing: 1.5px;
+  letter-spacing: normal;
 }
 
 .msg-from--system {
   color: var(--color-text-dim);
-  font-size: 6px;
 }
 
 .from-system .msg-content {
-  font-size: 10px;
+  font-size: var(--text-small);
   color: var(--color-text-dim);
   font-style: italic;
 }
 
 .msg-content {
-  font-size: 12px;
+  font: var(--text-body) / var(--leading-body) var(--font-ui);
   color: var(--color-text);
-  line-height: 1.4;
-  word-break: break-word;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .chat-message.from-worker {
@@ -790,7 +792,7 @@ watch(
 }
 
 .msg-content--markdown :deep(p) {
-  margin: 0 0 6px;
+  margin: 0 0 10px;
 }
 .msg-content--markdown :deep(p:last-child) {
   margin-bottom: 0;
@@ -805,7 +807,7 @@ watch(
 }
 .msg-content--markdown :deep(code) {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 0.9em;
   background: rgba(0, 0, 0, 0.35);
   border: 1px solid var(--color-brass-dark);
   padding: 0 4px;
@@ -823,18 +825,21 @@ watch(
   background: none;
   border: none;
   padding: 0;
-  font-size: 10px;
+  font-size: inherit;
   color: var(--color-green);
 }
 .msg-content--markdown :deep(h1),
 .msg-content--markdown :deep(h2),
 .msg-content--markdown :deep(h3) {
-  font-family: var(--font-pixel);
-  font-size: 8px;
-  letter-spacing: 1px;
+  font: 600 var(--text-card-title) / var(--leading-heading) var(--font-ui);
   color: var(--color-teal);
-  margin: 6px 0 4px;
-  text-transform: uppercase;
+  margin: 12px 0 6px;
+}
+.msg-content--markdown :deep(h1) {
+  font-size: var(--text-page-title);
+}
+.msg-content--markdown :deep(h2) {
+  font-size: var(--text-section-title);
 }
 .msg-content--markdown :deep(strong) {
   color: var(--color-amber);
@@ -857,16 +862,15 @@ watch(
 }
 
 .msg-source {
-  font-size: 9px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
   font-style: italic;
   flex-shrink: 0;
 }
 
 .msg-task-badge {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 0.5px;
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
+  letter-spacing: 0.03em;
   color: var(--color-amber);
   background: rgba(232, 170, 0, 0.12);
   border: 1px solid rgba(232, 170, 0, 0.4);
@@ -878,7 +882,8 @@ watch(
 }
 
 .msg-time {
-  font-size: 9px;
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
   color: var(--color-text-dim);
   flex-shrink: 0;
   margin-left: auto;
@@ -889,7 +894,7 @@ watch(
   align-items: center;
   gap: 8px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
   opacity: 0.75;
   font-style: italic;
@@ -968,22 +973,16 @@ watch(
   background: var(--color-bg);
   border: 2px solid var(--color-brass-dark);
   color: var(--color-text);
-  font-family: var(--font-mono);
-  padding: 6px 10px;
+  font: var(--text-input) / 1.5 var(--font-ui);
+  min-width: 0;
+  padding: 10px;
   outline: none;
   resize: none;
-  line-height: 1.4;
   transition: border-color 0.15s;
 }
 
 .reply-input:disabled {
   opacity: 0.6;
-}
-
-@media (max-width: 768px) {
-  .reply-input {
-    font-size: 16px;
-  }
 }
 
 .reply-input:focus {

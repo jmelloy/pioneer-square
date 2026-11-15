@@ -230,24 +230,23 @@ async function save() {
 }
 
 .gsd-intro {
-  font-size: 9px;
+  font-size: var(--text-small);
   color: var(--color-text-dim);
   font-style: italic;
   margin: 0;
-  line-height: 1.4;
+  line-height: var(--leading-body);
+  overflow-wrap: anywhere;
 }
 
 .gsd-sublabel {
-  font-family: var(--font-pixel);
-  font-size: 6px;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
   color: var(--color-teal);
-  letter-spacing: 1px;
   text-transform: uppercase;
   margin-top: 2px;
 }
 
 .gsd-hint {
-  font-size: 10px;
+  font-size: var(--text-small);
   color: var(--color-text-dim);
   font-style: italic;
 }
@@ -265,6 +264,7 @@ async function save() {
 
 .gsd-tool-list {
   display: flex;
+  flex-wrap: wrap;
   flex-direction: row;
   gap: 2px;
   border: 1px solid var(--color-brass-dark);
@@ -301,10 +301,8 @@ async function save() {
 }
 
 .gsd-org-name {
-  font-family: var(--font-pixel);
-  font-size: 7px;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
   color: var(--color-teal);
-  letter-spacing: 0.5px;
 }
 
 .gsd-repo-indent {
@@ -313,28 +311,27 @@ async function save() {
 
 .gsd-check {
   accent-color: var(--color-brass);
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
   cursor: pointer;
   flex-shrink: 0;
 }
 
 .gsd-repo-name {
-  font-size: 10px;
+  font-size: var(--text-small);
   color: var(--color-text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .gsd-input {
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-brass-dark);
   color: var(--color-text);
-  font-family: var(--font-mono, monospace);
-  font-size: 11px;
-  padding: 5px 7px;
-  outline: none;
+  font: var(--text-input) / 1.5 var(--font-ui);
+  min-width: 0;
+  max-width: 100%;
+  padding: 7px;
   border-radius: 2px;
   box-sizing: border-box;
 }
@@ -349,13 +346,13 @@ async function save() {
 
 .gsd-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   margin-top: 2px;
 }
 
 .gsd-save-btn {
-  font-size: 7px;
   padding: 5px 9px;
 }
 
@@ -365,7 +362,7 @@ async function save() {
 }
 
 .gsd-error {
-  font-size: 10px;
+  font-size: var(--text-small);
   color: var(--color-red);
   word-break: break-word;
 }
@@ -378,23 +375,27 @@ async function save() {
 
 .gsd-ro-field {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: baseline;
 }
 
 .gsd-ro-label {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  color: var(--color-brass-dark);
-  letter-spacing: 1px;
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
+  color: var(--color-text-dim);
   text-transform: uppercase;
   flex: 0 0 44px;
 }
 
 .gsd-ro-value {
   font-family: var(--font-mono, monospace);
-  font-size: 10px;
+  font-size: var(--text-small);
   color: var(--color-text);
   word-break: break-word;
+}
+@media (max-width: 700px) {
+  .gsd-repo-row {
+    min-height: 44px;
+  }
 }
 </style>

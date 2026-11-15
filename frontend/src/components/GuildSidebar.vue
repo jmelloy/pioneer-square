@@ -87,7 +87,7 @@ watch(
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 10px;
+  font-size: var(--text-small);
   color: var(--color-red);
 }
 

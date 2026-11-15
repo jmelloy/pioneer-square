@@ -1,0 +1,151 @@
+/* Shared settings primitives; component styles own their specific layout and state. */
+.settings-panel {
+  --font-button: var(--font-ui);
+  --text-button: 0.875rem;
+  --tracking-button: normal;
+  font: var(--text-body) / var(--leading-body) var(--font-ui);
+}
+
+.settings-panel :is(button, input, select, textarea, a):focus-visible {
+  outline: 2px solid var(--color-teal);
+  outline-offset: 2px;
+}
+
+.settings-input {
+  flex: 1;
+  background: var(--color-bg);
+  border: 1px solid var(--color-brass-dark);
+  color: var(--color-text);
+  font: var(--text-input) / 1.5 var(--font-ui);
+  padding: 7px;
+  border-radius: 2px;
+  min-width: 0;
+}
+
+.settings-input:focus {
+  border-color: var(--color-brass);
+}
+
+.settings-save-btn {
+  padding: 5px 9px;
+  flex-shrink: 0;
+}
+
+.settings-save-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.save-status {
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.save-status-saved {
+  color: var(--color-green);
+}
+
+.save-status-error {
+  color: var(--color-red);
+}
+
+.env-var-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.env-var-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.env-var-key,
+.env-var-key-wrap {
+  flex: 0 1 160px;
+  min-width: 0;
+}
+
+.env-var-key-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.env-var-key-wrap .env-var-key {
+  flex: 0 0 auto;
+  width: 100%;
+}
+
+.env-var-value {
+  flex: 1;
+  min-width: 0;
+}
+
+.env-var-head {
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
+  color: var(--color-text-dim);
+}
+
+.env-var-spacer {
+  flex: 0 0 44px;
+}
+
+.env-var-delete-btn {
+  background: none;
+  border: 1px solid var(--color-brass-dark);
+  color: var(--color-text-dim);
+  cursor: pointer;
+  width: 44px;
+  height: 44px;
+  border-radius: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font: var(--text-card-title) / 1 var(--font-ui);
+  flex-shrink: 0;
+  transition:
+    border-color 0.12s,
+    color 0.12s;
+}
+
+.env-var-delete-btn:hover {
+  border-color: var(--color-red);
+  color: var(--color-red);
+}
+
+.env-var-add-btn {
+  padding: 4px 8px;
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
+@media (max-width: 700px) {
+  .settings-panel :where(button, select, input:not([type='checkbox']):not([type='radio'])) {
+    min-height: 44px;
+  }
+
+  .env-var-row:not(.env-var-head) {
+    flex-wrap: wrap;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--color-brass-dark);
+  }
+
+  .env-var-row:not(.env-var-head) > :is(.env-var-key, .env-var-key-wrap) {
+    flex-basis: 100%;
+  }
+
+  /* Stacked inputs use their placeholders/accessible names, not a two-column header. */
+  .env-var-head {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .env-var-delete-btn {
+    transition: none;
+  }
+}

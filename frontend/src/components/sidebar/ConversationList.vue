@@ -210,6 +210,8 @@ watch(() => guildStore.currentGuild?.id, load)
 }
 
 .conversation-search {
+  font: var(--text-input) / var(--leading-heading) var(--font-ui);
+  min-width: 0;
   width: 100%;
   box-sizing: border-box;
   padding: 6px 8px;
@@ -225,7 +227,8 @@ watch(() => guildStore.currentGuild?.id, load)
 
 .filter-select {
   flex: 1;
-  font-size: 10px;
+  font: var(--text-input) / var(--leading-heading) var(--font-ui);
+  min-width: 0;
   padding: 3px 4px;
   background: var(--color-bg);
   border: 1px solid var(--color-brass-dark);
@@ -255,9 +258,8 @@ watch(() => guildStore.currentGuild?.id, load)
 }
 
 .filter-btn {
-  font-family: var(--font-pixel);
-  font-size: 5px;
-  letter-spacing: 0.5px;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
+  letter-spacing: normal;
   text-transform: uppercase;
   padding: 4px 6px;
   background: var(--color-bg);
@@ -286,7 +288,8 @@ watch(() => guildStore.currentGuild?.id, load)
   padding: 24px 12px;
   text-align: center;
   color: var(--color-text-dim);
-  font-size: 11px;
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
   font-style: italic;
 }
 </style>

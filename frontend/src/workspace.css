@@ -1,16 +1,17 @@
-@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&display=swap');
-
 /* Workspace typography is deliberately separate from the pixel-art landing page. */
 .app-layout {
-  --font-heading: 'Barlow Condensed', 'Arial Narrow', sans-serif;
-  --font-pixel: var(--font-heading);
+  --font-pixel: var(--font-ui);
+  --font-button: var(--font-ui);
+  --text-button: 0.875rem;
+  --tracking-button: normal;
+  --font-mono: ui-monospace, 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
   --color-text-dim: #b69a78;
   --color-brass: #eab900;
   --color-brass-light: #ffe45a;
   --color-brass-dark: #866015;
   --color-teal: #21d5ee;
   --panel-frame-border: 18px;
-  font-size: 15px;
+  font: var(--text-body) / var(--leading-body) var(--font-ui);
 }
 
 .app-layout .top-bar {
@@ -21,14 +22,6 @@
   border-bottom: 2px solid var(--color-brass);
 }
 
-.app-layout .guild-name {
-  font-size: 25px;
-  font-weight: 700;
-  letter-spacing: 1px;
-}
-.app-layout .guild-id {
-  font-size: 12px;
-}
 .app-layout .home-btn {
   background: transparent;
   color: var(--color-brass-light);
@@ -36,9 +29,6 @@
 }
 .app-layout .home-label {
   display: none;
-}
-.app-layout .home-icon {
-  font-size: 22px;
 }
 .workspace-nav {
   display: flex;
@@ -53,7 +43,7 @@
   border-radius: 18px 18px 10px 10px;
   background: linear-gradient(#342011, #1c1006);
   color: var(--color-text);
-  font: 600 22px var(--font-heading);
+  font: 600 var(--text-card-title) / var(--leading-heading) var(--font-ui);
   white-space: nowrap;
   cursor: pointer;
 }
@@ -76,9 +66,6 @@
 .app-layout .user-avatar {
   width: 29px;
   height: 29px;
-}
-.app-layout .user-login {
-  font-size: 15px;
 }
 .app-layout .settings-btn,
 .app-layout .debug-btn {
@@ -118,7 +105,7 @@
 }
 .sidebar-heading h2 {
   color: var(--color-brass-light);
-  font: 700 24px var(--font-heading);
+  font: 400 var(--text-section-title) / var(--leading-heading) var(--font-display);
 }
 .sidebar-heading h2 span {
   margin-right: 7px;
@@ -134,12 +121,10 @@
 }
 .app-layout .conversation-search {
   order: -1;
-  font: 15px var(--font-mono);
   padding: 9px;
   border-radius: 4px;
 }
 .app-layout .filter-btn {
-  font: 600 16px var(--font-heading);
   padding: 7px 5px;
   border: 1px solid var(--color-brass-dark);
   border-radius: 4px;
@@ -152,7 +137,6 @@
   box-shadow: inset 0 0 0 1px #a77900;
 }
 .app-layout .filter-select {
-  font: 12px var(--font-mono);
   padding: 5px;
 }
 .app-layout .conversation-row {
@@ -168,41 +152,17 @@
   flex-wrap: wrap;
   gap: 5px;
 }
-.app-layout .conversation-name {
-  font: 600 19px var(--font-heading);
-  flex: 1;
-  min-width: 100px;
-}
-.app-layout .conversation-preview {
-  font-size: 13px;
-  line-height: 1.45;
-}
-.app-layout .conversation-meta {
-  font-size: 11px;
-  line-height: 1.4;
-}
 .app-layout .conversation-dot {
   width: 9px;
   height: 9px;
   border-radius: 50%;
 }
 .app-layout .status-pill {
-  font: 600 12px var(--font-heading);
   padding: 2px 5px;
   border: 1px solid currentColor;
 }
-.app-layout .open-btn {
-  font: 600 12px var(--font-heading);
-}
-.app-layout .connection-status,
-.app-layout .cost-summary {
-  font-size: 13px;
-}
 .app-layout .tab {
   padding: 10px 13px;
-}
-.app-layout .tab .tab-label {
-  font: 600 15px var(--font-heading);
 }
 .app-layout .tab.active {
   background: #49300966;
@@ -210,17 +170,8 @@
 .app-layout .pane-header {
   padding: 18px 16px 12px;
 }
-.app-layout .title-text {
-  font: 700 27px var(--font-heading);
-  color: var(--color-brass-light);
-}
 .app-layout .pane-subheader {
   padding: 8px 16px;
-  font-size: 12px;
-}
-.app-layout .sub-field,
-.app-layout .sub-time {
-  font-size: 12px;
 }
 .app-layout .pane-tasks {
   padding: 10px 16px;
@@ -228,27 +179,11 @@
 .app-layout .linked-task {
   padding: 6px 0;
 }
-.app-layout .linked-task-name {
-  font-size: 14px;
-}
-.app-layout .linked-task-label,
-.app-layout .linked-task-state {
-  font: 600 12px var(--font-heading);
-}
 .app-layout .chat-header {
   padding: 12px 10px;
   gap: 5px;
 }
-.app-layout .chat-title {
-  font: 700 20px var(--font-heading);
-  letter-spacing: 1px;
-  white-space: nowrap;
-}
-.app-layout .agent-status {
-  font-size: 11px;
-}
 .app-layout .poll-indicator {
-  font-size: 11px;
   opacity: 1;
 }
 .app-layout .tab-count {
@@ -298,11 +233,6 @@
 .app-layout .chat-body .workers-section .section-header {
   padding: 10px 12px;
 }
-.app-layout .chat-empty,
-.app-layout .empty-state {
-  font-size: 14px;
-  line-height: 1.6;
-}
 .app-layout .pane-meta {
   display: flex;
   align-items: center;
@@ -312,7 +242,6 @@
   background: none;
   color: var(--color-text-dim);
   border: 1px solid var(--color-brass-dark);
-  font-size: 12px;
   padding: 4px 8px;
 }
 .app-layout .msg-header {
@@ -320,40 +249,12 @@
   margin-bottom: 8px;
   flex-wrap: wrap;
 }
-.app-layout .msg-from {
-  font: 700 18px var(--font-heading);
-  color: var(--color-brass-light);
-}
-.app-layout .msg-time,
-.app-layout .msg-source {
-  font-size: 12px;
-}
-.app-layout .msg-content {
-  font: 15px/1.65 var(--font-mono);
-}
-.app-layout .msg-content--markdown p {
-  margin-bottom: 10px;
-}
-.app-layout .conversation-link,
-.app-layout .pr-link {
-  font-size: 13px;
-  color: var(--color-teal);
-}
 .app-layout .reply-row,
 .app-layout .chat-input-row {
   padding: 12px;
   border-top: 1px solid var(--color-brass);
 }
-.app-layout .reply-input,
-.app-layout .chat-input {
-  font: 15px/1.5 var(--font-mono);
-  padding: 10px;
-  border: 1px solid var(--color-brass-dark);
-  background: #0d0703;
-}
 .app-layout .pixel-btn {
-  font: 700 15px var(--font-heading);
-  letter-spacing: 0.4px;
   border-radius: 3px;
 }
 .app-layout .pixel-btn:disabled {
@@ -364,17 +265,6 @@
 }
 .app-layout .send-btn {
   min-width: 42px;
-}
-.app-layout .section-label,
-.app-layout .section-title {
-  font: 700 19px var(--font-heading);
-}
-.app-layout .worker-row-name,
-.app-layout .agent-row-name {
-  font-size: 14px;
-}
-.app-layout .worker-row-state {
-  font: 600 12px var(--font-heading);
 }
 .app-layout .workers-section {
   background: #120b04;
@@ -412,7 +302,7 @@
   border-radius: 3px;
   color: var(--color-text);
   background: #100a04;
-  font: 14px var(--font-mono);
+  font: var(--text-input) / var(--leading-heading) var(--font-ui);
   padding: 9px;
   min-width: 0;
 }
@@ -431,7 +321,7 @@
   border-bottom-color: #49301470;
   background: transparent;
   color: var(--color-text);
-  font: 15px var(--font-mono);
+  font: var(--text-body) / var(--leading-heading) var(--font-ui);
   text-align: left;
   cursor: pointer;
 }
@@ -465,7 +355,7 @@
 .issue-status-filters h3 {
   padding: 12px 10px;
   color: var(--color-brass-light);
-  font: 600 16px var(--font-heading);
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
   text-transform: uppercase;
 }
 .issue-status-dot {
@@ -515,8 +405,9 @@
 .projects-heading h1 {
   flex: 1;
   color: var(--color-brass-light);
-  font: 700 27px var(--font-heading);
-  white-space: nowrap;
+  font: 400 var(--text-page-title) / var(--leading-heading) var(--font-display);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .projects-heading h1 span {
   margin-right: 8px;
@@ -543,7 +434,7 @@
 .project-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 14px;
+  font-size: var(--text-body);
 }
 .project-table th {
   position: sticky;
@@ -553,7 +444,7 @@
   text-align: left;
   padding: 13px 10px;
   color: var(--color-brass-light);
-  font: 600 15px var(--font-heading);
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
   border-bottom: 1px solid var(--color-brass-dark);
 }
 .project-table td {
@@ -582,7 +473,8 @@
   background: none;
   border: none;
   color: var(--color-text);
-  font: 600 17px/1.35 var(--font-heading);
+  font: 600 var(--text-card-title) / 1.4 var(--font-ui);
+  overflow-wrap: anywhere;
   text-align: left;
   cursor: pointer;
   min-width: 120px;
@@ -593,7 +485,7 @@
   border-radius: 3px;
   padding: 1px 6px;
   color: var(--color-text-dim);
-  font: 600 14px var(--font-heading);
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
   text-transform: capitalize;
 }
 .project-state.open {
@@ -628,31 +520,13 @@
 .app-layout .issue-header {
   padding: 16px;
 }
-.app-layout .issue-title {
-  font: 700 24px/1.25 var(--font-heading);
-  color: var(--color-brass-light);
-}
 .app-layout .issue-meta-row,
 .app-layout .issue-submeta {
   flex-wrap: wrap;
   gap: 8px;
 }
-.app-layout .issue-repo-label,
-.app-layout .issue-date,
-.app-layout .issue-author {
-  font-size: 12px;
-}
-.app-layout .issue-number {
-  font: 700 17px var(--font-heading);
-}
 .app-layout .issue-tab-btn {
-  font: 600 16px var(--font-heading);
   padding: 10px 12px;
-}
-.app-layout .issue-body,
-.app-layout .comment-body {
-  font-size: 14px;
-  line-height: 1.7;
 }
 .app-layout .issue-tab-content {
   padding: 16px;
@@ -660,8 +534,8 @@
 .workspace-empty {
   padding: 24px 16px;
   color: var(--color-text-dim);
-  font-size: 14px;
-  line-height: 1.6;
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
 }
 
 @media (max-width: 1250px) {
@@ -674,7 +548,6 @@
     padding: 0 10px;
   }
   .workspace-nav button {
-    font-size: 19px;
     padding: 9px 14px;
   }
   .app-layout .sidebar,
@@ -709,9 +582,6 @@
   .app-layout .guild-block {
     max-width: 180px;
   }
-  .app-layout .guild-name {
-    font-size: 19px;
-  }
   .project-sidebar {
     width: 185px;
     min-width: 185px;
@@ -729,9 +599,6 @@
   }
   .app-layout[data-workspace='projects'] .mobile-tab-bar {
     display: none;
-  }
-  .app-layout .mobile-tab-bar .tab-label {
-    font: 600 12px var(--font-heading);
   }
 }
 
@@ -751,7 +618,6 @@
   .workspace-nav button {
     flex: 1;
     justify-content: center;
-    font-size: 18px;
     padding: 8px;
     gap: 7px;
   }
@@ -770,8 +636,26 @@
     display: none;
   }
   .app-layout .settings-btn {
-    width: 32px;
-    height: 32px;
+    width: 44px;
+    height: 44px;
+  }
+  .app-layout :is(.pixel-btn, .filter-btn, .issue-tab-btn, .project-choice),
+  .workspace-nav button {
+    min-height: 44px;
+  }
+  .app-layout .pane-header {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px;
+  }
+  .app-layout .chat-messages {
+    padding: 0 10px;
+  }
+  .app-layout .chat-messages .chat-message {
+    padding-left: 0;
+  }
+  .app-layout .chat-messages .chat-message::before {
+    display: none;
   }
   .projects-workspace {
     flex-direction: column;
@@ -819,15 +703,11 @@
     gap: 6px;
     padding: 8px;
   }
-  .projects-heading h1 {
-    font-size: 23px;
-  }
   .projects-heading input {
     width: 100px;
   }
   .projects-heading select {
     max-width: 125px;
-    font-size: 12px;
   }
   .project-split {
     display: flex;

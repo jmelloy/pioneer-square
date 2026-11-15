@@ -277,59 +277,16 @@ const TOOL_ENV_KEYS: Record<string, string[]> = {
 </script>
 
 <style scoped>
-.settings-input {
-  flex: 1;
-  background: var(--color-bg);
-  border: 1px solid var(--color-brass-dark);
-  color: var(--color-text);
-  font-family: var(--font-mono, monospace);
-  font-size: 11px;
-  padding: 5px 7px;
-  outline: none;
-  border-radius: 2px;
-  min-width: 0;
-}
-
-.settings-input:focus {
-  border-color: var(--color-brass);
-}
-
-.settings-save-btn {
-  font-size: 7px;
-  padding: 5px 9px;
-  flex-shrink: 0;
-}
-
-.settings-save-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.save-status {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 0.5px;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.save-status-saved {
-  color: var(--color-green);
-}
-.save-status-error {
-  color: var(--color-red);
-}
-
 .save-detail {
-  font-size: 10px;
+  font-size: var(--text-small);
   color: var(--color-red);
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 
 .foreman-tool-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   margin-bottom: 2px;
 }
@@ -337,11 +294,9 @@ const TOOL_ENV_KEYS: Record<string, string[]> = {
 .foreman-tool-tab {
   background: none;
   border: 1px solid var(--color-brass-dark);
-  color: var(--color-brass-dark);
+  color: var(--color-text-dim);
   cursor: pointer;
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 1px;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
   text-transform: uppercase;
   padding: 6px 12px;
   border-radius: 2px;
@@ -363,10 +318,8 @@ const TOOL_ENV_KEYS: Record<string, string[]> = {
 }
 
 .foreman-divider {
-  font-family: var(--font-pixel);
-  font-size: 6px;
+  font: 600 var(--text-card-title) / var(--leading-heading) var(--font-ui);
   color: var(--color-brass);
-  letter-spacing: 1px;
   text-transform: uppercase;
   border-top: 1px solid var(--color-brass-dark);
   padding-top: 12px;
@@ -380,98 +333,30 @@ const TOOL_ENV_KEYS: Record<string, string[]> = {
 }
 
 .foreman-field-label {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  color: var(--color-brass-dark);
-  letter-spacing: 1px;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
+  color: var(--color-text-dim);
   text-transform: uppercase;
 }
 
 .foreman-hint {
-  font-family: var(--font-mono, monospace);
-  font-size: 9px;
+  font-size: var(--text-small);
   color: var(--color-text-dim);
   font-style: italic;
   margin: 0 0 3px;
-  line-height: 1.4;
+  line-height: var(--leading-body);
+  overflow-wrap: anywhere;
 }
 
 .foreman-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   margin-top: 2px;
 }
 
-.env-var-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.env-var-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.env-var-key {
-  flex: 0 0 160px;
-  min-width: 0;
-  font-size: 10px;
-}
-
-.env-var-value {
-  flex: 1;
-  min-width: 0;
-  font-size: 10px;
-}
-
-.env-var-spacer {
-  flex: 0 0 22px;
-}
-
-.env-var-head span {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  color: var(--color-brass-dark);
-  letter-spacing: 1px;
-  text-transform: uppercase;
-}
-
-.env-var-delete-btn {
-  background: none;
-  border: 1px solid var(--color-brass-dark);
-  color: var(--color-text-dim);
-  cursor: pointer;
-  width: 22px;
-  height: 22px;
-  border-radius: 2px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 10px;
-  flex-shrink: 0;
-  transition:
-    border-color 0.12s,
-    color 0.12s;
-}
-
-.env-var-delete-btn:hover {
-  border-color: var(--color-red, #c0392b);
-  color: var(--color-red, #c0392b);
-}
-
-.env-var-add-btn {
-  font-size: 7px;
-  padding: 4px 8px;
-  align-self: flex-start;
-  margin-top: 2px;
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .foreman-tool-tab,
-  .env-var-delete-btn {
+  .foreman-tool-tab {
     transition: none;
   }
 }

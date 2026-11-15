@@ -46,8 +46,16 @@ const isLive = computed(() => {
 .pane-title {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
   gap: 8px;
-  font-size: 13px;
+}
+
+.title-text {
+  font: 400 var(--text-page-title) / var(--leading-heading) var(--font-display);
+  color: var(--color-brass-light);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .title-icon {
@@ -56,7 +64,7 @@ const isLive = computed(() => {
 
 .entity-id-chip {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid var(--color-brass-dark);
@@ -72,12 +80,11 @@ const isLive = computed(() => {
 }
 
 .state-badge {
-  font-size: 10px;
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
   padding: 2px 8px;
   border-radius: 2px;
   text-transform: uppercase;
-  font-family: var(--font-pixel);
-  letter-spacing: 1px;
+  letter-spacing: 0.03em;
 }
 .state-badge.idle {
   background: rgba(154, 128, 96, 0.2);

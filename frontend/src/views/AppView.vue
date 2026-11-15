@@ -259,9 +259,7 @@ watch(
   }
 
   .tab-label {
-    font-family: var(--font-pixel);
-    font-size: 6px;
-    letter-spacing: 1px;
+    font: 600 var(--text-caption) / var(--leading-heading) var(--font-ui);
     text-transform: uppercase;
   }
 

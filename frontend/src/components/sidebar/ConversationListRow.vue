@@ -146,9 +146,10 @@ function open() {
 }
 
 .conversation-name {
-  font-size: 11px;
+  font: 600 var(--text-card-title) / var(--leading-heading) var(--font-ui);
   color: var(--color-text);
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
   overflow: hidden;
   text-overflow: ellipsis;
   flex: 1;
@@ -157,7 +158,8 @@ function open() {
 
 .conversation-preview,
 .conversation-meta {
-  font-size: 10px;
+  font-size: var(--text-small);
+  line-height: 1.5;
   color: var(--color-text-dim);
   white-space: nowrap;
   overflow: hidden;
@@ -165,11 +167,12 @@ function open() {
 }
 
 .conversation-meta {
-  font-size: 9px;
+  font-size: var(--text-caption);
 }
 
 .task-count {
-  font-size: 9px;
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
   color: var(--color-text-dim);
   background: var(--color-bg);
   padding: 1px 5px;
@@ -178,9 +181,8 @@ function open() {
 }
 
 .status-pill {
-  font-family: var(--font-pixel);
-  font-size: 5px;
-  letter-spacing: 0.5px;
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
+  letter-spacing: 0.03em;
   text-transform: uppercase;
   padding: 1px 4px;
   border-radius: 2px;
@@ -201,7 +203,7 @@ function open() {
 }
 
 .open-btn {
-  font-size: 9px;
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
   padding: 1px 4px;
   background: none;
   border: 1px solid var(--color-brass-dark);

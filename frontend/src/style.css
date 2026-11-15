@@ -34,6 +34,21 @@
   --color-crimson: #cc2200;
   --color-cream: #ffe8c0;
 
+  --font-ui: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-display: 'Share Tech Mono', 'Courier New', monospace;
+  --text-page-title: clamp(1.25rem, 1rem + 1vw, 1.5rem);
+  --text-section-title: 1.125rem;
+  --text-card-title: 1rem;
+  --text-body: 0.9375rem;
+  --text-small: 0.8125rem;
+  --text-caption: 0.75rem;
+  --text-input: 1rem;
+  --leading-heading: 1.3;
+  --leading-body: 1.6;
+
+  --font-button: var(--font-pixel);
+  --text-button: 8px;
+  --tracking-button: 1px;
   --font-pixel: 'Press Start 2P', monospace;
   --font-mono: 'Share Tech Mono', 'Courier New', monospace;
   --border-brass: 2px solid var(--color-brass);
@@ -62,6 +77,12 @@ body {
   color: var(--color-text);
   font-family: var(--font-mono);
   overflow: hidden;
+}
+
+@media (max-width: 700px) {
+  :root {
+    --text-body: 1rem;
+  }
 }
 
 #app {
@@ -110,15 +131,15 @@ body {
 }
 
 .pixel-btn {
-  font-family: var(--font-pixel);
-  font-size: 8px;
+  font-family: var(--font-button);
+  font-size: var(--text-button);
   background: linear-gradient(180deg, var(--color-brass-light) 0%, var(--color-brass-dark) 100%);
   color: #120900;
   border: 2px solid var(--color-brass-light);
   padding: 6px 10px;
   cursor: pointer;
   text-transform: uppercase;
-  letter-spacing: 1px;
+  letter-spacing: var(--tracking-button);
   transition: all 0.1s;
   image-rendering: pixelated;
 }

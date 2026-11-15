@@ -285,8 +285,7 @@ watch(() => props.guildId, load, { immediate: true })
 }
 
 .members-loading {
-  font-family: var(--font-mono, monospace);
-  font-size: 10px;
+  font-size: var(--text-small);
   color: var(--color-text-dim);
 }
 
@@ -319,36 +318,30 @@ watch(() => props.guildId, load, { immediate: true })
   justify-content: center;
   background: var(--color-bg-secondary);
   color: var(--color-text-dim);
-  font-family: var(--font-mono, monospace);
-  font-size: 8px;
+  font-size: var(--text-caption);
 }
 
 .member-name {
   flex: 1;
   min-width: 0;
-  font-family: var(--font-mono, monospace);
-  font-size: 11px;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
   color: var(--color-text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 
 .member-role-select {
   background: var(--color-bg);
   border: 1px solid var(--color-brass-dark);
   color: var(--color-text);
-  font-family: var(--font-mono, monospace);
-  font-size: 10px;
+  font: var(--text-input) / 1.5 var(--font-ui);
+  max-width: 100%;
   padding: 3px 5px;
   border-radius: 2px;
   flex-shrink: 0;
 }
 
 .member-role-badge {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 0.5px;
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
   text-transform: uppercase;
   padding: 3px 6px;
   border: 1px solid var(--color-brass-dark);
@@ -367,13 +360,13 @@ watch(() => props.guildId, load, { immediate: true })
   border: 1px solid var(--color-brass-dark);
   color: var(--color-text-dim);
   cursor: pointer;
-  width: 22px;
-  height: 22px;
+  width: 44px;
+  height: 44px;
   border-radius: 2px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  font-size: var(--text-card-title);
   flex-shrink: 0;
   transition:
     border-color 0.12s,
@@ -400,9 +393,7 @@ watch(() => props.guildId, load, { immediate: true })
 }
 
 .pending-invites-label {
-  font-family: var(--font-pixel);
-  font-size: 7px;
-  letter-spacing: 0.5px;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
   text-transform: uppercase;
   color: var(--color-text-dim);
   margin-bottom: 2px;
@@ -424,11 +415,9 @@ watch(() => props.guildId, load, { immediate: true })
 
 .invite-input {
   flex: 1;
-  font-size: 10px;
 }
 
 .invite-btn {
-  font-size: 7px;
   padding: 5px 9px;
   flex-shrink: 0;
 }
@@ -439,14 +428,24 @@ watch(() => props.guildId, load, { immediate: true })
 }
 
 .members-error {
-  font-family: var(--font-mono, monospace);
-  font-size: 10px;
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
   color: var(--color-red, #e74c3c);
 }
 
 .members-hint {
-  font-family: var(--font-mono, monospace);
-  font-size: 10px;
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
   color: var(--color-text-dim);
+}
+@media (max-width: 700px) {
+  .member-row,
+  .invite-row {
+    flex-wrap: wrap;
+  }
+
+  .member-name {
+    flex-basis: calc(100% - 26px);
+  }
 }
 </style>
