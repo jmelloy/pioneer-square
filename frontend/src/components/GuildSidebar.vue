@@ -3,10 +3,22 @@
     <div class="sidebar-heading">
       <h2><span aria-hidden="true">☷</span> Conversations</h2>
       <span class="active-count">● {{ activeConversationCount }} active</span>
+      <button
+        type="button"
+        class="filters-toggle"
+        :aria-expanded="!filtersCollapsed"
+        aria-controls="conversation-filters"
+        :aria-label="filtersCollapsed ? 'Show filters and search' : 'Hide filters and search'"
+        @click="toggleFilters"
+      >
+        <span class="filters-chevron" :class="{ collapsed: filtersCollapsed }" aria-hidden="true"
+          >▾</span
+        >
+      </button>
     </div>
 
     <div class="tab-content">
-      <ConversationList />
+      <ConversationList :filters-collapsed="filtersCollapsed" />
     </div>
 
     <div class="sidebar-footer">
@@ -20,7 +32,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, watch } from 'vue'
+import { computed, inject, ref, watch } from 'vue'
 import { useGuildStore } from '../stores/guild'
 import { useUiStore } from '../stores/ui'
 import { useConversationsStore } from '../stores/conversations'
@@ -32,6 +44,19 @@ const uiStore = useUiStore()
 const conversationsStore = useConversationsStore()
 
 const switchMobileTab = inject<(tab: string) => void>('switchMobileTab', () => {})
+
+const FILTERS_STORAGE_KEY = 'conversationFiltersCollapsed'
+const storedFilters = localStorage.getItem(FILTERS_STORAGE_KEY)
+// No saved preference: start collapsed on phones (portrait or landscape), where the toolbar eats the viewport.
+const filtersCollapsed = ref(
+  storedFilters === null
+    ? (window.matchMedia?.('(max-width: 767px), (max-height: 500px)').matches ?? false)
+    : storedFilters === 'true',
+)
+function toggleFilters() {
+  filtersCollapsed.value = !filtersCollapsed.value
+  localStorage.setItem(FILTERS_STORAGE_KEY, String(filtersCollapsed.value))
+}
 
 const isConnected = computed(() => guildStore.isConnected)
 const activeConversationCount = computed(
@@ -63,6 +88,37 @@ watch(
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.active-count {
+  margin-left: auto;
+}
+
+.filters-toggle {
+  min-width: 44px;
+  min-height: 44px;
+  margin: -12px -10px -12px -4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--color-brass);
+  cursor: pointer;
+}
+
+.filters-toggle:hover,
+.filters-toggle:focus-visible {
+  color: var(--color-brass-light);
+}
+
+.filters-chevron {
+  font-size: 14px;
+  transition: transform 0.2s ease;
+}
+
+.filters-chevron.collapsed {
+  transform: rotate(-90deg);
 }
 
 .tab-content {
