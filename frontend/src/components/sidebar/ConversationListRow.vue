@@ -10,7 +10,9 @@
       <div class="conversation-body">
         <div class="conversation-line">
           <span class="conversation-dot" :class="'dot-' + conversation.status"></span>
-          <span class="conversation-name">{{ conversation.name || conversation.id }}</span>
+          <span class="conversation-name" :title="String(conversation.name || conversation.id)">{{
+            conversation.name || conversation.id
+          }}</span>
           <span v-if="tasks.length" class="task-count" :title="taskCount + ' tasks'">
             {{ taskCount }}
           </span>
@@ -148,8 +150,7 @@ function open() {
 .conversation-name {
   font: 600 var(--text-card-title) / var(--leading-heading) var(--font-ui);
   color: var(--color-text);
-  white-space: normal;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   flex: 1;
