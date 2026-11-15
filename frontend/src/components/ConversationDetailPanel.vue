@@ -5,10 +5,12 @@
       <div class="pane-header">
         <div class="pane-title">
           <span class="title-icon">💬</span>
-          <span class="title-text">{{ conversation.name || conversation.id }}</span>
-          <code class="entity-id-chip">{{ conversation.id }}</code>
+          <span class="title-text" :title="conversation.name || conversation.id">{{
+            conversation.name || conversation.id
+          }}</span>
+          <code v-show="!headerCollapsed" class="entity-id-chip">{{ conversation.id }}</code>
         </div>
-        <div class="pane-meta">
+        <div v-show="!headerCollapsed" class="pane-meta">
           <span class="status-pill" :class="'status-' + conversation.status">
             {{ conversationsStore.statusLabel(conversation.status) }}
           </span>
@@ -21,9 +23,19 @@
             Close
           </button>
         </div>
+        <button
+          class="header-toggle"
+          :aria-expanded="!headerCollapsed"
+          :title="headerCollapsed ? 'Expand header' : 'Collapse header'"
+          @click="toggleHeader"
+        >
+          <span class="header-toggle-chevron" :class="{ 'chevron-expanded': !headerCollapsed }"
+            >▼</span
+          >
+        </button>
       </div>
 
-      <div class="pane-subheader">
+      <div v-show="!headerCollapsed" class="pane-subheader">
         <span v-if="conversation.discord_thread_id" class="sub-field discord-chip">
           discord thread: {{ conversation.discord_thread_id }}
         </span>
@@ -34,7 +46,7 @@
         </span>
       </div>
 
-      <div v-if="linkedTasks.length" class="pane-tasks">
+      <div v-if="linkedTasks.length" v-show="!headerCollapsed" class="pane-tasks">
         <div v-for="task in linkedTasks" :key="task.id" class="linked-task">
           <span class="linked-task-label">TASK</span>
           <a
@@ -60,7 +72,9 @@
           >
         </div>
       </div>
-      <div v-else-if="tasksError" class="pane-tasks pane-tasks-error">Task details unavailable</div>
+      <div v-else-if="tasksError" v-show="!headerCollapsed" class="pane-tasks pane-tasks-error">
+        Task details unavailable
+      </div>
 
       <div class="body chat-messages" ref="messagesEl">
         <button v-if="hasOlder" class="pixel-btn" :disabled="loadingOlder" @click="loadOlder">
@@ -207,6 +221,13 @@ const guildStore = useGuildStore()
 const conversationsStore = useConversationsStore()
 const tasksStore = useTasksStore()
 const uiStore = useUiStore()
+
+const HEADER_STORAGE_KEY = 'conversationHeaderCollapsed'
+const headerCollapsed = ref(localStorage.getItem(HEADER_STORAGE_KEY) === 'true')
+function toggleHeader() {
+  headerCollapsed.value = !headerCollapsed.value
+  localStorage.setItem(HEADER_STORAGE_KEY, String(headerCollapsed.value))
+}
 
 const acting = ref(false)
 const loadingMessages = ref(false)
@@ -490,9 +511,42 @@ watch(
 .pane-title {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex: 1 1 auto;
   min-width: 0;
   gap: 8px;
+}
+
+.pane-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin-left: 12px;
+}
+
+.header-toggle {
+  flex-shrink: 0;
+  margin-left: 8px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.header-toggle-chevron {
+  font-size: 8px;
+  color: var(--color-brass-dark);
+  transition: transform 0.2s ease;
+  display: inline-block;
+  transform: rotate(-90deg);
+}
+
+.header-toggle:hover .header-toggle-chevron {
+  color: var(--color-brass);
+}
+
+.header-toggle-chevron.chevron-expanded {
+  transform: rotate(0deg);
 }
 
 .title-icon {
@@ -501,8 +555,11 @@ watch(
 
 .title-text {
   font: 400 var(--text-page-title) / var(--leading-heading) var(--font-display);
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   min-width: 0;
+  flex: 0 1 auto;
   color: var(--color-brass-light);
 }
 
@@ -515,6 +572,7 @@ watch(
   padding: 1px 5px;
   border-radius: 2px;
   letter-spacing: 0.5px;
+  flex-shrink: 0;
 }
 
 .status-pill {
