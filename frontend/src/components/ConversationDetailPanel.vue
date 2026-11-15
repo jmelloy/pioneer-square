@@ -24,10 +24,6 @@
       </div>
 
       <div class="pane-subheader">
-        <span v-if="conversation.discord_thread_id" class="sub-field discord-chip">
-          discord thread: {{ conversation.discord_thread_id }}
-        </span>
-        <span v-else class="sub-field discord-pending"> discord thread not yet created </span>
         <span class="sub-time-group">
           <span class="sub-time">created {{ formatRelative(conversation.created_at) }}</span>
           <span class="sub-time">updated {{ formatRelative(conversation.updated_at) }}</span>
@@ -547,20 +543,6 @@ watch(
   background: var(--color-bg-secondary);
   border-bottom: 1px solid var(--color-brass-dark);
   flex-shrink: 0;
-}
-
-.sub-field {
-  font-size: var(--text-caption);
-  color: var(--color-text-dim);
-  font-family: var(--font-mono);
-}
-
-.discord-chip {
-  color: var(--color-teal);
-}
-
-.discord-pending {
-  font-style: italic;
 }
 
 .sub-time-group {

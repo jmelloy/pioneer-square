@@ -45,6 +45,14 @@ describe('ConversationDetailPanel reply', () => {
     vi.restoreAllMocks()
   })
 
+  it('does not show the discord thread in the conversation view', async () => {
+    const { wrapper, conversationsStore } = mountPanel()
+    conversationsStore.conversations = [{ ...CONVERSATION, discord_thread_id: '123456789' }]
+    await flushPromises()
+    expect(wrapper.text().toLowerCase()).not.toContain('discord thread')
+    expect(wrapper.text()).not.toContain('123456789')
+  })
+
   it('disables send while input is empty', async () => {
     const { wrapper } = mountPanel()
     await flushPromises()
