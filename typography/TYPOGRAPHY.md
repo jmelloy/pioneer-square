@@ -8,6 +8,11 @@ a 13px root size, duplicate color tokens, and a second mobile cascade.
 ## Where styles belong
 
 - `frontend/src/style.css`: shared font and size tokens; the existing button primitive.
+  The opt-in `ui-surface` class gives the workspace, standalone task-log view, and
+  teleported debug panel the same typography without relying on workspace ancestry.
+- `frontend/src/markdown.css`: one `markdown-prose` class for rendered chat, task
+  descriptions, assistant log prose, and issue bodies/comments. Code blocks and
+  tables scroll internally. Components do not duplicate these descendant rules.
 - `frontend/src/settings.css`: shared settings input, save-status, and environment-row
   primitives, replacing their component-local copies; dialog font defaults and focus rings.
 - Component `<style scoped>` blocks: the component's typography, using those tokens.
@@ -63,16 +68,27 @@ repeated settings primitives rather than importing either generated stylesheet.
 Environment inputs stack on phones; long names, hints, and errors can wrap. The spawn
 dialog retains its visual-viewport keyboard handling and safe-area footer.
 
-Task-tree rows and every log diagnostic label are not a complete token migration.
+The follow-up pass covers task-tree names/badges, task and worker actions, log
+headers/details, usage/cost summaries, issue metadata, the standalone task-log view,
+and the teleported debug panel. Nested task indentation is capped at 20% of the row
+width; action forms wrap and scroll instead of taking over the log pane. Raw output
+and tool payloads remain monospace, with whitespace preserved. Assistant prose uses
+the normal reading color rather than the dim terminal-metadata color.
+
 Real-device Safari, user font preferences, and a full contrast audit still need
-human verification. Browser smoke tests cover workspace widths from 320–1440px,
-all guild-settings tabs, personal worker preferences, and all spawn-dialog tabs.
+human verification. Browser smoke tests cover 320–1440px, all guild-settings/spawn
+tabs, personal worker preferences, deeply nested task rows, action forms, standalone
+logs, issue comments, and teleported debug text. They also check raw-output and code
+indentation preservation. Decorative landing typography and other legacy dialogs
+are outside these passes.
 
 ## Screenshots
 
 Screenshots use synthetic local fixtures, not production data.
 
-| Surface                  | Before                                                          | After                                                         |
-| ------------------------ | --------------------------------------------------------------- | ------------------------------------------------------------- |
-| Workspace (1440px)       | ![Before](../docs/design/typography/before-workspace.png)       | ![After](../docs/design/typography/after-workspace.png)       |
-| Foreman settings (390px) | ![Before](../docs/design/typography/before-settings-mobile.png) | ![After](../docs/design/typography/after-settings-mobile.png) |
+| Surface                     | Before                                                          | After                                                         |
+| --------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------- |
+| Workspace (1440px)          | ![Before](../docs/design/typography/before-workspace.png)       | ![After](../docs/design/typography/after-workspace.png)       |
+| Foreman settings (390px)    | ![Before](../docs/design/typography/before-settings-mobile.png) | ![After](../docs/design/typography/after-settings-mobile.png) |
+| Standalone task log (390px) | ![Before](../docs/design/typography/before-task-log-mobile.png) | ![After](../docs/design/typography/after-task-log-mobile.png) |
+| Debug panel (390px)         | ![Before](../docs/design/typography/before-debug-mobile.png)    | ![After](../docs/design/typography/after-debug-mobile.png)    |

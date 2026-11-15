@@ -8,7 +8,10 @@
       <span class="log-time">{{ formatTime(log.timestamp) }}</span>
       <span
         class="log-text"
-        :class="[lineClass, { 'log-text--markdown': isMarkdownLine }]"
+        :class="[
+          lineClass,
+          { 'log-text--markdown': isMarkdownLine, 'markdown-prose': isMarkdownLine },
+        ]"
         v-html="renderedLine"
         v-artifacts="guildStore.currentGuild?.id"
       ></span>
@@ -194,8 +197,8 @@ const lineClass = computed(() => {
 .log-line {
   display: flex;
   gap: 12px;
-  font-size: 13px;
-  line-height: 1.6;
+  font: var(--text-small) / var(--leading-body) var(--font-mono);
+  min-width: 0;
 }
 
 .log-line--expandable {
@@ -207,7 +210,7 @@ const lineClass = computed(() => {
 }
 
 .log-expand-icon {
-  font-size: 8px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
   flex-shrink: 0;
   margin-left: auto;
@@ -221,10 +224,8 @@ const lineClass = computed(() => {
 }
 
 .log-detail-label {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  color: #5a3a10;
-  letter-spacing: 1px;
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
+  color: var(--color-text-dim);
   margin-bottom: 4px;
   margin-top: 6px;
 }
@@ -237,11 +238,10 @@ const lineClass = computed(() => {
 
 .log-detail-body {
   margin: 0 0 2px;
-  font-family: var(--font-mono);
-  font-size: 10px;
+  font: var(--text-small) / var(--leading-body) var(--font-mono);
   color: var(--color-text-dim);
   white-space: pre-wrap;
-  word-break: break-all;
+  overflow-wrap: anywhere;
   max-height: 300px;
   overflow-y: auto;
   background: rgba(0, 0, 0, 0.3);
@@ -274,12 +274,14 @@ const lineClass = computed(() => {
 .log-time {
   color: var(--color-text-dim);
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
 }
 
 .log-text {
   color: var(--color-green);
-  word-break: break-all;
+  min-width: 0;
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 .log-text.log-success {
@@ -294,8 +296,8 @@ const lineClass = computed(() => {
 .log-text.log-result {
   color: var(--color-text-dim);
 }
-.log-text.log-meta {
-  color: var(--color-brass-dark);
+.log-text.log-meta:not(.log-text--markdown) {
+  color: var(--color-text-dim);
 }
 .log-text.log-thinking {
   color: var(--color-blue);
@@ -303,78 +305,22 @@ const lineClass = computed(() => {
 }
 
 .log-text--markdown {
+  color: var(--color-text);
   white-space: normal;
-}
-.log-text--markdown :deep(p) {
-  margin: 0 0 4px;
-}
-.log-text--markdown :deep(p:last-child) {
-  margin-bottom: 0;
-}
-.log-text--markdown :deep(ul),
-.log-text--markdown :deep(ol) {
-  margin: 4px 0 4px;
-  padding-left: 18px;
-}
-.log-text--markdown :deep(li) {
-  margin-bottom: 2px;
-}
-.log-text--markdown :deep(code) {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  background: rgba(0, 0, 0, 0.35);
-  border: 1px solid var(--color-brass-dark);
-  padding: 0 4px;
-  border-radius: 2px;
-  color: var(--color-amber);
-}
-.log-text--markdown :deep(pre) {
-  background: rgba(0, 0, 0, 0.4);
-  border: 1px solid var(--color-brass-dark);
-  padding: 8px 10px;
-  overflow-x: auto;
-  margin: 4px 0;
-}
-.log-text--markdown :deep(pre code) {
-  background: none;
-  border: none;
-  padding: 0;
-  font-size: 10px;
-  color: var(--color-green);
-}
-.log-text--markdown :deep(h1),
-.log-text--markdown :deep(h2),
-.log-text--markdown :deep(h3) {
-  font-family: var(--font-pixel);
-  font-size: 8px;
-  letter-spacing: 1px;
-  color: var(--color-teal);
-  margin: 6px 0 4px;
-  text-transform: uppercase;
-}
-.log-text--markdown :deep(strong) {
-  color: var(--color-amber);
-  font-weight: bold;
-}
-.log-text--markdown :deep(em) {
-  color: var(--color-text-dim);
-  font-style: italic;
-}
-.log-text--markdown :deep(a) {
-  color: var(--color-teal);
-  text-decoration: underline;
-}
-.log-text--markdown :deep(blockquote) {
-  border-left: 3px solid var(--color-brass-dark);
-  margin: 4px 0;
-  padding: 2px 8px;
-  color: var(--color-text-dim);
-  font-style: italic;
 }
 
 .log-text :deep(.terminal-link) {
   color: var(--color-blue);
   text-decoration: underline;
   cursor: pointer;
+}
+@media (max-width: 700px) {
+  .log-line {
+    gap: 8px;
+  }
+
+  .log-detail {
+    margin-left: 0;
+  }
 }
 </style>

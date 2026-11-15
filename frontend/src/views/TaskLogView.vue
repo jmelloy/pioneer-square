@@ -1,5 +1,5 @@
 <template>
-  <div class="task-log">
+  <div class="task-log ui-surface">
     <div v-if="loading" class="task-log-notice">Loading task log…</div>
 
     <div v-else-if="error" class="task-log-notice task-log-notice--error">
@@ -168,19 +168,22 @@ onMounted(async () => {
   flex-direction: column;
   align-items: center;
   gap: 14px;
-  font-size: 13px;
+  font-size: var(--text-body);
+  padding: 16px;
+  overflow-wrap: anywhere;
   color: var(--color-text-dim);
 }
 .task-log-notice--error {
   color: var(--color-red);
 }
 .task-log-notice .pixel-btn {
-  font-size: 9px;
   padding: 10px 20px;
 }
 
 .meta {
   display: flex;
+  max-height: 35%;
+  overflow-y: auto;
   align-items: center;
   flex-wrap: wrap;
   gap: 6px 18px;
@@ -188,19 +191,20 @@ onMounted(async () => {
   background: var(--color-bg-secondary);
   border-bottom: 1px solid var(--color-brass-dark);
   flex-shrink: 0;
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--text-small);
 }
 
 .meta-field {
   display: flex;
   align-items: baseline;
+  flex-wrap: wrap;
+  min-width: 0;
   gap: 6px;
+  overflow-wrap: anywhere;
 }
 
 .meta-label {
-  font-family: var(--font-pixel);
-  font-size: 7px;
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
   color: var(--color-text-dim);
 }
 
@@ -210,7 +214,6 @@ onMounted(async () => {
 
 .copy-btn {
   margin-left: auto;
-  font-size: 7px;
   padding: 5px 10px;
 }
 </style>

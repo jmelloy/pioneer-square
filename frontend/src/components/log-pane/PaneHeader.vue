@@ -37,6 +37,8 @@ const isLive = computed(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
   padding: 8px 16px;
   background: #0f0a02;
   border-bottom: 2px solid #2a1a05;
@@ -75,6 +77,7 @@ const isLive = computed(() => {
 
 .pane-meta {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
 }
@@ -112,7 +115,7 @@ const isLive = computed(() => {
 }
 
 .live-indicator {
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
 }
 

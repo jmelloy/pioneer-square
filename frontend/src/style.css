@@ -85,6 +85,28 @@ body {
   }
 }
 
+/* Explicit opt-in also covers standalone views and teleported panels. */
+.ui-surface {
+  --font-pixel: var(--font-ui);
+  --font-button: var(--font-ui);
+  --text-button: 0.875rem;
+  --tracking-button: normal;
+  --font-mono: ui-monospace, 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  --color-text-dim: #b69a78;
+  font: var(--text-body) / var(--leading-body) var(--font-ui);
+}
+
+.ui-surface :is(button, a, input, select, textarea):focus-visible {
+  outline: 2px solid var(--color-teal);
+  outline-offset: 2px;
+}
+
+@media (max-width: 700px) {
+  .ui-surface .pixel-btn {
+    min-height: 44px;
+  }
+}
+
 #app {
   height: 100dvh;
   display: flex;

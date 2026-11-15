@@ -1,17 +1,10 @@
 /* Workspace typography is deliberately separate from the pixel-art landing page. */
 .app-layout {
-  --font-pixel: var(--font-ui);
-  --font-button: var(--font-ui);
-  --text-button: 0.875rem;
-  --tracking-button: normal;
-  --font-mono: ui-monospace, 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
-  --color-text-dim: #b69a78;
   --color-brass: #eab900;
   --color-brass-light: #ffe45a;
   --color-brass-dark: #866015;
   --color-teal: #21d5ee;
   --panel-frame-border: 18px;
-  font: var(--text-body) / var(--leading-body) var(--font-ui);
 }
 
 .app-layout .top-bar {
@@ -186,9 +179,6 @@
 .app-layout .poll-indicator {
   opacity: 1;
 }
-.app-layout .tab-count {
-  font-size: 12px;
-}
 .app-layout .chat-messages {
   padding: 0 14px;
 }
@@ -268,10 +258,6 @@
 }
 .app-layout .workers-section {
   background: #120b04;
-}
-.app-layout :is(button, a, input, select, textarea):focus-visible {
-  outline: 2px solid var(--color-teal);
-  outline-offset: 2px;
 }
 
 /* Projects share the existing IssueViewer, including editing and task-log actions. */
@@ -639,14 +625,9 @@
     width: 44px;
     height: 44px;
   }
-  .app-layout :is(.pixel-btn, .filter-btn, .issue-tab-btn, .project-choice),
+  .app-layout :is(.filter-btn, .issue-tab-btn, .project-choice),
   .workspace-nav button {
     min-height: 44px;
-  }
-  .app-layout .pane-header {
-    flex-wrap: wrap;
-    gap: 8px;
-    padding: 12px;
   }
   .app-layout .chat-messages {
     padding: 0 10px;
