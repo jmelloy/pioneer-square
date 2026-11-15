@@ -94,8 +94,16 @@ def _s3(cfg: ArtifactConfig):
     global _client
     if _client is None:
         import boto3  # noqa: PLC0415
+        from botocore.config import Config  # noqa: PLC0415
 
-        _client = boto3.client("s3", region_name=cfg.region)
+        # Default config presigns SigV2 against the global s3.amazonaws.com endpoint, which
+        # S3 redirects (301/307) for buckets outside us-east-1, breaking direct image loads.
+        # SigV4 + virtual addressing yields a stable regional URL: <bucket>.s3.<region>...
+        _client = boto3.client(
+            "s3",
+            region_name=cfg.region,
+            config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+        )
     return _client
 
 

@@ -66,3 +66,15 @@ def test_markdown_reference_uses_artifact_scheme():
 
     assert _link_text("a/b/shot [1].png") == "shot 1.png"
     assert _link_text(None) == "artifact"
+
+
+def test_presigned_url_is_regional_sigv4(monkeypatch):
+    """Global-endpoint SigV2 URLs get redirected by S3 for non-us-east-1 buckets (#1464)."""
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "x")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "y")
+    monkeypatch.setattr(artifact_service, "_client", None)
+    cfg = artifact_service.ArtifactConfig("my-bucket", "artifacts", "us-west-2", None, 1000)
+    url = artifact_service.build_url(cfg, "artifacts/g/t/a.png")
+    monkeypatch.setattr(artifact_service, "_client", None)
+    assert url.startswith("https://my-bucket.s3.us-west-2.amazonaws.com/artifacts/g/t/a.png?")
+    assert "X-Amz-Algorithm=AWS4-HMAC-SHA256" in url
