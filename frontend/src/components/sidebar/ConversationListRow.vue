@@ -10,7 +10,7 @@
       <div class="conversation-body">
         <div class="conversation-line">
           <span class="conversation-dot" :class="'dot-' + conversation.status"></span>
-          <span class="conversation-name" :title="conversation.name || conversation.id">{{
+          <span class="conversation-name" :title="String(conversation.name || conversation.id)">{{
             conversation.name || conversation.id
           }}</span>
           <span v-if="tasks.length" class="task-count" :title="taskCount + ' tasks'">

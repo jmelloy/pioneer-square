@@ -5,7 +5,7 @@
       <div class="pane-header">
         <div class="pane-title">
           <span class="title-icon">💬</span>
-          <span class="title-text" :title="conversation.name || conversation.id">{{
+          <span class="title-text" :title="String(conversation.name || conversation.id)">{{
             conversation.name || conversation.id
           }}</span>
           <code v-show="!headerCollapsed" class="entity-id-chip">{{ conversation.id }}</code>
