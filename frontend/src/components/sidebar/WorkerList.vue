@@ -96,7 +96,7 @@ const uiStore = useUiStore()
 
 const showSpawnForm = ref(false)
 // ponytail: collapse state is per-session; persist to localStorage if users ask
-const sectionCollapsed = ref(false)
+const sectionCollapsed = ref(true)
 const collapsedWorkers = ref(new Set<string>())
 
 function toggleWorker(workerId: string) {

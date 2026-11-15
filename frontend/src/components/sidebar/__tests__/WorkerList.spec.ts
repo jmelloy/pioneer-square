@@ -16,6 +16,11 @@ describe('WorkerList', () => {
 
   it('collapses a worker to status dots and the whole section to header dots', async () => {
     const wrapper = mount(WorkerList)
+    // Section defaults to collapsed (#1468)
+    expect(wrapper.find('.worker-row').exists()).toBe(false)
+    expect(wrapper.findAll('.section-dots .agent-dot')).toHaveLength(2)
+
+    await wrapper.find('.section-header .collapse-btn').trigger('click')
     expect(wrapper.findAll('.agent-row')).toHaveLength(2)
 
     await wrapper.find('.worker-row .collapse-btn').trigger('click')
