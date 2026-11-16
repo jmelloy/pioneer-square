@@ -11,7 +11,7 @@
             <div class="logo-title">PIONEER SQUARE</div>
             <div class="logo-subtitle">Multi-Agent Coding Workshop</div>
           </div>
-          <div class="header-actions" v-if="authStore.isLoggedIn">
+          <div class="header-actions ui-surface" v-if="authStore.isLoggedIn">
             <div class="user-pill">
               <img :src="authStore.user.avatar_url" class="user-avatar" alt="" />
               <span class="user-login">{{ authStore.user.login }}</span>
@@ -36,7 +36,7 @@
         </div>
 
         <template v-else>
-          <div class="sessions-section">
+          <div class="sessions-section ui-surface">
             <div class="section-label">YOUR GUILDS</div>
 
             <div v-if="loading" class="loading-msg">Loading guilds...</div>
@@ -210,7 +210,8 @@ async function createGuild(name: string) {
   align-items: stretch;
   justify-content: center;
   position: relative;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .landing-content {
@@ -235,6 +236,8 @@ async function createGuild(name: string) {
 
 .landing-header {
   display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
   align-items: flex-end;
   justify-content: space-between;
   border-bottom: 2px solid var(--color-brass-dark);
@@ -258,13 +261,21 @@ async function createGuild(name: string) {
   letter-spacing: 2px;
 }
 
+.header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
 .new-btn {
-  font-size: 9px;
   padding: 10px 16px;
 }
 
 .user-pill {
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   align-items: center;
   gap: 8px;
   padding: 4px 10px;
@@ -280,12 +291,13 @@ async function createGuild(name: string) {
 }
 
 .user-login {
-  font-size: 11px;
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+  min-width: 0;
   color: var(--color-teal);
 }
 
 .logout-btn {
-  font-size: 9px;
   padding: 6px 12px;
   background: transparent;
   border-color: var(--color-brass-dark);
@@ -307,16 +319,14 @@ async function createGuild(name: string) {
 }
 
 .section-label {
-  font-family: var(--font-pixel);
-  font-size: 7px;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
   color: var(--color-brass);
-  letter-spacing: 3px;
-  opacity: 0.7;
+  letter-spacing: 0.04em;
 }
 
 .loading-msg {
   color: var(--color-text-dim);
-  font-size: 12px;
+  font-size: var(--text-small);
   padding: 20px 0;
 }
 
@@ -336,12 +346,12 @@ async function createGuild(name: string) {
 }
 
 .empty-text {
-  font-size: 14px;
+  font-size: var(--text-body);
   color: var(--color-text);
 }
 
 .empty-sub {
-  font-size: 12px;
+  font-size: var(--text-small);
   margin-bottom: 12px;
 }
 
@@ -426,9 +436,6 @@ async function createGuild(name: string) {
   }
 
   .header-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
     width: 100%;
   }
 

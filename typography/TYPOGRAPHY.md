@@ -10,6 +10,7 @@ a 13px root size, duplicate color tokens, and a second mobile cascade.
 - `frontend/src/style.css`: shared font and size tokens; the existing button primitive.
   The opt-in `ui-surface` class gives the workspace, standalone task-log view, and
   teleported debug panel the same typography without relying on workspace ancestry.
+  Functional landing controls, onboarding screens, and the image/guild dialogs also opt in.
 - `frontend/src/markdown.css`: one `markdown-prose` class for rendered chat, task
   descriptions, assistant log prose, and issue bodies/comments. Code blocks and
   tables scroll internally. Components do not duplicate these descendant rules.
@@ -18,7 +19,8 @@ a 13px root size, duplicate color tokens, and a second mobile cascade.
 - Component `<style scoped>` blocks: the component's typography, using those tokens.
 - `frontend/src/workspace.css`: workspace theme and layout, including responsive layout.
   Do not add a second typography override for a component here.
-- The pixel-art landing page retains its existing visual identity.
+- Landing-page logos and workshop artwork keep their pixel typography; functional
+  sign-in, guild cards, and creation controls use the shared UI scale.
 
 ## Font choices
 
@@ -75,20 +77,34 @@ width; action forms wrap and scroll instead of taking over the log pane. Raw out
 and tool payloads remain monospace, with whitespace preserved. Assistant prose uses
 the normal reading color rather than the dim terminal-metadata color.
 
-Real-device Safari, user font preferences, and a full contrast audit still need
-human verification. Browser smoke tests cover 320–1440px, all guild-settings/spawn
-tabs, personal worker preferences, deeply nested task rows, action forms, standalone
-logs, issue comments, and teleported debug text. They also check raw-output and code
-indentation preservation. Decorative landing typography and other legacy dialogs
-are outside these passes.
+The finishing pass covers attachment errors/actions, lightbox filenames, functional
+landing/onboarding controls, Discord connection status, and remaining workspace
+metadata. Guild creation and the lightbox use native modal dialogs for keyboard
+containment, Escape, and opener-focus restoration. Upload notices/progress expose
+accessible names/status; retry, removal, creation, and download behavior are preserved.
+
+Browser smoke tests cover 320–1440px, guild-settings/spawn tabs, worker preferences,
+nested task rows, actions, standalone logs, issue comments, and teleported debug text.
+The finishing checks double the root text size (not browser page zoom), exercise
+keyboard navigation and focus restoration, check upload/create flows and raw/code
+whitespace, and require at least 4.5:1 contrast for the changed opaque label/error
+text pairs. Larger navigation/filters wrap; mobile projects retain a scrollable
+minimum list/detail area so enlarged controls cannot squeeze it away.
+
+Real-device Safari/on-screen keyboards, OS text preferences, assistive technologies,
+and a full contrast audit still need human verification. Decorative pixel typography
+and unused legacy components remain intentionally unchanged. No further blanket font
+migration is planned; future changes should address observed usability problems.
 
 ## Screenshots
 
 Screenshots use synthetic local fixtures, not production data.
 
-| Surface                     | Before                                                          | After                                                         |
-| --------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------- |
-| Workspace (1440px)          | ![Before](../docs/design/typography/before-workspace.png)       | ![After](../docs/design/typography/after-workspace.png)       |
-| Foreman settings (390px)    | ![Before](../docs/design/typography/before-settings-mobile.png) | ![After](../docs/design/typography/after-settings-mobile.png) |
-| Standalone task log (390px) | ![Before](../docs/design/typography/before-task-log-mobile.png) | ![After](../docs/design/typography/after-task-log-mobile.png) |
-| Debug panel (390px)         | ![Before](../docs/design/typography/before-debug-mobile.png)    | ![After](../docs/design/typography/after-debug-mobile.png)    |
+| Surface                                | Before                                                           | After                                                          |
+| -------------------------------------- | ---------------------------------------------------------------- | -------------------------------------------------------------- |
+| Workspace (1440px)                     | ![Before](../docs/design/typography/before-workspace.png)        | ![After](../docs/design/typography/after-workspace.png)        |
+| Foreman settings (390px)               | ![Before](../docs/design/typography/before-settings-mobile.png)  | ![After](../docs/design/typography/after-settings-mobile.png)  |
+| Standalone task log (390px)            | ![Before](../docs/design/typography/before-task-log-mobile.png)  | ![After](../docs/design/typography/after-task-log-mobile.png)  |
+| Debug panel (390px)                    | ![Before](../docs/design/typography/before-debug-mobile.png)     | ![After](../docs/design/typography/after-debug-mobile.png)     |
+| Guild creation (390px, 200% root text) | ![Before](../docs/design/typography/before-new-guild-mobile.png) | ![After](../docs/design/typography/after-new-guild-mobile.png) |
+| Image dialog (390px, 200% root text)   | ![Before](../docs/design/typography/before-lightbox-mobile.png)  | ![After](../docs/design/typography/after-lightbox-mobile.png)  |

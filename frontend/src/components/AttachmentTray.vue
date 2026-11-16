@@ -1,6 +1,6 @@
 <template>
   <div v-if="attachments.length || notice" class="attachment-tray">
-    <div v-if="notice" class="tray-notice">{{ notice }}</div>
+    <div v-if="notice" class="tray-notice" role="status">{{ notice }}</div>
     <div v-if="attachments.length" class="tray-items">
       <div v-for="a in attachments" :key="a.key" class="tray-item" :class="a.status">
         <img class="tray-thumb" :src="a.previewUrl" :alt="a.file.name" />
@@ -12,7 +12,15 @@
         >
           ✕
         </button>
-        <div v-if="a.status === 'uploading'" class="tray-progress" role="progressbar">
+        <div
+          v-if="a.status === 'uploading'"
+          class="tray-progress"
+          role="progressbar"
+          :aria-label="'Uploading ' + a.file.name"
+          :aria-valuenow="Math.round(a.progress * 100)"
+          :aria-valuemin="0"
+          :aria-valuemax="100"
+        >
           <div
             class="tray-progress-bar"
             :style="{ width: Math.round(a.progress * 100) + '%' }"
@@ -27,7 +35,7 @@
         >
           ⟳ Retry
         </button>
-        <div v-if="a.status === 'error'" class="tray-error">{{ a.error }}</div>
+        <div v-if="a.status === 'error'" class="tray-error" role="status">{{ a.error }}</div>
       </div>
     </div>
   </div>
@@ -42,14 +50,17 @@ const emit = defineEmits<{ (e: 'remove', key: number): void; (e: 'retry', key: n
 
 <style scoped>
 .attachment-tray {
+  max-height: 30dvh;
+  overflow-y: auto;
   padding: 8px 12px 0;
   border-top: 2px solid var(--color-brass-dark);
   flex-shrink: 0;
 }
 .tray-notice,
 .tray-error {
-  font-size: 10px;
+  font: var(--text-small) / var(--leading-body) var(--font-ui);
   color: var(--color-red);
+  overflow-wrap: anywhere;
 }
 .tray-items {
   display: flex;
@@ -58,14 +69,16 @@ const emit = defineEmits<{ (e: 'remove', key: number): void; (e: 'retry', key: n
 }
 .tray-item {
   position: relative;
-  width: 84px;
+  width: 112px;
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
 .tray-thumb {
-  width: 84px;
-  height: 64px;
+  width: 100%;
+  height: 80px;
   object-fit: cover;
   border: 2px solid var(--color-brass-dark);
   background: var(--color-bg);
@@ -80,10 +93,9 @@ const emit = defineEmits<{ (e: 'remove', key: number): void; (e: 'retry', key: n
   position: absolute;
   top: 2px;
   right: 2px;
-  width: 20px;
-  height: 20px;
-  line-height: 1;
-  font-size: 10px;
+  width: 44px;
+  height: 44px;
+  font: var(--text-card-title) / 1 var(--font-ui);
   border: 1px solid var(--color-brass-dark);
   background: rgba(0, 0, 0, 0.75);
   color: var(--color-text);
@@ -100,16 +112,11 @@ const emit = defineEmits<{ (e: 'remove', key: number): void; (e: 'retry', key: n
   transition: width 0.1s linear;
 }
 .tray-retry {
-  font-size: 10px;
+  font: var(--text-small) / 1.4 var(--font-ui);
+  min-height: 44px;
   background: transparent;
   border: 1px solid var(--color-red);
   color: var(--color-red);
   cursor: pointer;
-}
-@media (max-width: 768px) {
-  .tray-remove {
-    width: 28px;
-    height: 28px;
-  }
 }
 </style>

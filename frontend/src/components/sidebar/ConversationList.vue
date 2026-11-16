@@ -282,7 +282,8 @@ watch(() => guildStore.currentGuild?.id, load)
   gap: 5px;
   padding: 6px 10px;
   cursor: pointer;
-  font-size: 11px;
+  min-height: 44px;
+  font-size: var(--text-small);
   font-style: italic;
   color: var(--color-text-dim);
   border-bottom: 1px solid var(--color-brass-dark);
@@ -295,6 +296,7 @@ watch(() => guildStore.currentGuild?.id, load)
 
 .status-filter {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
 }
 

@@ -1,13 +1,13 @@
 <template>
-  <div class="login-gate">
+  <div class="login-gate ui-surface">
     <div class="login-card">
-      <div class="login-icon">⚙</div>
+      <div class="login-icon" aria-hidden="true">⚙</div>
       <div class="login-title">SIGN IN TO GET STARTED</div>
       <div class="login-sub">Connect your GitHub account to create guilds and run agents.</div>
       <button class="pixel-btn login-btn" :disabled="loggingIn" @click="$emit('login')">
         {{ loggingIn ? 'Redirecting...' : 'SIGN IN WITH GITHUB' }}
       </button>
-      <div v-if="error" class="login-error">{{ error }}</div>
+      <div v-if="error" class="login-error" role="alert">{{ error }}</div>
     </div>
   </div>
 </template>
@@ -38,6 +38,7 @@ defineEmits<{ (e: 'login'): void }>()
   max-width: 400px;
   width: 100%;
   text-align: center;
+  overflow-wrap: anywhere;
 }
 
 .login-icon {
@@ -47,20 +48,17 @@ defineEmits<{ (e: 'login'): void }>()
 }
 
 .login-title {
-  font-family: var(--font-pixel);
-  font-size: 9px;
+  font: 400 var(--text-section-title) / var(--leading-heading) var(--font-display);
   color: var(--color-brass-light);
-  letter-spacing: 2px;
 }
 
 .login-sub {
-  font-size: 12px;
+  font-size: var(--text-body);
   color: var(--color-text-dim);
   line-height: 1.6;
 }
 
 .login-btn {
-  font-size: 9px;
   padding: 12px 24px;
   margin-top: 8px;
 }
@@ -72,10 +70,10 @@ defineEmits<{ (e: 'login'): void }>()
 }
 
 .login-error {
-  font-size: 11px;
+  font-size: var(--text-small);
   color: var(--color-red);
   padding: 6px 10px;
-  background: rgba(238, 51, 34, 0.1);
+  background: var(--color-bg);
   border: 1px solid rgba(238, 51, 34, 0.3);
   width: 100%;
 }
@@ -92,6 +90,11 @@ defineEmits<{ (e: 'login'): void }>()
   }
   .login-card {
     padding: 28px 16px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .login-icon {
+    animation: none;
   }
 }
 </style>

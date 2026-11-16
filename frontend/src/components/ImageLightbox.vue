@@ -1,12 +1,12 @@
 <template>
   <Teleport to="body">
-    <div
+    <dialog
       v-if="lightboxImage"
-      class="lightbox"
-      role="dialog"
-      aria-modal="true"
+      ref="dialog"
+      class="lightbox ui-surface"
       :aria-label="lightboxImage.name"
       @click.self="closeLightbox"
+      @cancel.prevent="closeLightbox"
     >
       <div class="lightbox-bar">
         <span class="lightbox-name">{{ lightboxImage.name }}</span>
@@ -20,32 +20,42 @@
         >
         <button class="pixel-btn lightbox-btn" aria-label="Close" @click="closeLightbox">✕</button>
       </div>
-      <img class="lightbox-img" :src="lightboxImage.url" :alt="lightboxImage.name" />
-    </div>
+      <div class="lightbox-stage">
+        <img class="lightbox-img" :src="lightboxImage.url" :alt="lightboxImage.name" />
+      </div>
+    </dialog>
   </Teleport>
 </template>
 
 <script setup lang="ts">
-import { watch, onBeforeUnmount } from 'vue'
+import { ref, watch, nextTick, onBeforeUnmount } from 'vue'
 import { lightboxImage, closeLightbox } from '../composables/useLightbox'
 
-function onKey(e: KeyboardEvent) {
-  if (e.key === 'Escape') closeLightbox()
-}
+const dialog = ref<HTMLDialogElement | null>(null)
 
 watch(
   lightboxImage,
-  (img) => {
-    if (img) window.addEventListener('keydown', onKey)
-    else window.removeEventListener('keydown', onKey)
+  async (img) => {
+    if (!img) {
+      dialog.value?.close()
+      return
+    }
+    await nextTick()
+    if (dialog.value && !dialog.value.open) dialog.value.showModal()
   },
   { immediate: true },
 )
-onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
+onBeforeUnmount(() => dialog.value?.close())
 </script>
 
 <style scoped>
 .lightbox {
+  margin: 0;
+  border: 0;
+  width: 100%;
+  max-width: none;
+  height: 100dvh;
+  max-height: none;
   position: fixed;
   inset: 0;
   z-index: 1000;
@@ -57,30 +67,49 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   padding: 12px;
   gap: 10px;
 }
+.lightbox::backdrop {
+  background: transparent;
+}
+
 .lightbox-bar {
   display: flex;
+  flex-wrap: wrap;
+  flex-shrink: 0;
   align-items: center;
   gap: 8px;
   width: 100%;
   max-width: 1200px;
 }
 .lightbox-name {
-  flex: 1;
+  flex: 1 1 12rem;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono);
+  max-height: 25dvh;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  font: var(--text-small) / var(--leading-body) var(--font-ui);
   color: var(--color-text);
 }
 .lightbox-btn {
   padding: 6px 10px;
-  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
   text-decoration: none;
+}
+.lightbox-stage {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .lightbox-img {
   max-width: 100%;
-  max-height: calc(100vh - 80px);
+  max-height: 100%;
   object-fit: contain;
   border: 2px solid var(--color-brass-dark);
 }
