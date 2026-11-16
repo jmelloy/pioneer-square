@@ -1,7 +1,7 @@
 import json as _json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, Column, DateTime, Index, Text, UniqueConstraint, or_, text
+from sqlalchemy import JSON, Boolean, Column, DateTime, Index, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import Field, Relationship, SQLModel, col, select
@@ -10,25 +10,6 @@ from sqlmodel import Field, Relationship, SQLModel, col, select
 # truth for the "tool" enum used across worker registration, task dispatch,
 # and the foreman's send_followup/assign_task tool schemas.
 VALID_TOOLS = ("pi", "claude", "codex")
-
-
-# Grace window: a soft-deleted task stays visible this long after ``deleted_at``
-# (stamped at delete time) so operators can see just-finished work before it
-# disappears. Single knob — tune here, nowhere else.
-SOFT_DELETE_GRACE = timedelta(hours=4)
-
-
-def live_tasks_filter(now: datetime | None = None):
-    """SQL clause matching tasks that have not been soft-deleted.
-
-    ``deleted_at`` records *when* a task was deleted (NULL = never). A task is
-    "live" while ``deleted_at`` is NULL or was stamped within the last
-    ``SOFT_DELETE_GRACE``. *now* defaults to the current UTC time; pass an
-    explicit value to make a query reproducible in tests.
-    """
-    if now is None:
-        now = datetime.now(UTC)
-    return or_(col(Task.deleted_at).is_(None), col(Task.deleted_at) > now - SOFT_DELETE_GRACE)
 
 
 def task_conversation_id():
@@ -67,29 +48,23 @@ def link_conversation_task(conversation_id: int, task_id: str):
     )
 
 
-def finalize_soft_delete_at(
-    outcome: str,
-    issue_number: int | None,
-    issue_state: str | None,
-    phase: str | None = None,
-    now: datetime | None = None,
-) -> datetime | None:
-    """When to stamp ``deleted_at`` for a task entering a terminal state.
+def should_keep_until_issue_closed(
+    outcome: str, issue_number: int | None, issue_state: str | None, phase: str | None = None
+) -> bool:
+    """Whether a task entering a terminal state stays active (``finished_at`` NULL).
 
-    Successful *sub-tasks* tied to a still-open issue stay live (return None)
-    until the issue closes — the issue-close webhook/sweep stamps them then. A
-    ``phase='issue'`` root task IS the issue proxy, not a sub-task, so finalizing
-    it means the issue tracking is done: stamp it now. Everything else (failures,
-    cancellations, done tasks with no open issue) is stamped immediately at *now*.
+    Successful *sub-tasks* tied to a still-open issue stay active until the
+    issue closes — the issue-close webhook/sweep stamps ``finished_at`` then. A
+    ``phase='issue'`` root task IS the issue proxy, so finalizing it means the
+    issue tracking is done. Everything else (failures, cancellations, done tasks
+    with no open issue) is stamped immediately.
     """
-    if (
+    return (
         outcome == "done"
         and phase != "issue"
         and issue_number is not None
         and issue_state != "closed"
-    ):
-        return None
-    return now if now is not None else datetime.now(UTC)
+    )
 
 
 class SoftDeleteMixin(SQLModel):
@@ -485,10 +460,10 @@ class Worker(SQLModel, table=True):
         return worker
 
 
-class Task(SoftDeleteMixin, SQLModel, table=True):
+class Task(SQLModel, table=True):
     __tablename__ = "tasks"  # type: ignore[assignment]
     __table_args__ = (
-        Index("ix_tasks_guild_id_deleted_at_created_at", "guild_id", "deleted_at", "created_at"),
+        Index("ix_tasks_guild_id_finished_at_created_at", "guild_id", "finished_at", "created_at"),
         Index("ix_tasks_state", "state"),
     )
 
@@ -517,6 +492,9 @@ class Task(SoftDeleteMixin, SQLModel, table=True):
     pr_number: int | None = None
     pr_repo: str | None = None
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    # When the task left the active list (NULL = active). Stamped at finalize/cancel,
+    # or at issue close for done sub-tasks of a still-open issue.
+    finished_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     name: str | None = None
     parent_task_id: str | None = None
     phase: str | None = Field(default="execute", sa_column_kwargs={"server_default": "'execute'"})

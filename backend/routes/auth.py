@@ -171,7 +171,7 @@ async def get_publish_token(
     response.headers["Cache-Control"] = "no-store"
     guild = (await db.exec(select(Guild).where(col(Guild.slug) == guild_id))).one_or_none()
     task = await db.get(Task, task_id)
-    if not guild or not task or task.guild_id != guild.id or task.deleted_at is not None:
+    if not guild or not task or task.guild_id != guild.id or task.finished_at is not None:
         raise HTTPException(status_code=404, detail="Task not found in this guild")
     if not task.worker_id or principal != f"worker:{task.worker_id}":
         raise HTTPException(status_code=403, detail="Only the assigned worker may publish")
@@ -237,7 +237,7 @@ async def get_task_identity(
     response.headers["Cache-Control"] = "no-store"
     guild = (await db.exec(select(Guild).where(col(Guild.slug) == guild_id))).one_or_none()
     task = await db.get(Task, task_id)
-    if not guild or not task or task.guild_id != guild.id or task.deleted_at is not None:
+    if not guild or not task or task.guild_id != guild.id or task.finished_at is not None:
         raise HTTPException(status_code=404, detail="Task not found in this guild")
     if not task.worker_id or principal != f"worker:{task.worker_id}":
         raise HTTPException(status_code=403, detail="Only the assigned worker may read this")

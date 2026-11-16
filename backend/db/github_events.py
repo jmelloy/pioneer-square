@@ -14,7 +14,6 @@ from models import (
     GithubPullRequest,
     Task,
     link_conversation_task,
-    live_tasks_filter,
     task_conversation_id,
     task_in_conversation,
 )
@@ -36,7 +35,7 @@ def conversation_event_filter(conversation_id: int):
                 col(Task.pr_number) == col(GithubEvent.pr_number),
             ),
         )
-        .where(task_in_conversation(conversation_id), live_tasks_filter())
+        .where(task_in_conversation(conversation_id), col(Task.finished_at).is_(None))
     )
     # Separate indexed branches avoid a correlated scan of the entire delivery log.
     return col(GithubEvent.id).in_(stamped.correlate(None).union(linked.correlate(None)))
@@ -50,7 +49,9 @@ async def link_task_context(db: AsyncSession, task_id: str) -> None:
     """
     row = (
         await db.exec(
-            select(Task, task_conversation_id()).where(col(Task.id) == task_id, live_tasks_filter())
+            select(Task, task_conversation_id()).where(
+                col(Task.id) == task_id, col(Task.finished_at).is_(None)
+            )
         )
     ).first()
     if row is None or row[1] is None:

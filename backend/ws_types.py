@@ -170,7 +170,7 @@ class TaskUpdateMsg(_WS):
     branch: str | None = None
     worktreePath: str | None = None
     prUrl: str | None = None
-    deletedAt: str | None = None
+    finishedAt: str | None = None
     phase: str | None = None
     # Present on the worker's state="error" report — a plain task-update, not
     # a task-complete/task-followup-done, so these ride along here instead.

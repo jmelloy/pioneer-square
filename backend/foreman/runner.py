@@ -59,7 +59,6 @@ from models import (
     GuildMember,
     Task,
     Worker,
-    live_tasks_filter,
     task_in_conversation,
 )
 from sqlalchemy import delete, func, tuple_
@@ -894,7 +893,7 @@ async def _refresh_stale_github_links(guild_id: str) -> None:
                 col(Task.pr_repo),
                 col(Task.pr_number),
                 col(Task.pr_url),
-            ).where(col(Task.guild_id) == guild_pk_val, live_tasks_filter())
+            ).where(col(Task.guild_id) == guild_pk_val, col(Task.finished_at).is_(None))
         )
         rows = result.all()
 
@@ -1013,14 +1012,14 @@ async def _poll_loop_once(guild_id: str, interval: float) -> float:
             ).where(
                 col(Task.guild_id) == guild_pk_val,
                 ~col(Task.state).in_(list(TERMINAL_STATES)),
-                live_tasks_filter(),
+                col(Task.finished_at).is_(None),
             )
         )
         active_tasks = [dict(r._mapping) for r in result.all()]
 
-        # Kept-alive done tasks (issue still open ⇒ deleted_at left NULL)
+        # Kept-alive done tasks (issue still open ⇒ finished_at left NULL)
         # rely on the issue-close sweep to ever be stamped; a dropped
-        # issues webhook would otherwise strand them live forever. Gather
+        # issues webhook would otherwise strand them active forever. Gather
         # their issues too so the sweep below covers them.
         # ponytail: re-polls each such open issue every cycle; add a
         # per-issue cooldown if the GitHub API budget bites.
@@ -1029,7 +1028,7 @@ async def _poll_loop_once(guild_id: str, interval: float) -> float:
             .where(
                 col(Task.guild_id) == guild_pk_val,
                 col(Task.state).in_(list(TERMINAL_STATES)),
-                col(Task.deleted_at).is_(None),
+                col(Task.finished_at).is_(None),
                 col(Task.issue_number).is_not(None),
             )
             .distinct()
@@ -1567,11 +1566,11 @@ async def _run_foreman_ai(
                 col(Task.issue_repo),
                 col(Task.branch),
                 col(Task.pr_url),
-                col(Task.deleted_at),
+                col(Task.finished_at),
             )
             .where(
                 col(Task.guild_id) == guild_pk_val,
-                live_tasks_filter(),
+                col(Task.finished_at).is_(None),
             )
             .order_by(col(Task.created_at).desc())
         )

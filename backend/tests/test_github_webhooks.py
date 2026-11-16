@@ -652,7 +652,7 @@ def _issues_payload(*, action: str, repo: str, number: int, title: str = "Do the
 
 def test_issues_closed_webhook_finalizes_issue_root_task(client):
     """A GitHub `issues` `closed` event must finalize the matching phase='issue'
-    root task directly (state='done', deleted_at set) without any AI round-trip."""
+    root task directly (state='done', finished_at set) without any AI round-trip."""
     test_client, db_url = client
     insert_guild(db_url, "gissue1")
     _set_webhook_secret(db_url, "gissue1", "sissue1")
@@ -675,16 +675,16 @@ def test_issues_closed_webhook_finalizes_issue_root_task(client):
 
     with _sync_session(db_url) as session:
         row = session.execute(
-            select(col(Task.state), col(Task.deleted_at)).where(col(Task.id) == "t-issue-root1")
+            select(col(Task.state), col(Task.finished_at)).where(col(Task.id) == "t-issue-root1")
         ).one()
-    state, deleted_at = row
+    state, finished_at = row
     assert state == "done"
-    assert deleted_at is not None
+    assert finished_at is not None
 
 
 def test_issues_closed_webhook_sweeps_already_terminal_root(client):
     """A phase='issue' root already in a terminal state is not re-finalized,
-    but the closed-issue sweep stamps its soft-delete so it ages out."""
+    but the closed-issue sweep stamps its finished_at so it leaves the board."""
     test_client, db_url = client
     insert_guild(db_url, "gissue2")
     _set_webhook_secret(db_url, "gissue2", "sissue2")
@@ -706,12 +706,12 @@ def test_issues_closed_webhook_sweeps_already_terminal_root(client):
     assert resp.status_code == 202
 
     with _sync_session(db_url) as session:
-        deleted_at = session.scalar(
-            select(col(Task.deleted_at)).where(col(Task.id) == "t-issue-root2")
+        finished_at = session.scalar(
+            select(col(Task.finished_at)).where(col(Task.id) == "t-issue-root2")
         )
     # Already 'done' before the webhook: state untouched, but the sweep
-    # stamps deleted_at so the finished row ages out of the sidebar.
-    assert deleted_at is not None
+    # stamps finished_at so the finished row ages out of the sidebar.
+    assert finished_at is not None
 
 
 # ---------------------------------------------------------------------------

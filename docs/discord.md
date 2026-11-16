@@ -233,7 +233,7 @@ whenever that file changes.
 | `/ps workers` | Lists every worker with state, repos, and live agent count | Read-only |
 | `/ps pickup <issue-url>` | Creates a `pending` task (`phase=execute`) for a GitHub issue URL and queues it for an idle worker | URL must match `https://github.com/<owner>/<repo>/issues/<number>` |
 | `/ps review <pr-url>` | Creates a `pending` review task (`phase=review`) for a GitHub PR URL | URL must match `https://github.com/<owner>/<repo>/pull/<number>` |
-| `/ps cancel <task-id>` | Cancels a running task and soft-deletes it after a 3-day TTL | No-op reply if the task is already `done`/`failed`/`cancelled` |
+| `/ps cancel <task-id>` | Cancels a running task and removes it from the active board | No-op reply if the task is already `done`/`failed`/`cancelled` |
 | `/join-channel <channel> [guild]` | Wires a Discord channel to a Pioneer Square guild so its events post there | Requires **Manage Channels** or the `DISCORD_OPERATOR_ROLE_NAME` role. `guild` is optional if exactly one Pioneer Square guild is configured. Re-running on an already-wired channel updates the binding. |
 | `/leave-channel [channel]` | Removes a channel's Pioneer Square guild binding (defaults to the current channel) | Same permission check as `/join-channel`. Replies "No binding found" if the channel isn't wired. |
 

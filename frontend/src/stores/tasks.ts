@@ -6,14 +6,6 @@ import { api } from '../utils/api'
 import { isVisibleLogEntry } from '../utils/logs'
 import type { LogEntry, Task, TaskState, WSInbound } from '../types'
 
-// Cap on setTimeout delay to avoid the 32-bit overflow that fires the timer
-// immediately on long horizons (e.g. a 3-day finalize window).
-const MAX_TIMEOUT_MS = 2_147_483_647
-
-// Grace window a soft-deleted task stays visible after `deleted_at` (stamped at
-// delete time). Must match backend models.SOFT_DELETE_GRACE (4 hours).
-const SOFT_DELETE_GRACE_MS = 4 * 60 * 60 * 1000
-
 const TERMINAL_STATES = new Set<string>(['done', 'failed', 'cancelled', 'error'])
 
 const STATE_LABELS: Record<string, string> = {
@@ -43,45 +35,17 @@ export const useTasksStore = defineStore('tasks', () => {
   const tasks = ref<Task[]>([])
   const taskLogs = ref<Record<string, LogEntry[]>>({})
 
-  // Per-task timers that drop the row when its soft-delete window elapses.
-  const _expiryTimers = new Map<string, ReturnType<typeof setTimeout>>()
-
   function _removeTask(taskId: string) {
     const idx = tasks.value.findIndex((t) => t.id === taskId)
     if (idx >= 0) tasks.value.splice(idx, 1)
     delete taskLogs.value[taskId]
     uiStore.closeTask(taskId)
-    const timer = _expiryTimers.get(taskId)
-    if (timer) {
-      clearTimeout(timer)
-      _expiryTimers.delete(taskId)
-    }
-  }
-
-  function _scheduleExpiry(taskId: string, deletedAt: string | null | undefined) {
-    const existing = _expiryTimers.get(taskId)
-    if (existing) {
-      clearTimeout(existing)
-      _expiryTimers.delete(taskId)
-    }
-    if (!deletedAt) return
-    const delay = new Date(deletedAt).getTime() + SOFT_DELETE_GRACE_MS - Date.now()
-    if (Number.isNaN(delay)) return
-    if (delay <= 0) {
-      _removeTask(taskId)
-      return
-    }
-    const timer = setTimeout(() => _removeTask(taskId), Math.min(delay, MAX_TIMEOUT_MS))
-    _expiryTimers.set(taskId, timer)
   }
 
   async function fetchTasks(guildId: string): Promise<boolean> {
     if (!guildId) return false
     try {
       tasks.value = await api<Task[]>(`/guilds/${guildId}/tasks`)
-      for (const t of tasks.value) {
-        if (t.deleted_at) _scheduleExpiry(t.id, t.deleted_at)
-      }
       return true
     } catch (e) {
       console.error('Failed to fetch tasks', e)
@@ -124,19 +88,19 @@ export const useTasksStore = defineStore('tasks', () => {
   async function cancelTask(guildId: string, taskId: string) {
     const task = tasks.value.find((t) => t.id === taskId)
     const prevState = task?.state
-    const prevDeletedAt = task?.deleted_at
+    const prevFinishedAt = task?.finished_at
     if (task) {
       task.state = 'cancelled'
-      // Optimistic: backend stamps deleted_at = now() on cancel; the row stays
-      // visible for SOFT_DELETE_GRACE_MS via the liveTasks filter.
-      task.deleted_at = new Date().toISOString()
+      // Optimistic: backend stamps finished_at = now() on cancel, which hides
+      // the row via liveTasks until the task-update removes it.
+      task.finished_at = new Date().toISOString()
     }
     try {
       await api(`/guilds/${guildId}/tasks/${taskId}/cancel`, { method: 'POST' })
     } catch (err) {
       if (task) {
         task.state = prevState!
-        task.deleted_at = prevDeletedAt
+        task.finished_at = prevFinishedAt
       }
       throw err
     }
@@ -203,10 +167,8 @@ export const useTasksStore = defineStore('tasks', () => {
         if (data.branch) task.branch = data.branch
         if (data.prUrl) task.pr_url = data.prUrl
         if (data.worktreePath) task.worktree_path = data.worktreePath
-        if (data.deletedAt !== undefined) {
-          task.deleted_at = data.deletedAt
-          _scheduleExpiry(task.id, data.deletedAt)
-        }
+        // Finished tasks leave the active list, matching GET /tasks.
+        if (data.finishedAt) _removeTask(task.id)
       }
     } else if (data.type === 'task-complete') {
       const task = tasks.value.find((t) => t.id === data.taskId)
@@ -242,21 +204,10 @@ export const useTasksStore = defineStore('tasks', () => {
     tasks.value = []
     taskLogs.value = {}
     uiStore.resetTaskSelection()
-    for (const timer of _expiryTimers.values()) clearTimeout(timer)
-    _expiryTimers.clear()
   }
 
-  // Tasks whose soft-delete window has not yet elapsed. Components that filter
-  // for display should prefer this over `tasks` so a row disappears the moment
-  // its `deleted_at` passes, even before the per-task timer fires.
-  const liveTasks = computed(() => {
-    const now = Date.now()
-    return tasks.value.filter((t) => {
-      if (!t.deleted_at) return true
-      const ts = new Date(t.deleted_at).getTime()
-      return Number.isNaN(ts) || ts + SOFT_DELETE_GRACE_MS > now
-    })
-  })
+  // Tasks not yet finished (hides an optimistically cancelled row).
+  const liveTasks = computed(() => tasks.value.filter((t) => !t.finished_at))
 
   function stateLabel(state: TaskState | string) {
     return STATE_LABELS[state] || state

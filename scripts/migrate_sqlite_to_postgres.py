@@ -339,7 +339,7 @@ def migrate_tasks(sq: sqlite3.Connection, pg: Any, guild_map: dict[str, int]) ->
                     (id, worker_id, guild_pk, description, tool,
                      issue_number, issue_repo, state, branch, worktree_path,
                      pr_url, pr_number, pr_repo, created_at, finished_at,
-                     name, parent_task_id, phase, deleted_at, user_id,
+                     name, parent_task_id, phase, finished_at, user_id,
                      locked_at, lock_holder)
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (id) DO NOTHING

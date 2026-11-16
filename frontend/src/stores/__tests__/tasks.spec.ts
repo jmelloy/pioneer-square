@@ -1,10 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { useTasksStore } from '../tasks'
 import { useUiStore } from '../ui'
-
-// Mirrors SOFT_DELETE_GRACE_MS in ../tasks: a row stays visible this long after deleted_at.
-const GRACE_MS = 4 * 60 * 60 * 1000
 
 describe('useTasksStore', () => {
   beforeEach(() => {
@@ -90,7 +87,7 @@ describe('useTasksStore', () => {
       expect(store.tasks[0].name).toBe('a'.repeat(60))
     })
 
-    it('updates state, branch, prUrl, deletedAt, worktreePath on task-update', () => {
+    it('updates state, branch, prUrl, worktreePath on task-update', () => {
       const store = useTasksStore()
       store.tasks.push({ id: 't-1', state: 'pending' })
 
@@ -100,7 +97,6 @@ describe('useTasksStore', () => {
         state: 'working',
         branch: 'claude/fix-1',
         prUrl: 'https://github.com/x/y/pull/1',
-        deletedAt: '2030-01-05T00:00:00Z',
         worktreePath: '/tmp/wt',
       })
 
@@ -108,7 +104,6 @@ describe('useTasksStore', () => {
       expect(task.state).toBe('working')
       expect(task.branch).toBe('claude/fix-1')
       expect(task.pr_url).toBe('https://github.com/x/y/pull/1')
-      expect(task.deleted_at).toBe('2030-01-05T00:00:00Z')
       expect(task.worktree_path).toBe('/tmp/wt')
     })
 
@@ -204,115 +199,36 @@ describe('useTasksStore', () => {
     })
   })
 
-  describe('soft-delete (deletedAt)', () => {
-    beforeEach(() => {
-      vi.useFakeTimers()
-    })
-    afterEach(() => {
-      vi.useRealTimers()
-    })
-
-    it('stores deletedAt from task-update and drops the row when the timer fires', () => {
+  describe('finishedAt', () => {
+    it('removes the row when a task-update carries finishedAt', () => {
       const store = useTasksStore()
       store.tasks.push({ id: 't-1', state: 'working' })
-
-      const future = new Date(Date.now() + 60_000).toISOString()
       store.handleWebSocketMessage({
         type: 'task-update',
         taskId: 't-1',
         state: 'done',
-        deletedAt: future,
+        finishedAt: new Date().toISOString(),
       })
-      expect(store.tasks[0].deleted_at).toBe(future)
-      expect(store.tasks).toHaveLength(1)
-
-      // Removal fires GRACE_MS after deleted_at, not at deleted_at itself.
-      vi.advanceTimersByTime(60_001)
-      expect(store.tasks).toHaveLength(1)
-      vi.advanceTimersByTime(GRACE_MS)
       expect(store.tasks).toHaveLength(0)
     })
 
-    it('drops a task immediately when deletedAt + grace is already in the past', () => {
+    it('keeps the row when finishedAt is null (done task on an open issue)', () => {
       const store = useTasksStore()
-      store.tasks.push({ id: 't-1', state: 'done' })
-
+      store.tasks.push({ id: 't-1', state: 'working' })
       store.handleWebSocketMessage({
         type: 'task-update',
         taskId: 't-1',
-        deletedAt: new Date(Date.now() - GRACE_MS - 1000).toISOString(),
+        state: 'done',
+        finishedAt: null,
       })
-      expect(store.tasks).toHaveLength(0)
+      expect(store.tasks[0].state).toBe('done')
     })
 
-    it('liveTasks excludes rows whose deleted_at + grace has passed, keeps recent ones', () => {
+    it('liveTasks excludes rows with finished_at', () => {
       const store = useTasksStore()
-      const expired = new Date(Date.now() - GRACE_MS - 5_000).toISOString()
-      const recent = new Date(Date.now() - 5_000).toISOString()
-      // Push directly (bypass the WS handler that would also schedule removal).
       store.tasks.push({ id: 't-live', state: 'done' })
-      store.tasks.push({ id: 't-recent', state: 'done', deleted_at: recent })
-      store.tasks.push({ id: 't-expired', state: 'done', deleted_at: expired })
-
-      const ids = store.liveTasks.map((t) => t.id)
-      expect(ids).toContain('t-live')
-      expect(ids).toContain('t-recent')
-      expect(ids).not.toContain('t-expired')
-    })
-
-    it('clearTasks cancels pending expiry timers', () => {
-      const store = useTasksStore()
-      store.tasks.push({ id: 't-1', state: 'done' })
-      store.handleWebSocketMessage({
-        type: 'task-update',
-        taskId: 't-1',
-        deletedAt: new Date(Date.now() + 30_000).toISOString(),
-      })
-
-      store.clearTasks()
-      // If the timer were still live, advancing past it would throw because
-      // _removeTask would mutate cleared state — instead we just assert the
-      // store stays empty after the original window elapses.
-      vi.advanceTimersByTime(60_000)
-      expect(store.tasks).toEqual([])
-    })
-
-    it('reschedules when deletedAt changes on a subsequent task-update', () => {
-      const store = useTasksStore()
-      store.tasks.push({ id: 't-1', state: 'done' })
-
-      store.handleWebSocketMessage({
-        type: 'task-update',
-        taskId: 't-1',
-        deletedAt: new Date(Date.now() + 1_000).toISOString(),
-      })
-      // Replace with a much later expiry before the first one fires.
-      store.handleWebSocketMessage({
-        type: 'task-update',
-        taskId: 't-1',
-        deletedAt: new Date(Date.now() + 60_000).toISOString(),
-      })
-
-      vi.advanceTimersByTime(2_000)
-      expect(store.tasks).toHaveLength(1)
-      vi.advanceTimersByTime(60_000 + GRACE_MS)
-      expect(store.tasks).toHaveLength(0)
-    })
-
-    it('fetchTasks schedules expiry for rows whose deleted_at is in the future', async () => {
-      const store = useTasksStore()
-      const future = new Date(Date.now() + 1_000).toISOString()
-      vi.stubGlobal(
-        'fetch',
-        vi.fn().mockResolvedValue({
-          ok: true,
-          json: () => Promise.resolve([{ id: 't-1', state: 'done', deleted_at: future }]),
-        }),
-      )
-      await store.fetchTasks('g-1')
-      expect(store.tasks).toHaveLength(1)
-      vi.advanceTimersByTime(2_000 + GRACE_MS)
-      expect(store.tasks).toHaveLength(0)
+      store.tasks.push({ id: 't-done', state: 'done', finished_at: new Date().toISOString() })
+      expect(store.liveTasks.map((t) => t.id)).toEqual(['t-live'])
     })
   })
 
@@ -441,7 +357,7 @@ describe('useTasksStore', () => {
       const promise = store.cancelTask('g-1', 't-1')
       // State must be updated before the API call resolves
       expect(store.tasks[0].state).toBe('cancelled')
-      expect(store.tasks[0].deleted_at).toBeDefined()
+      expect(store.tasks[0].finished_at).toBeDefined()
 
       resolveApi()
       await promise
@@ -455,7 +371,7 @@ describe('useTasksStore', () => {
 
       await expect(store.cancelTask('g-1', 't-1')).rejects.toThrow('HTTP 500')
       expect(store.tasks[0].state).toBe('working')
-      expect(store.tasks[0].deleted_at).toBeUndefined()
+      expect(store.tasks[0].finished_at).toBeUndefined()
     })
 
     it('throws when the API returns non-2xx', async () => {
