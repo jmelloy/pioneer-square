@@ -911,7 +911,7 @@ async def handle_task_update(ctx: WSContext, msg: TaskUpdateMsg) -> None:
                 task_id=task_id,
                 outcome=update_values["state"],
             )
-            msg.deletedAt = res.deleted_at.isoformat() if res.deleted_at else None
+            msg.finishedAt = res.finished_at.isoformat() if res.finished_at else None
             if res.task is not None:
                 msg.state = res.task.state
         await ctx.db.commit()

@@ -420,7 +420,7 @@ async def _find_task(
             col(Task.guild_id) == guild_pk,
             col(Task.issue_repo if issue else Task.pr_repo) == repo,
             col(Task.issue_number if issue else Task.pr_number) == pr_number,
-            col(Task.deleted_at).is_(None),
+            col(Task.finished_at).is_(None),
         )
         .order_by(col(Task.created_at).desc(), col(Task.id).desc())
         .limit(1)
@@ -447,7 +447,7 @@ async def _find_task_conversation_by_issue(
             col(Task.guild_id) == guild_pk,
             col(Task.issue_repo) == repo,
             col(Task.issue_number) == issue_number,
-            col(Task.deleted_at).is_(None),
+            col(Task.finished_at).is_(None),
             col(Task.id).in_(select(ConversationTask.task_id)),
         )
         .order_by(col(Task.created_at).desc())

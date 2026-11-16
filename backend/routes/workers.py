@@ -25,7 +25,7 @@ from events import broadcast_msg, emit_terminal_line
 from fastapi import APIRouter, Depends, HTTPException
 from foreman.conversation_service import resolve_conversation_id
 from guild_settings import get_guild_pre_agents_prompt
-from models import ConversationTask, Task, Worker, live_tasks_filter
+from models import ConversationTask, Task, Worker
 from pydantic import BaseModel, field_validator
 from spawn_config import SpawnLayer, get_spawn_row, resolve_spawn, row_to_layer, upsert_spawn_row
 from sqlalchemy import update
@@ -457,7 +457,7 @@ async def list_tasks(
         .where(
             col(Task.worker_id) == worker_id,
             col(Task.guild_id) == guild_pk,
-            live_tasks_filter(),
+            col(Task.finished_at).is_(None),
         )
         .order_by(col(Task.created_at).desc())
     )

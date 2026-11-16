@@ -61,7 +61,6 @@ from models import (
     Guild,
     Task,
     Worker,
-    live_tasks_filter,
 )
 from oauth import FRONTEND_URL
 from sqlalchemy import func, update
@@ -288,7 +287,7 @@ async def _cmd_status(interaction_token: str, guild_slug: str) -> None:
                     select(Task).where(
                         col(Task.guild_id) == guild_pk,
                         col(Task.state).in_(["pending", "working", "awaiting-review"]),
-                        live_tasks_filter(),
+                        col(Task.finished_at).is_(None),
                     )
                 )
             ).all()
@@ -625,11 +624,11 @@ async def _cmd_cancel(interaction_token: str, guild_slug: str, task_id: str) -> 
                 )
                 return
 
-            deleted_at = datetime.now(UTC)  # cancellations are stamped immediately
+            finished_at = datetime.now(UTC)  # cancellations are stamped immediately
             await db.exec(
                 update(Task)
                 .where(col(Task.id) == task_id)
-                .values(state="cancelled", deleted_at=deleted_at)
+                .values(state="cancelled", finished_at=finished_at)
             )
             await db.commit()
 
@@ -637,7 +636,7 @@ async def _cmd_cancel(interaction_token: str, guild_slug: str, task_id: str) -> 
             await broadcast_msg(guild_slug, TaskCancelMsg(workerId=worker_id, taskId=task_id))
         await broadcast_msg(
             guild_slug,
-            TaskUpdateMsg(taskId=task_id, state="cancelled", deletedAt=deleted_at.isoformat()),
+            TaskUpdateMsg(taskId=task_id, state="cancelled", finishedAt=finished_at.isoformat()),
         )
 
         embeds = [

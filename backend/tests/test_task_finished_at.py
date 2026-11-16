@@ -1,15 +1,8 @@
-"""Tests for soft-delete on tasks.
+"""Tests for tasks.finished_at (replaced the deleted_at soft delete).
 
-Model: ``deleted_at`` records *when* a task was deleted (stamped now() at
-finalize/cancel). A task is live while ``deleted_at`` is NULL or within
-``SOFT_DELETE_GRACE`` of now. Successful tasks tied to a still-open issue are
-left NULL until the issue closes.
-
-Covers:
-- Migration adds the deleted_at column.
-- finalize_soft_delete_at: keep-alive-while-issue-open vs. stamp-now rules.
-- live_tasks_filter hides rows deleted longer ago than the grace window.
-- The finalize endpoint stamps now() (or NULL for an open-issue done task).
+A task is active while ``finished_at`` is NULL. It is stamped at
+finalize/cancel, except successful tasks tied to a still-open issue, which stay
+NULL until the issue closes. Finished rows are kept, just hidden from lists.
 """
 
 from __future__ import annotations
@@ -22,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
 from helpers import _sync_session, insert_guild, make_auth_token, raw_conn  # noqa: E402
-from models import SOFT_DELETE_GRACE, Task, finalize_soft_delete_at  # noqa: E402
+from models import Task, should_keep_until_issue_closed  # noqa: E402
 from sqlalchemy import select, update  # noqa: E402
 from sqlmodel import col  # noqa: E402
 
@@ -45,9 +38,9 @@ def _create_task(test_client, guild_id: str, worker_id: str, desc: str, db_url: 
     return resp.json()["id"]
 
 
-def _set_deleted_at(db_url: str, task_id: str, deleted_at: datetime | None) -> None:
+def _set_finished_at(db_url: str, task_id: str, finished_at: datetime | None) -> None:
     with _sync_session(db_url) as session:
-        session.execute(update(Task).where(col(Task.id) == task_id).values(deleted_at=deleted_at))
+        session.execute(update(Task).where(col(Task.id) == task_id).values(finished_at=finished_at))
         session.commit()
 
 
@@ -72,83 +65,63 @@ def _read_task(db_url: str, task_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def test_migration_adds_deleted_at_column(client):
-    """The Alembic head must add tasks.deleted_at."""
+def test_migration_replaces_deleted_at_with_finished_at(client):
     _, db_url = client
     with raw_conn(db_url) as (conn, cur):
         cur.execute("""
             SELECT column_name FROM information_schema.columns
-            WHERE table_name = 'tasks' AND column_name = 'deleted_at'
+            WHERE table_name = 'tasks' AND column_name IN ('deleted_at', 'finished_at')
         """)
-        row = cur.fetchone()
-    assert row is not None, "tasks.deleted_at column must exist"
+        cols = {r["column_name"] for r in cur.fetchall()}
+    assert cols == {"finished_at"}
 
 
 # ---------------------------------------------------------------------------
-# finalize_soft_delete_at — the delete rule
+# should_keep_until_issue_closed
 # ---------------------------------------------------------------------------
 
 
-def test_done_with_open_issue_stays_live():
-    """A successful task on a still-open issue is not stamped."""
-    assert finalize_soft_delete_at("done", 42, "open") is None
-    assert finalize_soft_delete_at("done", 42, None) is None  # unknown ⇒ treat as open
+def test_done_with_open_issue_is_kept():
+    assert should_keep_until_issue_closed("done", 42, "open")
+    assert should_keep_until_issue_closed("done", 42, None)  # unknown ⇒ treat as open
 
 
-def test_done_with_closed_issue_stamps_now():
-    now = datetime(2026, 1, 1, tzinfo=UTC)
-    assert finalize_soft_delete_at("done", 42, "closed", now=now) == now
-
-
-def test_done_without_issue_stamps_now():
-    now = datetime(2026, 1, 1, tzinfo=UTC)
-    assert finalize_soft_delete_at("done", None, None, now=now) == now
-
-
-def test_failed_and_cancelled_stamp_now_regardless_of_issue():
-    now = datetime(2026, 1, 1, tzinfo=UTC)
-    assert finalize_soft_delete_at("failed", 42, "open", now=now) == now
-    assert finalize_soft_delete_at("cancelled", 42, "open", now=now) == now
-
-
-def test_issue_root_task_stamps_now_even_with_open_issue():
-    """A phase='issue' root IS the issue proxy — finalizing it stamps immediately."""
-    now = datetime(2026, 1, 1, tzinfo=UTC)
-    assert finalize_soft_delete_at("done", 42, "open", phase="issue", now=now) == now
+def test_other_outcomes_finish_now():
+    assert not should_keep_until_issue_closed("done", 42, "closed")
+    assert not should_keep_until_issue_closed("done", None, None)
+    assert not should_keep_until_issue_closed("failed", 42, "open")
+    assert not should_keep_until_issue_closed("cancelled", 42, "open")
+    # A phase='issue' root IS the issue proxy — finalizing it finishes it.
+    assert not should_keep_until_issue_closed("done", 42, "open", phase="issue")
 
 
 # ---------------------------------------------------------------------------
-# live_tasks_filter — grace window
+# Listing hides finished tasks; logs stay readable
 # ---------------------------------------------------------------------------
 
 
-def test_list_hides_tasks_deleted_before_grace_window(client):
+def test_list_hides_finished_tasks(client):
     test_client, db_url = client
     insert_guild(db_url, "gsd01")
     worker_id = _create_worker(test_client, "gsd01")
     t_live = _create_task(test_client, "gsd01", worker_id, "live task", db_url)
-    t_recent = _create_task(test_client, "gsd01", worker_id, "recently deleted", db_url)
-    t_dead = _create_task(test_client, "gsd01", worker_id, "long deleted", db_url)
-
-    now = datetime.now(UTC)
-    _set_deleted_at(db_url, t_recent, now - (SOFT_DELETE_GRACE / 2))  # within grace ⇒ visible
-    _set_deleted_at(db_url, t_dead, now - SOFT_DELETE_GRACE - timedelta(minutes=1))  # past ⇒ hidden
+    t_done = _create_task(test_client, "gsd01", worker_id, "finished", db_url)
+    _set_finished_at(db_url, t_done, datetime.now(UTC))
 
     resp = test_client.get("/guilds/gsd01/tasks", headers=_auth(db_url))
     assert resp.status_code == 200
     ids = {t["id"] for t in resp.json()}
     assert t_live in ids
-    assert t_recent in ids
-    assert t_dead not in ids
+    assert t_done not in ids
+    assert _read_task(db_url, t_done)["id"] == t_done  # row is kept
 
 
-def test_get_task_logs_accessible_after_grace_window(client):
+def test_get_task_logs_accessible_after_finish(client):
     test_client, db_url = client
     insert_guild(db_url, "gsd03")
     worker_id = _create_worker(test_client, "gsd03")
     task_id = _create_task(test_client, "gsd03", worker_id, "task", db_url)
-    _set_deleted_at(db_url, task_id, datetime.now(UTC) - SOFT_DELETE_GRACE - timedelta(minutes=1))
-
+    _set_finished_at(db_url, task_id, datetime.now(UTC))
     resp = test_client.get(f"/guilds/gsd03/tasks/{task_id}/logs", headers=_auth(db_url))
     assert resp.status_code == 200
     assert resp.json() == []
@@ -183,9 +156,9 @@ def test_finalize_endpoint_stamps_now(client):
     before = datetime.now(UTC)
     resp = test_client.post(f"/guilds/gsd04/tasks/{task_id}/finalize", headers=_auth(db_url))
     assert resp.status_code == 200, resp.text
-    parsed = datetime.fromisoformat(resp.json()["deletedAt"])
+    parsed = datetime.fromisoformat(resp.json()["finishedAt"])
     assert timedelta(minutes=-1) <= parsed - before <= timedelta(minutes=1)
-    assert _read_task(db_url, task_id)["deleted_at"] == parsed
+    assert _read_task(db_url, task_id)["finished_at"] == parsed
 
 
 def test_finalize_endpoint_keeps_open_issue_task_live(client):
@@ -197,10 +170,10 @@ def test_finalize_endpoint_keeps_open_issue_task_live(client):
 
     resp = test_client.post(f"/guilds/gsd05/tasks/{task_id}/finalize", headers=_auth(db_url))
     assert resp.status_code == 200, resp.text
-    assert resp.json()["deletedAt"] is None
+    assert resp.json()["finishedAt"] is None
     row = _read_task(db_url, task_id)
     assert row["state"] == "done"
-    assert row["deleted_at"] is None  # still live — issue is open
+    assert row["finished_at"] is None  # still live — issue is open
 
     # Still listed while the issue stays open.
     ids = {t["id"] for t in test_client.get("/guilds/gsd05/tasks", headers=_auth(db_url)).json()}
@@ -229,7 +202,7 @@ def test_foreman_prompt_drops_expiry_knob():
     assert "expires_in_seconds" not in FOREMAN_SYSTEM
 
 
-def test_mcp_list_tasks_respects_grace_window(client):
+def test_mcp_list_tasks_hides_finished(client):
     import asyncio
 
     import routes.mcp as mcp
@@ -237,13 +210,10 @@ def test_mcp_list_tasks_respects_grace_window(client):
     test_client, db_url = client
     insert_guild(db_url, "gsd09")
     worker_id = _create_worker(test_client, "gsd09")
-    t_recent = _create_task(test_client, "gsd09", worker_id, "recent", db_url)
-    t_dead = _create_task(test_client, "gsd09", worker_id, "dead", db_url)
-    now = datetime.now(UTC)
-    _set_deleted_at(db_url, t_recent, now - timedelta(hours=3, minutes=59))
-    _set_deleted_at(db_url, t_dead, now - timedelta(hours=4, minutes=1))
+    t_live = _create_task(test_client, "gsd09", worker_id, "live", db_url)
+    t_done = _create_task(test_client, "gsd09", worker_id, "done", db_url)
+    _set_finished_at(db_url, t_done, datetime.now(UTC))
 
-    rows = asyncio.run(mcp._list_tasks({"guild_id": "gsd09"}, "p"))
-    text = str(rows)
-    assert t_recent in text
-    assert t_dead not in text
+    text = str(asyncio.run(mcp._list_tasks({"guild_id": "gsd09"}, "p")))
+    assert t_live in text
+    assert t_done not in text

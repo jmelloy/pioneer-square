@@ -2262,9 +2262,9 @@ async def _handle_send_followup(inp: dict, ctx: ToolContext) -> tuple[str, bool]
                 "provider": effective_provider,
             }
             if prior_state in TERMINAL_STATES:
-                # Re-opening a terminal task: clear soft-delete so it
-                # reappears in the live task list and isn't auto-purged.
-                update_vals["deleted_at"] = None
+                # Re-opening a terminal task: clear finished_at so it
+                # reappears in the active task list.
+                update_vals["finished_at"] = None
             await db.exec(update(Task).where(col(Task.id) == task_id).values(**update_vals))
             # #1455: a follow-up sent from another conversation shows there too.
             if ctx.conversation_id is not None:
@@ -2276,7 +2276,7 @@ async def _handle_send_followup(inp: dict, ctx: ToolContext) -> tuple[str, bool]
                     taskId=task_id,
                     state="working",
                     workerId=target_worker_id,
-                    deletedAt=None,
+                    finishedAt=None,
                 ).model_dump(by_alias=True, exclude_none=True),
             )
             # Only resume the prior agent session when the follow-up
@@ -2354,9 +2354,9 @@ async def _handle_finalize_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]
             name=f"discord.finalize:{task_id}",
         )
     result_text = f"Task {task_id} finalized as {outcome}; " + (
-        f"soft-deleted at {res.deleted_at.isoformat()}."
-        if res.deleted_at is not None
-        else "kept live until its issue closes."
+        f"finished at {res.finished_at.isoformat()}."
+        if res.finished_at is not None
+        else "kept active until its issue closes."
     )
     return result_text, False
 
@@ -2440,13 +2440,13 @@ async def _handle_cancel_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
     worker_id_val, state, cancel_issue_repo, cancel_issue_number = row
     if state in TERMINAL_STATES:
         return f"Task {task_id} is already {state}.", False
-    deleted_at = datetime.now(UTC)
+    finished_at = datetime.now(UTC)
     await db.exec(
         update(Task)
         .where(col(Task.id) == task_id)
         .values(
             state="cancelled",
-            deleted_at=deleted_at,
+            finished_at=finished_at,
         )
     )
     await LockService(db).release(f"task:{task_id}")
@@ -2460,7 +2460,7 @@ async def _handle_cancel_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
         TaskUpdateMsg(
             taskId=task_id,
             state="cancelled",
-            deletedAt=deleted_at.isoformat(),
+            finishedAt=finished_at.isoformat(),
         ),
     )
     ctx.scheduler.spawn(
@@ -2577,7 +2577,7 @@ async def _handle_get_task_status(inp: dict, ctx: ToolContext) -> tuple[str, boo
                 else None
             ),
             "created_at": task.created_at,
-            "deleted_at": task.deleted_at,
+            "finished_at": task.finished_at,
             "recent_logs": recent_logs,
         },
         default=_json_default,

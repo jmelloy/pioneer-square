@@ -83,7 +83,7 @@ def _queue_event(db_url: str, task_id: str) -> None:
 def _read(db_url: str, task_id: str) -> tuple[str, datetime | None]:
     with _sync_session(db_url) as session:
         return session.execute(
-            select(col(Task.state), col(Task.deleted_at)).where(col(Task.id) == task_id)
+            select(col(Task.state), col(Task.finished_at)).where(col(Task.id) == task_id)
         ).one()
 
 
@@ -180,12 +180,12 @@ async def test_worker_update_applies_archival_policy(
     finally:
         await db.close()
 
-    saved_state, deleted_at = _read(db_url, "t-worker-archive")
+    saved_state, finished_at = _read(db_url, "t-worker-archive")
     assert saved_state == state
-    assert (deleted_at is not None) == archived
+    assert (finished_at is not None) == archived
     assert _counts(db_url, "t-worker-archive") == ((1, 1) if state == "working" else (0, 0))
     update = ws_handlers.broadcast_msg.call_args.args[1]
-    assert update.deletedAt == (deleted_at.isoformat() if deleted_at else None)
+    assert update.finishedAt == (finished_at.isoformat() if finished_at else None)
     if state == "error":
         message = ws_handlers.triggers.trigger_foreman.call_args.args[2]
         assert "later" in message
@@ -222,9 +222,9 @@ class TestFinalizeTask:
 
         assert res.finalized
         assert _counts(db_url, "t-clean") == (0, 0)
-        state, deleted_at = _read(db_url, "t-clean")
+        state, finished_at = _read(db_url, "t-clean")
         assert state == "done"
-        assert deleted_at is not None
+        assert finished_at is not None
 
     async def test_failed_outcome_stamps_immediately(self, db_url):
         _seed(
@@ -237,14 +237,14 @@ class TestFinalizeTask:
         )
         res = await _finalize(db_url, "g-tl-failed", "t-failed", outcome="failed")
         assert res.finalized
-        assert _read(db_url, "t-failed") == ("failed", res.deleted_at)
-        assert res.deleted_at is not None
+        assert _read(db_url, "t-failed") == ("failed", res.finished_at)
+        assert res.finished_at is not None
 
     async def test_done_with_open_issue_stays_live(self, db_url):
         _seed(db_url, "g-tl-open", "t-open", issue_repo="o/r", issue_number=9, issue_state="open")
         res = await _finalize(db_url, "g-tl-open", "t-open")
         assert res.finalized
-        assert res.deleted_at is None
+        assert res.finished_at is None
         assert _read(db_url, "t-open") == ("done", None)
 
     @pytest.mark.parametrize("prior", sorted(TERMINAL_STATES))
@@ -286,9 +286,9 @@ class TestFinalizeTask:
             await db_b.close()
 
         assert sorted(r.status for r in results) == ["already_terminal", "finalized"]
-        state, deleted_at = _read(db_url, "t-race")
+        state, finished_at = _read(db_url, "t-race")
         assert state in TERMINAL_STATES
-        assert deleted_at is not None
+        assert finished_at is not None
 
     async def test_issue_root_cascades_to_terminal_descendants_only(self, db_url):
         """A phase='issue' root owns the whole issue: stamp its finished children,
@@ -336,7 +336,7 @@ class TestFinalizeTask:
         assert res.finalized
         # The issue root itself is the issue proxy — stamped now even though the
         # issue is still open.
-        assert res.deleted_at is not None
+        assert res.finished_at is not None
         assert {t.id for t in res.descendants} == {
             "t-child-done",
             "t-child-error",

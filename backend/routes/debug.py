@@ -363,7 +363,7 @@ async def get_task_debug_timeline(
     if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")
 
-    # Include soft-deleted rows so the debug view shows completed tasks.
+    # Include finished rows so the debug view shows completed tasks.
     result = await db.exec(
         select(Task).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
     )
@@ -385,14 +385,14 @@ async def get_task_debug_timeline(
             "detail": task_dict,
         }
     )
-    if task.deleted_at:
+    if task.finished_at:
         timeline.append(
             {
-                "timestamp": _iso(task.deleted_at),
+                "timestamp": _iso(task.finished_at),
                 "source": "db",
                 "event_type": "task_finished",
                 "summary": f"Task finished with state: {task.state}",
-                "detail": {"state": task.state, "deleted_at": _iso(task.deleted_at)},
+                "detail": {"state": task.state, "finished_at": _iso(task.finished_at)},
             }
         )
 

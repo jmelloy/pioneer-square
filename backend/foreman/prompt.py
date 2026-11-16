@@ -115,11 +115,10 @@ merge over style, formatting, or test failures alone.
 When dispatching a worker for a review-phase task, include this policy in the task description
 so the worker's `gh pr review` verdict follows it too.
 
-## Finalize soft-delete
-Soft-delete is automatic — you don't pick a window. A successful task tied to a
-still-open issue stays visible until the issue closes; every other finalized task
-(failures, cancellations, done tasks with no open issue) disappears from the board
-a few hours later. Just call finalize_task with the right outcome.
+## Finalize
+A successful task tied to a still-open issue stays visible until the issue closes;
+every other finalized task (failures, cancellations, done tasks with no open issue)
+leaves the board immediately. Just call finalize_task with the right outcome.
 
 ## GitHub access
 You have direct GitHub access via list_github_issues, get_github_issue, list_github_prs,

@@ -1,7 +1,7 @@
 """Task lifecycle routes: list, logs, follow-up, finalize, cancel, redirect.
 
-Soft-delete is a single ``deleted_at`` stamp (see ``models.finalize_soft_delete_at``
-/ ``live_tasks_filter``) — no per-task TTL windows.
+A task is active while ``finished_at`` is NULL (see
+``models.should_keep_until_issue_closed``).
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from models import (
     Guild,
     Task,
     TaskLog,
-    live_tasks_filter,
     task_conversation_id,
 )
 from pydantic import BaseModel
@@ -118,9 +117,9 @@ async def list_guild_tasks(
             .scalar_subquery()
             .label("conversation_ids"),
             col(Task.created_at),
-            col(Task.deleted_at),
+            col(Task.finished_at),
         )
-        .where(col(Task.guild_id) == guild_pk, live_tasks_filter())
+        .where(col(Task.guild_id) == guild_pk, col(Task.finished_at).is_(None))
         .order_by(col(Task.created_at).desc())
     )
     if issue_number is not None:
@@ -250,12 +249,12 @@ async def finalize_task_endpoint(
 
     Delegates to ``task_lifecycle.finalize_task``, the same TOCTOU-safe path the
     foreman tool and the PR webhooks use: the task lock is released, queued
-    follow-up events are discarded, and a ``phase='issue'`` root cascades its
-    soft-delete to already-finished descendants.
+    follow-up events are discarded, and a ``phase='issue'`` root cascades
+    ``finished_at`` to already-finished descendants.
 
-    Soft-deletes the task now, unless it is tied to a still-open issue: then
-    ``deleted_at`` stays NULL until the issue closes (see
-    ``models.finalize_soft_delete_at``).
+    Stamps ``finished_at`` now, unless the task is tied to a still-open issue:
+    then it stays NULL until the issue closes (see
+    ``models.should_keep_until_issue_closed``).
     """
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
@@ -268,7 +267,7 @@ async def finalize_task_endpoint(
     if res.status == "already_terminal":
         raise HTTPException(status_code=409, detail=f"Task is already {res.task.state}")
     # Return raw datetime — FastAPI's jsonable_encoder handles ISO-8601 serialisation.
-    return {"status": "finalized", "taskId": task_id, "deletedAt": res.deleted_at}
+    return {"status": "finalized", "taskId": task_id, "finishedAt": res.finished_at}
 
 
 @router.post("/guilds/{guild_id}/tasks/{task_id}/message")
@@ -328,16 +327,18 @@ async def cancel_task_endpoint(
     worker_id, state = row
     if state in TERMINAL_STATES:
         raise HTTPException(status_code=409, detail=f"Task is already {state}")
-    deleted_at = datetime.now(UTC)
+    finished_at = datetime.now(UTC)
     await db.exec(
-        update(Task).where(col(Task.id) == task_id).values(state="cancelled", deleted_at=deleted_at)
+        update(Task)
+        .where(col(Task.id) == task_id)
+        .values(state="cancelled", finished_at=finished_at)
     )
     await LockService(db).release(f"task:{task_id}")
     await db.commit()
     await broadcast_msg(guild_id, TaskCancelMsg(workerId=worker_id, taskId=task_id))
     await broadcast_msg(
         guild_id,
-        TaskUpdateMsg(taskId=task_id, state="cancelled", deletedAt=deleted_at.isoformat()),
+        TaskUpdateMsg(taskId=task_id, state="cancelled", finishedAt=finished_at.isoformat()),
     )
     return {"status": "cancelled", "taskId": task_id}
 
@@ -412,9 +413,9 @@ async def get_guild_tasks_tree(
             col(Task.issue_title),
             task_conversation_id().label("conversation_id"),
             col(Task.created_at),
-            col(Task.deleted_at),
+            col(Task.finished_at),
         )
-        .where(col(Task.guild_id) == guild_pk, live_tasks_filter())
+        .where(col(Task.guild_id) == guild_pk, col(Task.finished_at).is_(None))
         .order_by(col(Task.created_at).asc())
         .limit(200)
     )

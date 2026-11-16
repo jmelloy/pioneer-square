@@ -136,7 +136,7 @@ def fetch_tasks(token: str, since_iso: str, guild_id: int | None) -> list[dict]:
     since_literal = _sql_timestamp_literal(since_iso)
     guild_clause = f" AND guild_id = {_sql_int_literal(guild_id)}" if guild_id is not None else ""
     sql = (
-        "SELECT id, worker_id, state, phase, created_at, deleted_at "
+        "SELECT id, worker_id, state, phase, created_at, finished_at "
         f"FROM tasks WHERE created_at >= {since_literal}{guild_clause} ORDER BY created_at"
     )
     return _fetch_all(sql, token=token)
@@ -211,7 +211,7 @@ def report_worker_lifecycle(workers: list[dict]) -> None:
 
 def report_tasks(tasks: list[dict]) -> None:
     print("\n--- Task Assignment / Completion (current-state snapshot) ---")
-    active = [t for t in tasks if not t.get("deleted_at")]
+    active = [t for t in tasks if not t.get("finished_at")]
     total = len(active)
     if total == 0:
         print("No tasks created in this window.")
@@ -220,7 +220,7 @@ def report_tasks(tasks: list[dict]) -> None:
     assigned = sum(1 for t in active if t.get("worker_id"))
     print(f"Tasks created:               {total}")
     print(f"Assigned to a worker:        {assigned}  ({assigned / total * 100:.1f}%)")
-    print(f"Soft-deleted in window:      {len(tasks) - total}")
+    print(f"Finished in window:          {len(tasks) - total}")
 
     state_counts = Counter(t.get("state") or "unknown" for t in active)
     print(f"\n{'State':<20} {'Count':>7} {'Share':>8}")
@@ -237,7 +237,7 @@ def report_tasks(tasks: list[dict]) -> None:
 
 def report_queue_depth(tasks: list[dict]) -> None:
     print("\n--- Task Queue Depth ---")
-    active = [t for t in tasks if not t.get("deleted_at")]
+    active = [t for t in tasks if not t.get("finished_at")]
     if not active:
         print("No tasks created in this window.")
         return

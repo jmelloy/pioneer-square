@@ -243,16 +243,16 @@ def _summarize_task(task: dict, cutoff_ts: float) -> dict | None:
     their ``description`` field to keep context lean.  Non-terminal tasks are
     returned unchanged.
 
-    ``deleted_at`` is stamped at finalize time, so it *is* the completion instant.
+    ``finished_at`` is stamped at finalize time, so it *is* the completion instant.
     """
     state = task.get("state", "")
     if state not in TERMINAL_STATES:
         return task
-    deleted_at = task.get("deleted_at")
-    if deleted_at:
+    finished_at = task.get("finished_at")
+    if finished_at:
         try:
             finished_ts = datetime.fromisoformat(
-                deleted_at.replace("Z", "+00:00") if isinstance(deleted_at, str) else deleted_at
+                finished_at.replace("Z", "+00:00") if isinstance(finished_at, str) else finished_at
             ).timestamp()
             if finished_ts < cutoff_ts:
                 return None  # older than 24 h — drop entirely

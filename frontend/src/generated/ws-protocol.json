@@ -83,7 +83,7 @@
     "task-update": [
       "agentId",
       "branch",
-      "deletedAt",
+      "finishedAt",
       "lastText",
       "phase",
       "prUrl",
@@ -315,7 +315,7 @@
     "task-update": [
       "agentId",
       "branch",
-      "deletedAt",
+      "finishedAt",
       "lastText",
       "phase",
       "prUrl",

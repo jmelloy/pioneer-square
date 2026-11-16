@@ -34,7 +34,7 @@ from datetime import UTC, datetime, timedelta
 import worker_runtime
 from database import AsyncSessionLocal
 from events import broadcast_msg, emit_terminal_line
-from models import Agent, Guild, GuildSpawnDefaults, Task, TaskLog, Worker, live_tasks_filter
+from models import Agent, Guild, GuildSpawnDefaults, Task, TaskLog, Worker
 from sqlalchemy import func, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import col, select
@@ -387,7 +387,7 @@ async def _worker_is_inactive(db, worker_id: str, cutoff: datetime) -> bool:
             .where(
                 col(Task.worker_id) == worker_id,
                 col(Task.state).in_(_ACTIVE_TASK_STATES),
-                live_tasks_filter(),
+                col(Task.finished_at).is_(None),
             )
             .limit(1)
         )

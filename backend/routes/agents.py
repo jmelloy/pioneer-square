@@ -122,11 +122,11 @@ async def stop_agent_run(
     if agent is None or not agent.worker_id or not agent.current_task_id:
         raise HTTPException(status_code=404, detail="No running task for this agent")
 
-    deleted_at = datetime.now(UTC)
+    finished_at = datetime.now(UTC)
     await db.exec(
         update(Task)
         .where(col(Task.id) == agent.current_task_id, col(Task.guild_id) == guild_pk)
-        .values(state="cancelled", deleted_at=deleted_at)
+        .values(state="cancelled", finished_at=finished_at)
     )
     await db.commit()
     await broadcast_msg(
@@ -138,7 +138,7 @@ async def stop_agent_run(
         TaskUpdateMsg(
             taskId=agent.current_task_id,
             state="cancelled",
-            deletedAt=deleted_at.isoformat(),
+            finishedAt=finished_at.isoformat(),
         ),
     )
     return {"status": "stopped", "agentId": agent_id, "taskId": agent.current_task_id}

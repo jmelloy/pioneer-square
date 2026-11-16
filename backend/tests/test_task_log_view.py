@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
 from helpers import _sync_session, insert_guild, make_auth_token  # noqa: E402
-from models import SOFT_DELETE_GRACE, Task, TaskLog  # noqa: E402
+from models import Task, TaskLog  # noqa: E402
 from sqlalchemy import update  # noqa: E402
 from sqlmodel import col  # noqa: E402
 
@@ -101,7 +101,7 @@ def test_archived_task_logs_remain_accessible(client):
         session.execute(
             update(Task)
             .where(col(Task.id) == task_id)
-            .values(deleted_at=datetime.now(UTC) - SOFT_DELETE_GRACE - timedelta(minutes=1))
+            .values(finished_at=datetime.now(UTC) - timedelta(days=1))
         )
         session.commit()
 

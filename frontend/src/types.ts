@@ -87,7 +87,7 @@ export interface Task {
   issue_number?: number | null
   issue_repo?: string | null
   created_at?: string
-  deleted_at?: string | null
+  finished_at?: string | null
 }
 
 export interface TaskTreeNode extends Task {
@@ -295,7 +295,7 @@ export interface TaskUpdateWS {
   branch?: string
   prUrl?: string
   worktreePath?: string
-  deletedAt?: string | null
+  finishedAt?: string | null
 }
 
 export interface TaskCompleteWS {
@@ -460,7 +460,7 @@ export const WS_INBOUND_FIELDS: { [K in WSInbound['type']]: readonly string[] } 
     'phase',
     'parentTaskId',
   ],
-  'task-update': ['taskId', 'state', 'workerId', 'branch', 'prUrl', 'worktreePath', 'deletedAt'],
+  'task-update': ['taskId', 'state', 'workerId', 'branch', 'prUrl', 'worktreePath', 'finishedAt'],
   'task-complete': ['taskId', 'workerId', 'agentId', 'branch', 'prUrl'],
   'task-followup-done': ['taskId', 'agentId'],
   'needs-input': ['workerId', 'description'],
