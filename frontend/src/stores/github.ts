@@ -94,7 +94,8 @@ export const useGitHubStore = defineStore('github', () => {
         },
       )
       if (!res.ok) throw new Error(`GitHub error ${res.status}`)
-      repos.value = await res.json()
+      const fetchedRepos: GitHubRepo[] = await res.json()
+      repos.value = fetchedRepos.filter((repo) => !repo.archived)
       return repos.value
     } catch (e: unknown) {
       error.value = e instanceof Error ? e.message : String(e)
