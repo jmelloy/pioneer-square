@@ -154,6 +154,16 @@ class Message(SQLModel, table=True):
     __table_args__ = (
         Index("ix_messages_guild_id_created_at", "guild_id", "created_at"),
         Index("ix_messages_conversation_id_created_at_id", "conversation_id", "created_at", "id"),
+        Index(
+            "ix_messages_conversation_plain_senders",
+            "conversation_id",
+            "from_agent",
+            "user_id",
+            "created_at",
+            "id",
+            postgresql_where=text("role IS NULL"),
+            postgresql_include=["guild_id"],
+        ),
     )
 
     id: int | None = Field(default=None, primary_key=True)
