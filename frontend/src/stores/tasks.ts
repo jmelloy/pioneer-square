@@ -34,6 +34,7 @@ export const useTasksStore = defineStore('tasks', () => {
   const uiStore = useUiStore()
   const tasks = ref<Task[]>([])
   const taskLogs = ref<Record<string, LogEntry[]>>({})
+  let guildGeneration = 0
 
   function _removeTask(taskId: string) {
     const idx = tasks.value.findIndex((t) => t.id === taskId)
@@ -44,8 +45,11 @@ export const useTasksStore = defineStore('tasks', () => {
 
   async function fetchTasks(guildId: string): Promise<boolean> {
     if (!guildId) return false
+    const generation = guildGeneration
     try {
-      tasks.value = await api<Task[]>(`/guilds/${guildId}/tasks`)
+      const result = await api<Task[]>(`/guilds/${guildId}/tasks`)
+      if (generation !== guildGeneration) return false
+      tasks.value = result
       return true
     } catch (e) {
       console.error('Failed to fetch tasks', e)
@@ -54,6 +58,7 @@ export const useTasksStore = defineStore('tasks', () => {
   }
 
   async function fetchTaskLogs(guildId: string, taskId: string) {
+    const generation = guildGeneration
     try {
       const raw = await api<
         Array<{ line: string; timestamp: string; detail?: unknown; level?: unknown }>
@@ -66,6 +71,7 @@ export const useTasksStore = defineStore('tasks', () => {
           level: (r.level as LogEntry['level']) || null,
         }))
         .filter(isVisibleLogEntry)
+      if (generation !== guildGeneration) return []
       taskLogs.value[taskId] = logs
       return logs
     } catch (e) {
@@ -201,6 +207,7 @@ export const useTasksStore = defineStore('tasks', () => {
   useGuildStore().subscribeWS(handleWebSocketMessage)
 
   function clearTasks() {
+    guildGeneration++
     tasks.value = []
     taskLogs.value = {}
     uiStore.resetTaskSelection()

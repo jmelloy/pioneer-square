@@ -1,5 +1,10 @@
 <template>
-  <div class="app-layout ui-surface" :data-tab="activeTab" :data-workspace="uiStore.workspace">
+  <div
+    :key="props.guildId"
+    class="app-layout ui-surface"
+    :data-tab="activeTab"
+    :data-workspace="uiStore.workspace"
+  >
     <TopBar :debug-active="showDebug" @toggle-debug="showDebug = !showDebug" />
     <div v-show="uiStore.workspace === 'work'" class="app-body">
       <GuildSidebar />
@@ -95,6 +100,18 @@ function ensureTabOpen(tab: string) {
   }
 }
 
+let guildGeneration = 0
+
+function clearGuildState() {
+  guildGeneration++
+  guildStore.clearGuild()
+  agentsStore.clearAgents()
+  tasksStore.clearTasks()
+  conversationsStore.clearConversations()
+  usageStore.clearUsage()
+  ghStore.clearIssues()
+}
+
 async function initGuild(guildId: string) {
   if (!authStore.isLoggedIn) {
     // On a subdomain, redirect to the root domain bridge so it can pass
@@ -112,10 +129,8 @@ async function initGuild(guildId: string) {
     return
   }
 
-  agentsStore.clearAgents()
-  tasksStore.clearTasks()
-  conversationsStore.clearConversations()
-  usageStore.clearUsage()
+  clearGuildState()
+  const generation = guildGeneration
   // The clears above reset the main tab; keep the one a deep link asked for.
   const urlTab = route.query.tab
   if (typeof urlTab === 'string' && urlTab) {
@@ -123,12 +138,14 @@ async function initGuild(guildId: string) {
     ensureTabOpen(urlTab)
   }
   const guild = await guildStore.joinGuild(guildId)
+  if (generation !== guildGeneration) return
   if (!guild) {
     router.replace('/')
     return
   }
   // Load existing tasks and conversations for this guild
   await tasksStore.fetchTasks(guildId)
+  if (generation !== guildGeneration) return
   conversationsStore.fetchConversations(guildId)
   usageStore.fetchUsage(guildId)
 
@@ -177,10 +194,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  guildStore.disconnectWebSocket()
-  tasksStore.clearTasks()
-  conversationsStore.clearConversations()
-  usageStore.clearUsage()
+  clearGuildState()
   document.title = 'Pioneer Square'
 })
 

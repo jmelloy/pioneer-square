@@ -17,6 +17,7 @@ function isKnownWSInbound(frame: WSFrame): frame is WSInbound {
 
 export const useGuildStore = defineStore('guild', () => {
   const currentGuild = ref<Guild | null>(null)
+  let guildGeneration = 0
   const guilds = ref<Guild[]>([])
   const isConnected = ref(false)
   const messages = ref<ChatMessage[]>([])
@@ -85,8 +86,10 @@ export const useGuildStore = defineStore('guild', () => {
   }
 
   async function joinGuild(guildId: string): Promise<Guild | null> {
+    const generation = ++guildGeneration
     try {
       const guild = await api<Guild>(`/guilds/${guildId}`)
+      if (generation !== guildGeneration) return null
       currentGuild.value = guild
       messages.value = (guild.messages || []).filter(
         (m: ChatMessage) => (m.from || m.from_agent) !== 'github' || m.conversationId != null,
@@ -203,6 +206,14 @@ export const useGuildStore = defineStore('guild', () => {
     reconnectAttempt.value = 0
   }
 
+  function clearGuild() {
+    guildGeneration++
+    disconnectWebSocket()
+    currentGuild.value = null
+    messages.value = []
+    nextPollAt.value = null
+  }
+
   function sendMessage(data: WSOutbound): boolean {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       console.warn('sendMessage: socket not open, dropping', data.type)
@@ -287,6 +298,7 @@ export const useGuildStore = defineStore('guild', () => {
     joinGuild,
     connectWebSocket,
     disconnectWebSocket,
+    clearGuild,
     sendMessage,
     handleWebSocketMessage,
     subscribeWS,
