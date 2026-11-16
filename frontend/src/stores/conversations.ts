@@ -24,6 +24,7 @@ const STATUS_COLORS: Record<ConversationStatus, string> = {
 export const useConversationsStore = defineStore('conversations', () => {
   const uiStore = useUiStore()
   const conversations = ref<Conversation[]>([])
+  let guildGeneration = 0
 
   function _upsertConversation(conversation: Conversation) {
     const idx = conversations.value.findIndex((c) => c.id === conversation.id)
@@ -36,8 +37,10 @@ export const useConversationsStore = defineStore('conversations', () => {
 
   async function fetchConversations(guildId: string) {
     if (!guildId) return
+    const generation = guildGeneration
     try {
-      conversations.value = await api<Conversation[]>(`/api/guilds/${guildId}/conversations`)
+      const result = await api<Conversation[]>(`/api/guilds/${guildId}/conversations`)
+      if (generation === guildGeneration) conversations.value = result
     } catch (e) {
       console.error('Failed to fetch conversations', e)
     }
@@ -50,10 +53,11 @@ export const useConversationsStore = defineStore('conversations', () => {
   }
 
   async function fetchConversation(guildId: string, conversationId: number) {
+    const generation = guildGeneration
     const conversation = await api<Conversation>(
       `/api/guilds/${guildId}/conversations/${conversationId}`,
     )
-    _upsertConversation(conversation)
+    if (generation === guildGeneration) _upsertConversation(conversation)
     return conversation
   }
 
@@ -77,11 +81,12 @@ export const useConversationsStore = defineStore('conversations', () => {
   }
 
   async function closeConversation(guildId: string, conversationId: number) {
+    const generation = guildGeneration
     const conversation = await api<Conversation>(
       `/api/guilds/${guildId}/conversations/${conversationId}/close`,
       { method: 'PATCH' },
     )
-    _upsertConversation(conversation)
+    if (generation === guildGeneration) _upsertConversation(conversation)
     return conversation
   }
 
@@ -155,6 +160,8 @@ export const useConversationsStore = defineStore('conversations', () => {
   useGuildStore().subscribeWS(handleWebSocketMessage)
 
   function clearConversations() {
+    // Discard pending responses from the guild we just left, even on a switch back.
+    guildGeneration++
     conversations.value = []
     uiStore.resetConversationSelection()
   }

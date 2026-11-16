@@ -55,6 +55,7 @@ export const useAgentsStore = defineStore('agents', () => {
   const uiStore = useUiStore()
   const agents = ref<Agent[]>([])
   const workerLogs = ref<Record<string, LogEntry[]>>({})
+  let guildGeneration = 0
 
   // Unique workers derived from agent slots
   const workers = computed<Worker[]>(() => {
@@ -245,6 +246,7 @@ export const useAgentsStore = defineStore('agents', () => {
   }
 
   function clearAgents() {
+    guildGeneration++
     agents.value = []
     workerLogs.value = {}
     uiStore.resetWorkerAgentSelection()
@@ -259,8 +261,10 @@ export const useAgentsStore = defineStore('agents', () => {
   })
 
   async function fetchWorkerLogs(guildId: string, workerId: string) {
+    const generation = guildGeneration
     try {
       const raw = await api<RawLog[]>(`/guilds/${guildId}/logs?worker_id=${workerId}`)
+      if (generation !== guildGeneration) return
       workerLogs.value[workerId] = raw.map(_toLogEntry).filter(isVisibleLogEntry)
     } catch (e) {
       console.error('Failed to fetch worker logs', e)
@@ -268,8 +272,10 @@ export const useAgentsStore = defineStore('agents', () => {
   }
 
   async function fetchAgentLogs(guildId: string, agentId: string) {
+    const generation = guildGeneration
     try {
       const raw = await api<RawLog[]>(`/guilds/${guildId}/logs?agent_id=${agentId}`)
+      if (generation !== guildGeneration) return
       const agent = agents.value.find((a) => a.id === agentId)
       if (agent) {
         const historical = raw.map(_toLogEntry).filter(isVisibleLogEntry)
