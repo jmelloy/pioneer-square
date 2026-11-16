@@ -32,8 +32,9 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, watch, ref, provide } from 'vue'
-import { useRouter } from 'vue-router'
+import { onMounted, onUnmounted, watch, ref, provide, toRef, type Ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useQueryRef } from '../composables/useQueryRef'
 import { getRootOrigin } from '../router'
 import { useGuildStore } from '../stores/guild'
 import { useAgentsStore } from '../stores/agents'
@@ -72,12 +73,27 @@ const conversationsStore = useConversationsStore()
 const usageStore = useUsageStore()
 const uiStore = useUiStore()
 
+const route = useRoute()
+useQueryRef('view', toRef(uiStore, 'workspace') as Ref<string>, 'work', ['work', 'projects'])
+useQueryRef('tab', toRef(uiStore, 'activeTab'), 'factory')
+
 watch(
   () => uiStore.activeTab,
-  () => {
-    uiStore.workspace = 'work'
+  (tab) => {
+    // Back/forward already restored the workspace from the URL; don't override it.
+    if ((route.query.tab || 'factory') !== tab) uiStore.workspace = 'work'
+    ensureTabOpen(tab)
   },
+  { immediate: true },
 )
+
+// Puts a tab restored from the URL (deep link, back/forward) into the tab bar.
+function ensureTabOpen(tab: string) {
+  uiStore.ensureTabOpen(tab)
+  if (tab.startsWith('issue-') && !ghStore.openedIssueKeys.includes(tab)) {
+    ghStore.openedIssueKeys.push(tab)
+  }
+}
 
 async function initGuild(guildId: string) {
   if (!authStore.isLoggedIn) {
@@ -100,6 +116,12 @@ async function initGuild(guildId: string) {
   tasksStore.clearTasks()
   conversationsStore.clearConversations()
   usageStore.clearUsage()
+  // The clears above reset the main tab; keep the one a deep link asked for.
+  const urlTab = route.query.tab
+  if (typeof urlTab === 'string' && urlTab) {
+    uiStore.activeTab = urlTab
+    ensureTabOpen(urlTab)
+  }
   const guild = await guildStore.joinGuild(guildId)
   if (!guild) {
     router.replace('/')

@@ -93,6 +93,21 @@ export const useUiStore = defineStore('ui', () => {
     activeTab.value = conversationTabId(conversationId)
   }
 
+  // Adds a tab restored from the URL (deep link, back/forward) to the tab bar.
+  function ensureTabOpen(tab: string) {
+    const lists: [string, (string | number)[], (id: string) => string | number][] = [
+      ['worker-', openedWorkerIds.value, String],
+      ['agent-', openedAgentIds.value, String],
+      ['task-', openedTaskIds.value, String],
+      ['conversation-', openedConversationIds.value, Number],
+    ]
+    for (const [prefix, opened, parse] of lists) {
+      if (!tab.startsWith(prefix)) continue
+      const id = parse(tab.slice(prefix.length))
+      if (!opened.includes(id)) opened.push(id)
+    }
+  }
+
   // Resets worker/agent selection and the main tab, e.g. on guild switch.
   function resetWorkerAgentSelection() {
     selectedWorkerId.value = null
@@ -135,6 +150,7 @@ export const useUiStore = defineStore('ui', () => {
     selectConversation,
     closeConversation,
     openConversationTab,
+    ensureTabOpen,
     resetWorkerAgentSelection,
     resetTaskSelection,
     resetConversationSelection,

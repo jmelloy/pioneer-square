@@ -82,11 +82,6 @@
           ✎ Repositories
         </button>
       </header>
-      <p v-if="primaryRepo && ghStore.selectedRepos.length" class="primary-override">
-        Showing the guild's primary repo <strong>{{ primaryRepo }}</strong> only — it overrides your
-        {{ ghStore.selectedRepos.length }} browsing selection(s). Clear the primary repo in guild
-        settings to browse your list.
-      </p>
       <div v-if="!ghStore.isConfigured" class="workspace-empty">
         Connect GitHub in your preferences to browse project issues.
       </div>
@@ -192,8 +187,8 @@
           repository access are configured separately.
         </p>
         <p v-if="primaryRepo" class="primary-override">
-          The guild's primary repo <strong>{{ primaryRepo }}</strong> currently overrides this list
-          on the Projects screen. Clear it in guild settings to browse these repositories.
+          The guild's primary repo <strong>{{ primaryRepo }}</strong> is always listed and is the
+          default project.
         </p>
         <h3>Selected ({{ draft.length }})</h3>
         <ul class="repo-editor-list" aria-label="Selected repositories">
@@ -242,12 +237,14 @@ import { useGitHubStore } from '../stores/github'
 import { useGuildStore } from '../stores/guild'
 import { formatAge } from '../utils/format'
 import IssueViewer from './IssueViewer.vue'
+import { useQueryRef } from '../composables/useQueryRef'
 
 const ghStore = useGitHubStore()
 const guildStore = useGuildStore()
 const projectSearch = ref('')
 const search = ref('')
-const selectedRepo = ref('')
+// URL value of ?project=: '' (absent) = default, 'all' = All projects, else owner/repo.
+const projectParam = ref('')
 const selectedId = ref<number | null>(null)
 const showDetail = ref(false)
 const state = ref('open')
@@ -259,8 +256,27 @@ const stateOptions = [
   { value: 'open', label: 'Open' },
   { value: 'closed', label: 'Closed' },
 ]
+useQueryRef('project', projectParam, '')
+useQueryRef(
+  'state',
+  state,
+  'open',
+  stateOptions.map((o) => o.value),
+)
 const primaryRepo = computed(() => guildStore.currentGuild?.primary_repo ?? '')
-const repoNames = computed(() => (primaryRepo.value ? [primaryRepo.value] : ghStore.selectedRepos))
+// The primary repo is a default, never an override: URL param > guild primary repo.
+// '' means All projects.
+const selectedRepo = computed({
+  get: () => (projectParam.value === 'all' ? '' : projectParam.value || primaryRepo.value),
+  set: (repo: string) => {
+    projectParam.value = repo === primaryRepo.value ? '' : repo || 'all'
+  },
+})
+const repoNames = computed(() =>
+  primaryRepo.value && !ghStore.selectedRepos.includes(primaryRepo.value)
+    ? [primaryRepo.value, ...ghStore.selectedRepos]
+    : ghStore.selectedRepos,
+)
 const filteredRepos = computed(() =>
   repoNames.value.filter((repo) => repo.toLowerCase().includes(projectSearch.value.toLowerCase())),
 )
@@ -363,7 +379,7 @@ function cancelEdit() {
 function saveRepos() {
   ghStore.setSelectedRepos(draft.value)
   editing.value = false
-  selectedRepo.value = ''
+  projectParam.value = ''
   refresh()
 }
 

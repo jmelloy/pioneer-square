@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import ProjectsView from '../ProjectsView.vue'
 import { useGitHubStore } from '../../stores/github'
 import { useGuildStore } from '../../stores/guild'
@@ -19,9 +20,11 @@ function issue(id: number, repo = 'team/factory', state = 'open'): GitHubIssue {
     created_at: new Date(2026, 0, id).toISOString(),
   }
 }
+let router: Router
 function render() {
   return mount(ProjectsView, {
     global: {
+      plugins: [router],
       stubs: {
         IssueViewer: {
           props: ['issueNumber', 'repo'],
@@ -35,6 +38,10 @@ function render() {
 describe('ProjectsView', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }],
+    })
     const store = useGitHubStore()
     store.token = 'test-token'
     store.selectedRepos = ['team/factory', 'team/engine']
@@ -69,6 +76,87 @@ describe('ProjectsView', () => {
     await wrapper.findAll('.issue-status-filters button')[2]!.trigger('click')
     expect(wrapper.findAll('tbody tr')).toHaveLength(0)
     expect(wrapper.find('.viewer-stub').exists()).toBe(false)
+  })
+
+  it('syncs project and status with the URL and follows back/forward', async () => {
+    const rows = (w: ReturnType<typeof render>) =>
+      w.findAll('tbody tr').map((row) => row.find('td').text())
+    const path = () => router.currentRoute.value.fullPath
+    await router.push('/g?project=team/engine&state=closed')
+    const wrapper = render()
+    expect(rows(wrapper)).toEqual(['2'])
+    await wrapper.findAll('.project-list .project-choice')[0]!.trigger('click')
+    await flushPromises()
+    expect(path()).toBe('/g?state=closed')
+    await wrapper.findAll('.issue-status-filters button')[1]!.trigger('click')
+    await flushPromises()
+    expect(path()).toBe('/g') // defaults are dropped from the URL
+    expect(rows(wrapper)).toEqual(['3', '1'])
+    router.back()
+    await flushPromises()
+    expect(rows(wrapper)).toEqual(['2'])
+    router.back()
+    await flushPromises()
+    expect(path()).toBe('/g?project=team/engine&state=closed')
+    router.forward()
+    router.forward()
+    await flushPromises()
+    expect(rows(wrapper)).toEqual(['3', '1'])
+  })
+
+  describe('guild primary repo', () => {
+    const rows = (w: ReturnType<typeof render>) =>
+      w.findAll('tbody tr').map((row) => row.find('td').text())
+    beforeEach(() => {
+      useGuildStore().currentGuild = { primary_repo: 'team/engine' } as never
+      useGitHubStore().issues.push(issue(5, 'team/engine'))
+    })
+
+    it('is the default project, alongside the browsing list', () => {
+      const wrapper = render()
+      expect(rows(wrapper)).toEqual(['5'])
+      expect(wrapper.find('.project-choice.selected').text()).toContain('engine')
+      expect(useGitHubStore().fetchIssues).toHaveBeenCalledWith(['team/factory', 'team/engine'])
+    })
+
+    it('is listed even when not in the browsing list', () => {
+      useGuildStore().currentGuild = { primary_repo: 'team/main' } as never
+      render()
+      expect(useGitHubStore().fetchIssues).toHaveBeenCalledWith([
+        'team/main',
+        'team/factory',
+        'team/engine',
+      ])
+    })
+
+    it('does not override the URL or a manual selection', async () => {
+      await router.push('/g?project=team/factory')
+      const wrapper = render()
+      expect(rows(wrapper)).toEqual(['3', '1'])
+      await wrapper.findAll('.project-list .project-choice')[0]!.trigger('click')
+      await flushPromises()
+      expect(router.currentRoute.value.query).toEqual({ project: 'all' })
+      expect(rows(wrapper)).toEqual(['5', '3', '1'])
+      await wrapper.findAll('.project-list .project-choice')[2]!.trigger('click')
+      await flushPromises()
+      expect(router.currentRoute.value.query).toEqual({}) // the default needs no param
+      expect(rows(wrapper)).toEqual(['5'])
+    })
+
+    it('applies when the guild loads after the page', async () => {
+      useGuildStore().currentGuild = null
+      const wrapper = render()
+      expect(rows(wrapper)).toEqual(['5', '3', '1'])
+      useGuildStore().currentGuild = { primary_repo: 'team/engine' } as never
+      await flushPromises()
+      expect(rows(wrapper)).toEqual(['5'])
+    })
+  })
+
+  it('ignores unknown status values in the URL', async () => {
+    await router.push('/g?state=bogus')
+    const wrapper = render()
+    expect(wrapper.findAll('tbody tr').map((row) => row.find('td').text())).toEqual(['3', '1'])
   })
 
   it('paginates and resets the page when filters change', async () => {
@@ -174,14 +262,6 @@ describe('ProjectsView', () => {
       await wrapper.find('.project-list .workspace-empty button').trigger('click')
       await flushPromises()
       expect(wrapper.find('[role="dialog"]').text()).toContain('Nothing selected yet')
-    })
-
-    it('explains the primary-repo override', async () => {
-      mockRepos()
-      useGuildStore().currentGuild = { primary_repo: 'team/main' } as never
-      const wrapper = render()
-      expect(wrapper.find('.project-main .primary-override').text()).toContain('team/main')
-      expect(useGitHubStore().fetchIssues).toHaveBeenCalledWith(['team/main'])
     })
   })
 })
