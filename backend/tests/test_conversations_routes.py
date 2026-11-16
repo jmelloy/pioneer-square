@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -161,6 +162,7 @@ class TestListConversationsRoute:
                     (None, "user-1", None, "hello"),
                     ("foreman", None, None, "latest reply"),
                     ("foreman", None, "tool_use", "tool noise"),
+                    ("user", "user-2", None, "newer human message"),
                 ]
             ):
                 db.add(
@@ -179,7 +181,87 @@ class TestListConversationsRoute:
             [out] = await list_conversations("g-conv-preview", None, "user-1", db)
 
         assert out.preview == "latest reply"
+        assert out.participants == ["user-1", "foreman", "user"]
+
+    async def test_preview_is_null_without_plain_foreman_reply(self, db_session):
+        insert_guild(db_session, "g-no-foreman")
+        conv_id = insert_conversation(db_session, "g-no-foreman", user_id="user-1")
+        guild_pk = await _guild_pk("g-no-foreman")
+        async with database_module.AsyncSessionLocal() as db:
+            for sender, role in [(None, None), ("foreman", "tool_result")]:
+                db.add(
+                    Message(
+                        guild_id=guild_pk,
+                        conversation_id=conv_id,
+                        from_agent=sender,
+                        user_id="user-1",
+                        role=role,
+                        content="not a preview",
+                        message_type="chat",
+                        created_at=datetime.now(UTC),
+                    )
+                )
+            await db.commit()
+            [out] = await list_conversations("g-no-foreman", None, "user-1", db)
+        assert out.preview is None
+
+    async def test_preview_breaks_timestamp_ties_and_truncates(self, db_session):
+        insert_guild(db_session, "g-preview-tie")
+        conv_id = insert_conversation(db_session, "g-preview-tie", user_id="user-1")
+        guild_pk = await _guild_pk("g-preview-tie")
+        now = datetime.now(UTC)
+        async with database_module.AsyncSessionLocal() as db:
+            for content in ["old reply", "latest " * 100]:
+                db.add(
+                    Message(
+                        guild_id=guild_pk,
+                        conversation_id=conv_id,
+                        from_agent="foreman",
+                        content=content,
+                        message_type="chat",
+                        created_at=now,
+                    )
+                )
+                await db.flush()
+            await db.commit()
+            [out] = await list_conversations("g-preview-tie", None, "user-1", db)
+        assert out.preview == ("latest " * 100)[:200]
+
+    async def test_summary_does_not_return_message_history_from_database(self, db_session):
+        insert_guild(db_session, "g-summary-bounded")
+        conv_id = insert_conversation(db_session, "g-summary-bounded", user_id="user-1")
+        guild_pk = await _guild_pk("g-summary-bounded")
+        now = datetime.now(UTC)
+        async with database_module.AsyncSessionLocal() as db:
+            for i in range(300):
+                db.add(
+                    Message(
+                        guild_id=guild_pk,
+                        conversation_id=conv_id,
+                        from_agent="foreman" if i % 2 else None,
+                        user_id="user-1",
+                        content=f"message {i}",
+                        message_type="chat",
+                        created_at=now + timedelta(seconds=i),
+                    )
+                )
+            await db.commit()
+            returned_rows = []
+
+            def record_rows(conn, cursor, statement, parameters, context, executemany):
+                if "messages" in statement:
+                    returned_rows.append(cursor.rowcount)
+
+            connection = await db.connection()
+            event.listen(connection.sync_connection, "after_cursor_execute", record_rows)
+            try:
+                [out] = await list_conversations("g-summary-bounded", None, "user-1", db)
+            finally:
+                event.remove(connection.sync_connection, "after_cursor_execute", record_rows)
+        assert out.preview == "message 299"
         assert out.participants == ["user-1", "foreman"]
+        assert returned_rows and all(0 <= count <= 3 for count in returned_rows)
+        assert len(returned_rows) <= 2
 
     async def test_filters_by_status(self, db_session):
         insert_guild(db_session, "g-conv-list-status")

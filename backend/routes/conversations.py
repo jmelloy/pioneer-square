@@ -34,7 +34,7 @@ from foreman.runner import reset_foreman_poll
 from message_artifacts import message_payloads
 from models import THREAD_STATUSES, Conversation, Message
 from pydantic import BaseModel
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from ws_types import ChatMsg
@@ -51,7 +51,7 @@ class ConversationOut(BaseModel):
     discord_thread_id: str | None
     created_at: datetime
     updated_at: datetime
-    # List endpoint only: latest plain chat message and distinct senders.
+    # List endpoint only: latest plain Foreman reply and distinct plain-chat senders.
     preview: str | None = None
     participants: list[str] = []
 
@@ -275,8 +275,21 @@ async def list_conversations(
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")
+    latest_reply = (
+        select(func.left(col(Message.content), 200))
+        .where(
+            col(Message.conversation_id) == col(Conversation.id),
+            col(Message.guild_id) == guild_pk,
+            col(Message.from_agent) == "foreman",
+            col(Message.role).is_(None),
+        )
+        .order_by(col(Message.created_at).desc(), col(Message.id).desc())
+        .limit(1)
+        .correlate(Conversation)
+        .scalar_subquery()
+    )
     stmt = (
-        select(Conversation)
+        select(Conversation, latest_reply.label("preview"))
         .where(col(Conversation.guild_id) == guild_pk)
         .order_by(col(Conversation.created_at).desc())
     )
@@ -297,22 +310,46 @@ async def list_conversations(
         stmt = stmt.where(
             or_(col(Conversation.name).icontains(query, autoescape=True), matching_message)
         )
-    out = [_to_out(c) for c in (await db.exec(stmt.limit(200))).all()]
+    out = []
+    for conversation, preview in (await db.exec(stmt.limit(200))).all():
+        item = _to_out(conversation)
+        item.preview = preview
+        out.append(item)
     by_id = {c.id: c for c in out}
     if by_id:
-        # ponytail: scans all plain chat rows of the listed conversations (≤200);
-        # add a last_message_id column on Conversation if this gets slow.
-        rows = await db.exec(
-            select(Message.conversation_id, Message.from_agent, Message.user_id, Message.content)
+        # Keep first-seen participant order without transferring message histories.
+        first_senders = (
+            select(
+                Message.conversation_id,
+                Message.from_agent,
+                Message.user_id,
+                Message.created_at,
+                Message.id,
+            )
             .where(
                 col(Message.conversation_id).in_(by_id),
+                col(Message.guild_id) == guild_pk,
                 col(Message.role).is_(None),
             )
-            .order_by(col(Message.created_at), col(Message.id))
+            .distinct(Message.conversation_id, Message.from_agent, Message.user_id)
+            .order_by(
+                Message.conversation_id,
+                Message.from_agent,
+                Message.user_id,
+                Message.created_at,
+                Message.id,
+            )
+            .subquery()
         )
-        for conversation_id, from_agent, user_id, content in rows.all():
+        rows = await db.exec(
+            select(
+                first_senders.c.conversation_id,
+                first_senders.c.from_agent,
+                first_senders.c.user_id,
+            ).order_by(first_senders.c.created_at, first_senders.c.id)
+        )
+        for conversation_id, from_agent, user_id in rows.all():
             conv = by_id[conversation_id]
-            conv.preview = content[:200]
             sender = from_agent or user_id
             if sender and sender not in conv.participants:
                 conv.participants.append(sender)
