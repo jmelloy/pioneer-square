@@ -58,6 +58,7 @@ export const useGitHubStore = defineStore('github', () => {
   const loading = ref(false)
   const error = ref('')
   const openedIssueKeys = ref<string[]>([])
+  let issuesGeneration = 0
 
   const isConfigured = computed(() => !!token.value)
 
@@ -132,6 +133,7 @@ export const useGitHubStore = defineStore('github', () => {
   ) {
     const reposToFetch = repos ?? selectedRepos.value
     if (!token.value || reposToFetch.length === 0) return []
+    const generation = issuesGeneration
     if (!silent) loading.value = true
     try {
       const allIssues = await Promise.all(
@@ -144,6 +146,7 @@ export const useGitHubStore = defineStore('github', () => {
             .map((i) => ({ ...i, repo: repoName })) as GitHubIssue[]
         }),
       )
+      if (generation !== issuesGeneration) return []
       issues.value = allIssues.flat().sort((a, b) => {
         const priorityLabels = [
           'priority: high',
@@ -167,11 +170,19 @@ export const useGitHubStore = defineStore('github', () => {
       })
       return issues.value
     } catch (e: unknown) {
-      error.value = e instanceof Error ? e.message : String(e)
+      if (generation === issuesGeneration) error.value = e instanceof Error ? e.message : String(e)
       return []
     } finally {
-      if (!silent) loading.value = false
+      if (!silent && generation === issuesGeneration) loading.value = false
     }
+  }
+
+  function clearIssues() {
+    issuesGeneration++
+    issues.value = []
+    openedIssueKeys.value = []
+    loading.value = false
+    error.value = ''
   }
 
   async function fetchIssueDetail(
@@ -213,8 +224,7 @@ export const useGitHubStore = defineStore('github', () => {
     token.value = ''
     selectedRepos.value = []
     repos.value = []
-    issues.value = []
-    error.value = ''
+    clearIssues()
     localStorage.removeItem('gh_token')
     localStorage.removeItem('gh_repos')
   }
@@ -232,6 +242,7 @@ export const useGitHubStore = defineStore('github', () => {
     fetchRepos,
     setSelectedRepos,
     fetchIssues,
+    clearIssues,
     fetchIssueDetail,
     postComment,
     updateIssue,

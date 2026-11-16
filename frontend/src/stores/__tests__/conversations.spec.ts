@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { useConversationsStore } from '../conversations'
 import { api } from '../../utils/api'
+import type { Conversation } from '../../types'
 
 // Mock the api utility
 vi.mock('../../utils/api', () => ({
@@ -13,6 +14,76 @@ const apiMock = vi.mocked(api)
 describe('useConversationsStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+  })
+
+  describe('guild switching', () => {
+    const oldConversation: Conversation = {
+      id: 701,
+      user_id: null,
+      discord_thread_id: null,
+      name: 'POOL_REFILL_SOURCE_ACCOUNT',
+      status: 'active',
+      created_at: '2026-11-16T18:18:05Z',
+      updated_at: '2026-11-16T18:18:05Z',
+    }
+    const newConversation: Conversation = { ...oldConversation, id: 702, name: 'New guild' }
+
+    it('ignores a previous guild list response arriving after the new guild list', async () => {
+      const store = useConversationsStore()
+      let resolveOld!: (value: Conversation[]) => void
+      apiMock.mockReturnValueOnce(
+        new Promise<Conversation[]>((resolve) => {
+          resolveOld = resolve
+        }),
+      )
+      const oldRequest = store.fetchConversations('dnsid')
+
+      store.clearConversations()
+      apiMock.mockResolvedValueOnce([newConversation])
+      await store.fetchConversations('n2tlc7')
+      resolveOld([oldConversation])
+      await oldRequest
+
+      expect(store.conversations).toEqual([newConversation])
+    })
+
+    it('does not repopulate the list after clearing without another fetch', async () => {
+      const store = useConversationsStore()
+      let resolveOld!: (value: Conversation[]) => void
+      apiMock.mockReturnValueOnce(
+        new Promise<Conversation[]>((resolve) => {
+          resolveOld = resolve
+        }),
+      )
+      const oldRequest = store.fetchConversations('dnsid')
+      store.clearConversations()
+      resolveOld([oldConversation])
+      await oldRequest
+
+      expect(store.conversations).toEqual([])
+    })
+
+    it.each(['fetchConversation', 'closeConversation'] as const)(
+      'ignores an old guild %s response after switching guilds',
+      async (action) => {
+        const store = useConversationsStore()
+        let resolveOld!: (value: Conversation) => void
+        apiMock.mockReturnValueOnce(
+          new Promise<Conversation>((resolve) => {
+            resolveOld = resolve
+          }),
+        )
+        const oldRequest = store[action]('dnsid', oldConversation.id)
+
+        store.clearConversations()
+        apiMock.mockResolvedValueOnce([newConversation])
+        await store.fetchConversations('n2tlc7')
+        resolveOld(oldConversation)
+        await oldRequest
+
+        expect(store.conversations).toEqual([newConversation])
+      },
+    )
   })
 
   describe('handleWebSocketMessage', () => {

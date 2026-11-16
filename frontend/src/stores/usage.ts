@@ -80,6 +80,7 @@ function _aggregate(rows: UsageRow[]): Record<string, UsageSummary> {
 export const useUsageStore = defineStore('usage', () => {
   // Latest usage summary keyed by task id.
   const byTask = ref<Record<string, UsageSummary>>({})
+  let guildGeneration = 0
 
   const summaries = computed(() => Object.values(byTask.value))
 
@@ -97,9 +98,10 @@ export const useUsageStore = defineStore('usage', () => {
 
   async function fetchUsage(guildId: string) {
     if (!guildId) return
+    const generation = guildGeneration
     try {
       const rows = await api<UsageRow[]>(`/guilds/${guildId}/usage`)
-      byTask.value = _aggregate(rows)
+      if (generation === guildGeneration) byTask.value = _aggregate(rows)
     } catch (e) {
       console.error('Failed to fetch usage', e)
     }
@@ -120,6 +122,7 @@ export const useUsageStore = defineStore('usage', () => {
   }
 
   function clearUsage() {
+    guildGeneration++
     byTask.value = {}
   }
 
