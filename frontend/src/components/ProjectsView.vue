@@ -31,9 +31,10 @@
           ><span :title="repo">{{ repo.split('/').pop() }}</span
           ><span class="count">{{ scopedIssues.filter((i) => i.repo === repo).length }}</span>
         </button>
-        <p v-if="!repoNames.length" class="workspace-empty">
-          Choose repositories in guild settings to see their issues.
-        </p>
+        <div v-if="!repoNames.length" class="workspace-empty">
+          <p>No repositories selected for browsing.</p>
+          <button class="pixel-btn" @click="openEditor">+ Add repositories</button>
+        </div>
       </div>
       <div class="issue-status-filters">
         <h3>☷ All issues</h3>
@@ -77,7 +78,15 @@
         >
           {{ ghStore.loading ? 'Loading…' : '↻ Refresh' }}
         </button>
+        <button class="pixel-btn" :disabled="!ghStore.isConfigured" @click="openEditor">
+          ✎ Repositories
+        </button>
       </header>
+      <p v-if="primaryRepo && ghStore.selectedRepos.length" class="primary-override">
+        Showing the guild's primary repo <strong>{{ primaryRepo }}</strong> only — it overrides your
+        {{ ghStore.selectedRepos.length }} browsing selection(s). Clear the primary repo in guild
+        settings to browse your list.
+      </p>
       <div v-if="!ghStore.isConfigured" class="workspace-empty">
         Connect GitHub in your preferences to browse project issues.
       </div>
@@ -169,11 +178,66 @@
         </div>
       </div>
     </div>
+    <div v-if="editing" class="repo-editor-backdrop" @click.self="cancelEdit">
+      <div
+        class="repo-editor panel-bg"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="repo-editor-title"
+        @keydown.esc="cancelEdit"
+      >
+        <h2 id="repo-editor-title">Browse repositories</h2>
+        <p class="repo-editor-hint">
+          Only changes which repositories this screen lists. The Foreman's primary repo and worker
+          repository access are configured separately.
+        </p>
+        <p v-if="primaryRepo" class="primary-override">
+          The guild's primary repo <strong>{{ primaryRepo }}</strong> currently overrides this list
+          on the Projects screen. Clear it in guild settings to browse these repositories.
+        </p>
+        <h3>Selected ({{ draft.length }})</h3>
+        <ul class="repo-editor-list" aria-label="Selected repositories">
+          <li v-for="repo in draft" :key="repo">
+            <span :title="repo">{{ repo }}</span>
+            <button class="pixel-btn" :aria-label="`Remove ${repo}`" @click="removeRepo(repo)">
+              ✕
+            </button>
+          </li>
+          <li v-if="!draft.length" class="workspace-empty">
+            Nothing selected yet — search below to add repositories.
+          </li>
+        </ul>
+        <input
+          ref="repoQueryInput"
+          v-model="repoQuery"
+          type="search"
+          placeholder="Search your GitHub repositories…"
+          aria-label="Search GitHub repositories"
+          @keydown.enter.prevent="repoMatches[0] && addRepo(repoMatches[0])"
+        />
+        <p v-if="reposLoading" class="workspace-empty" role="status">Loading repositories…</p>
+        <div v-else-if="repoError" class="workspace-empty" role="alert">
+          {{ repoError }}
+          <button class="pixel-btn" @click="loadRepos">Retry</button>
+        </div>
+        <ul v-else class="repo-editor-list" aria-label="Available repositories">
+          <li v-for="repo in repoMatches" :key="repo">
+            <span :title="repo">{{ repo }}</span>
+            <button class="pixel-btn" :aria-label="`Add ${repo}`" @click="addRepo(repo)">+</button>
+          </li>
+          <li v-if="!repoMatches.length" class="workspace-empty">No matching repositories.</li>
+        </ul>
+        <footer>
+          <button class="pixel-btn" @click="cancelEdit">Cancel</button>
+          <button class="pixel-btn" @click="saveRepos">Save</button>
+        </footer>
+      </div>
+    </div>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useGitHubStore } from '../stores/github'
 import { useGuildStore } from '../stores/guild'
 import { formatAge } from '../utils/format'
@@ -195,11 +259,8 @@ const stateOptions = [
   { value: 'open', label: 'Open' },
   { value: 'closed', label: 'Closed' },
 ]
-const repoNames = computed(() =>
-  guildStore.currentGuild?.primary_repo
-    ? [guildStore.currentGuild.primary_repo]
-    : ghStore.selectedRepos,
-)
+const primaryRepo = computed(() => guildStore.currentGuild?.primary_repo ?? '')
+const repoNames = computed(() => (primaryRepo.value ? [primaryRepo.value] : ghStore.selectedRepos))
 const filteredRepos = computed(() =>
   repoNames.value.filter((repo) => repo.toLowerCase().includes(projectSearch.value.toLowerCase())),
 )
@@ -249,6 +310,63 @@ function selectIssue(id: number) {
 function refresh() {
   return ghStore.fetchIssues(repoNames.value)
 }
+const editing = ref(false)
+const draft = ref<string[]>([])
+const repoQuery = ref('')
+const repoQueryInput = ref<HTMLInputElement>()
+const reposLoading = ref(false)
+const repoError = ref('')
+const repoMatches = computed(() =>
+  ghStore.repos
+    .map((repo) => repo.full_name)
+    .filter(
+      (name) =>
+        !draft.value.includes(name) && name.toLowerCase().includes(repoQuery.value.toLowerCase()),
+    )
+    // ponytail: capped render; fetchRepos only returns the first 100 anyway
+    .slice(0, 50),
+)
+
+async function loadRepos() {
+  // fetchRepos reports failures via the shared store error; read it, then restore the issues error.
+  const previousError = ghStore.error
+  ghStore.error = ''
+  reposLoading.value = true
+  repoError.value = ''
+  await ghStore.fetchRepos()
+  repoError.value = ghStore.error
+  ghStore.error = previousError
+  reposLoading.value = false
+}
+
+function openEditor() {
+  draft.value = [...ghStore.selectedRepos]
+  repoQuery.value = ''
+  editing.value = true
+  nextTick(() => repoQueryInput.value?.focus())
+  if (!ghStore.repos.length) loadRepos()
+}
+
+function addRepo(repo: string) {
+  draft.value.push(repo)
+  repoQuery.value = ''
+}
+
+function removeRepo(repo: string) {
+  draft.value = draft.value.filter((name) => name !== repo)
+}
+
+function cancelEdit() {
+  editing.value = false
+}
+
+function saveRepos() {
+  ghStore.setSelectedRepos(draft.value)
+  editing.value = false
+  selectedRepo.value = ''
+  refresh()
+}
+
 let refreshTimer: ReturnType<typeof setInterval> | undefined
 onMounted(() => {
   refresh()
