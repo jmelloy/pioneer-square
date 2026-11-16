@@ -534,6 +534,8 @@ async def test_user_authored_commit_is_signed_with_user_as_co_author(publisher, 
     body = server.seen_commit_bodies[-1]
     assert "author" not in body and "committer" not in body
     assert "\n\nCo-authored-by: Ada <ada@example.com>\nPioneer-Task: " in body["message"]
+    task_view = f"{context.backend_url}/task/{context.task_id}/log"
+    assert f"\nPioneer-Task: {context.task_id}\nTask-View: {task_view}\n" in body["message"]
 
 
 async def test_commit_without_identity_sends_no_author(publisher):

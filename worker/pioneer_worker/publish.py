@@ -336,7 +336,11 @@ async def _publish(cwd: Path, context: PublishContext, message: str) -> str:
         co_author = (
             f"Co-authored-by: {context.author[0]} <{context.author[1]}>\n" if context.author else ""
         )
-        marker = f"Pioneer-Task: {context.task_id}\nPioneer-Source: {source}\nPioneer-Tree: {tree}"
+        task_view = f"{context.backend_url.rstrip('/')}/task/{context.task_id}/log"
+        marker = (
+            f"Pioneer-Task: {context.task_id}\nTask-View: {task_view}\n"
+            f"Pioneer-Source: {source}\nPioneer-Tree: {tree}"
+        )
 
         async def verified_commit(sha):
             commit = await api("GET", f"/repos/{repo}/commits/{sha}")
