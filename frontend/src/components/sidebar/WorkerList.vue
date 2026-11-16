@@ -190,7 +190,8 @@ function openAgentTask(workerId: string) {
 }
 
 .section-count {
-  font-size: 9px;
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
   color: var(--color-text-dim);
   background: var(--color-bg);
   padding: 1px 5px;
@@ -204,8 +205,8 @@ function openAgentTask(workerId: string) {
   cursor: pointer;
   font-size: 13px;
   line-height: 1;
-  width: 18px;
-  height: 18px;
+  width: 44px;
+  height: 44px;
   border-radius: 2px;
   display: flex;
   align-items: center;

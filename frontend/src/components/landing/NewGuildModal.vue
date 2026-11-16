@@ -1,10 +1,17 @@
 <template>
-  <div class="modal-overlay" @click.self="$emit('close')">
+  <dialog
+    ref="dialog"
+    class="modal-overlay ui-surface"
+    aria-labelledby="new-guild-title"
+    @click.self="$emit('close')"
+    @cancel.prevent="$emit('close')"
+  >
     <div class="modal">
-      <div class="modal-header">NEW GUILD</div>
+      <div id="new-guild-title" class="modal-header">NEW GUILD</div>
       <div class="modal-body">
-        <label class="field-label">Guild Name (optional)</label>
+        <label class="field-label" for="new-guild-name">Guild Name (optional)</label>
         <input
+          id="new-guild-name"
           v-model="name"
           class="field-input"
           placeholder="e.g. Feature Sprint #4"
@@ -19,11 +26,11 @@
         </button>
       </div>
     </div>
-  </div>
+  </dialog>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
 
 defineProps<{ creating: boolean }>()
 defineEmits<{
@@ -31,17 +38,28 @@ defineEmits<{
   (e: 'create', name: string): void
 }>()
 
+const dialog = ref<HTMLDialogElement | null>(null)
 const name = ref('')
 const nameInput = ref<HTMLInputElement | null>(null)
 
 onMounted(async () => {
+  dialog.value?.showModal()
   await nextTick()
   nameInput.value?.focus()
 })
+onBeforeUnmount(() => dialog.value?.close())
 </script>
 
 <style scoped>
 .modal-overlay {
+  margin: 0;
+  border: 0;
+  width: 100%;
+  max-width: none;
+  height: 100dvh;
+  max-height: none;
+  padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+    max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.7);
@@ -51,7 +69,14 @@ onMounted(async () => {
   z-index: 200;
 }
 
+.modal-overlay::backdrop {
+  background: transparent;
+}
+
 .modal {
+  max-width: 100%;
+  max-height: 100%;
+  overflow-y: auto;
   background: var(--color-bg-secondary);
   border: 3px solid var(--color-brass);
   box-shadow: 0 0 30px rgba(232, 170, 0, 0.3);
@@ -61,10 +86,9 @@ onMounted(async () => {
 }
 
 .modal-header {
-  font-family: var(--font-pixel);
-  font-size: 9px;
+  font: 400 var(--text-section-title) / var(--leading-heading) var(--font-display);
   color: var(--color-brass-light);
-  letter-spacing: 2px;
+  overflow-wrap: anywhere;
   padding: 14px 18px;
   background: var(--color-bg-tertiary);
   border-bottom: 2px solid var(--color-brass-dark);
@@ -78,19 +102,17 @@ onMounted(async () => {
 }
 
 .field-label {
-  font-size: 10px;
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
   color: var(--color-text-dim);
-  letter-spacing: 1px;
 }
 
 .field-input {
   background: var(--color-bg);
   border: 2px solid var(--color-brass-dark);
   color: var(--color-text);
-  font-family: var(--font-mono);
-  font-size: 13px;
+  font: var(--text-input) / 1.5 var(--font-ui);
+  min-width: 0;
   padding: 8px 10px;
-  outline: none;
   width: 100%;
 }
 
@@ -105,6 +127,7 @@ onMounted(async () => {
 
 .modal-footer {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 10px;
   padding: 14px 18px;
@@ -121,14 +144,5 @@ onMounted(async () => {
 .cancel-btn:hover {
   background: rgba(255, 255, 255, 0.05);
   box-shadow: none;
-}
-
-@media (max-width: 600px) {
-  .modal {
-    width: calc(100vw - 32px);
-  }
-  .modal-footer {
-    flex-wrap: wrap;
-  }
 }
 </style>

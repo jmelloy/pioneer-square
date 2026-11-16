@@ -1,16 +1,16 @@
 <template>
-  <div class="session-card" @click="$emit('open')">
-    <div class="card-top">
+  <button type="button" class="session-card" @click="$emit('open')">
+    <span class="card-top">
       <span class="card-id">{{ guild.id }}</span>
       <span class="card-agents">
         <span class="agent-dot" :class="(guild.agent_count ?? 0) > 0 ? 'active' : 'empty'"></span>
         {{ guild.agent_count || 0 }} agent{{ guild.agent_count !== 1 ? 's' : '' }}
       </span>
-    </div>
-    <div class="card-name">{{ guild.name }}</div>
-    <div class="card-time">Created {{ formatRelative(guild.created_at) }}</div>
-    <div class="card-enter">ENTER →</div>
-  </div>
+    </span>
+    <span class="card-name">{{ guild.name }}</span>
+    <span class="card-time">Created {{ formatRelative(guild.created_at) }}</span>
+    <span class="card-enter">ENTER →</span>
+  </button>
 </template>
 
 <script setup lang="ts">
@@ -23,6 +23,10 @@ defineEmits<{ (e: 'open'): void }>()
 
 <style scoped>
 .session-card {
+  font: inherit;
+  text-align: left;
+  width: 100%;
+  min-width: 0;
   background: var(--color-bg-secondary);
   border: 2px solid var(--color-brass-dark);
   padding: 16px 18px;
@@ -42,13 +46,14 @@ defineEmits<{ (e: 'open'): void }>()
 
 .card-top {
   display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
   align-items: center;
   justify-content: space-between;
 }
 
 .card-id {
-  font-family: var(--font-pixel);
-  font-size: 8px;
+  font: var(--text-caption) / 1.4 var(--font-mono);
   color: var(--color-brass);
 }
 
@@ -56,7 +61,8 @@ defineEmits<{ (e: 'open'): void }>()
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 10px;
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
   color: var(--color-text-dim);
 }
 
@@ -84,30 +90,20 @@ defineEmits<{ (e: 'open'): void }>()
 }
 
 .card-name {
-  font-size: 14px;
+  font: 600 var(--text-card-title) / var(--leading-heading) var(--font-ui);
   color: var(--color-text);
-  font-weight: bold;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 
 .card-time {
-  font-size: 10px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
 }
 
 .card-enter {
-  font-family: var(--font-pixel);
-  font-size: 7px;
+  font: 600 var(--text-small) / 1.4 var(--font-ui);
   color: var(--color-teal);
-  opacity: 0;
-  transition: opacity 0.15s;
   align-self: flex-end;
   margin-top: 4px;
-}
-
-.session-card:hover .card-enter {
-  opacity: 1;
 }
 </style>

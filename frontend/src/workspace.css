@@ -37,7 +37,9 @@
   background: linear-gradient(#342011, #1c1006);
   color: var(--color-text);
   font: 600 var(--text-card-title) / var(--leading-heading) var(--font-ui);
-  white-space: nowrap;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
   cursor: pointer;
 }
 .workspace-nav button.active {
@@ -90,6 +92,7 @@
 
 .sidebar-heading {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
@@ -97,6 +100,8 @@
   border-bottom: 1px solid var(--color-brass-dark);
 }
 .sidebar-heading h2 {
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: var(--color-brass-light);
   font: 400 var(--text-section-title) / var(--leading-heading) var(--font-display);
 }
@@ -105,7 +110,8 @@
 }
 .active-count {
   color: var(--color-green);
-  font-size: 12px;
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 .app-layout .list-toolbar {
@@ -332,7 +338,7 @@
   border-radius: 3px;
   padding: 1px 5px;
   color: #ffe0a0;
-  font-size: 12px;
+  font-size: var(--text-caption);
 }
 .issue-status-filters {
   margin-top: 22px;
@@ -367,7 +373,7 @@
 .project-connection {
   padding: 12px 10px;
   border-top: 1px solid var(--color-brass-dark);
-  font-size: 12px;
+  font-size: var(--text-caption);
   color: var(--color-red);
 }
 .project-connection.connected {
@@ -446,7 +452,7 @@
   white-space: nowrap;
 }
 .issue-created {
-  font-size: 12px;
+  font-size: var(--text-caption);
   color: var(--color-text-dim);
 }
 .project-table tr.selected {
@@ -480,11 +486,12 @@
 }
 .project-pagination {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   padding: 12px;
   border-top: 1px solid var(--color-brass-dark);
-  font-size: 12px;
+  font-size: var(--text-caption);
 }
 .project-pagination > span:first-child {
   margin-right: auto;
@@ -679,6 +686,7 @@
   }
   .project-main {
     border-width: 8px;
+    overflow-y: auto;
   }
   .projects-heading {
     gap: 6px;
@@ -692,6 +700,9 @@
   }
   .project-split {
     display: flex;
+    /* Keep list/detail usable when enlarged text makes the controls taller. */
+    min-height: 18rem;
+    flex-shrink: 0;
   }
   .project-table-pane {
     flex: 1;

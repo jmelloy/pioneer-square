@@ -1,18 +1,20 @@
 <template>
-  <div class="discord-connect">
+  <div class="discord-connect ui-surface">
     <div class="connect-card">
-      <div class="connect-icon">⚙</div>
-      <div class="connect-title">CONNECT DISCORD ACCOUNT</div>
+      <div class="connect-icon" aria-hidden="true">⚙</div>
+      <h1 class="connect-title">CONNECT DISCORD ACCOUNT</h1>
 
-      <div v-if="status === 'redirecting'" class="connect-sub">
+      <div v-if="status === 'redirecting'" class="connect-sub" role="status">
         Redirecting you to sign in to Pioneer Square...
       </div>
-      <div v-else-if="status === 'linking'" class="connect-sub">Linking your account...</div>
-      <div v-else-if="status === 'success'" class="connect-success">
+      <div v-else-if="status === 'linking'" class="connect-sub" role="status">
+        Linking your account...
+      </div>
+      <div v-else-if="status === 'success'" class="connect-success" role="status">
         ✅ Your Discord account (<strong>{{ discordUsername }}</strong
         >) is now linked to Pioneer Square.
       </div>
-      <div v-else class="connect-error">{{ error }}</div>
+      <div v-else class="connect-error" role="alert">{{ error }}</div>
 
       <button class="pixel-btn connect-btn" @click="router.push('/')">Go to Pioneer Square</button>
     </div>
@@ -76,16 +78,21 @@ onMounted(async () => {
   height: 100dvh;
   background: var(--color-bg);
   display: flex;
-  align-items: center;
-  justify-content: center;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 16px;
+  overflow-y: auto;
 }
 
 .connect-card {
+  margin: auto;
+  flex-shrink: 0;
+  overflow-wrap: anywhere;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 14px;
-  padding: 48px 40px;
+  padding: clamp(20px, 5vw, 48px) clamp(16px, 5vw, 40px);
   background: var(--color-bg-secondary);
   border: 2px solid var(--color-brass-dark);
   box-shadow: 0 0 32px rgba(232, 170, 0, 0.1);
@@ -101,35 +108,32 @@ onMounted(async () => {
 }
 
 .connect-title {
-  font-family: var(--font-pixel);
-  font-size: 9px;
+  font: 400 var(--text-page-title) / var(--leading-heading) var(--font-display);
   color: var(--color-brass-light);
-  letter-spacing: 2px;
 }
 
 .connect-sub {
-  font-size: 12px;
+  font-size: var(--text-body);
   color: var(--color-text-dim);
   line-height: 1.6;
 }
 
 .connect-success {
-  font-size: 13px;
+  font-size: var(--text-body);
   color: var(--color-teal);
   line-height: 1.6;
 }
 
 .connect-error {
-  font-size: 12px;
+  font-size: var(--text-body);
   color: var(--color-red);
   padding: 6px 10px;
-  background: rgba(238, 51, 34, 0.1);
+  background: var(--color-bg);
   border: 1px solid rgba(238, 51, 34, 0.3);
   width: 100%;
 }
 
 .connect-btn {
-  font-size: 9px;
   padding: 12px 24px;
   margin-top: 8px;
 }
@@ -137,6 +141,11 @@ onMounted(async () => {
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .connect-icon {
+    animation: none;
   }
 }
 </style>

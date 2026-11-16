@@ -27,6 +27,8 @@ function onChange() {
 
 <style scoped>
 .attach-btn {
+  min-width: 44px;
+  min-height: 44px;
   padding: 6px 8px;
   font-size: 14px;
   align-self: flex-start;

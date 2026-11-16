@@ -42,6 +42,27 @@ let baseUrl: string
 let browser: Awaited<ReturnType<typeof chromium.launch>>
 let page: Page
 
+// Bounded checks for the opaque text/background pairs touched by this pass.
+async function expectTextContrast(text: string, background: string) {
+  const foreground = await page.locator(text).evaluate((el) => getComputedStyle(el).color)
+  const backdrop = await page
+    .locator(background)
+    .evaluate((el) => getComputedStyle(el).backgroundColor)
+  function luminance(color: string) {
+    expect(color.startsWith('rgb(')).toBe(true)
+    const channels = color
+      .match(/[\d.]+/g)!
+      .map(Number)
+      .map((value) => {
+        const channel = value / 255
+        return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+      })
+    return channels[0]! * 0.2126 + channels[1]! * 0.7152 + channels[2]! * 0.0722
+  }
+  const values = [luminance(foreground), luminance(backdrop)].sort((a, b) => b - a)
+  expect((values[0]! + 0.05) / (values[1]! + 0.05)).toBeGreaterThanOrEqual(4.5)
+}
+
 describeIfBrowser('browser smoke', () => {
   beforeAll(async () => {
     server = await createServer({
@@ -497,5 +518,223 @@ describeIfBrowser('browser smoke', () => {
       .locator('.issue-tab-content')
       .evaluate((el) => el.scrollWidth - el.clientWidth)
     expect(issueOverflow).toBeLessThanOrEqual(1)
+  }, 30_000)
+
+  it('keeps guild creation readable at 200% text size and contains keyboard focus', async () => {
+    await installTypographyFixture(page)
+    let createdName = ''
+    await page.route('**/guilds', async (route) => {
+      if (route.request().method() !== 'POST') return route.fallback()
+      createdName = route.request().postDataJSON().name
+      await route.fulfill({ json: { id: task.guild_id, name: createdName } })
+    })
+    await page.setViewportSize({ width: 320, height: 900 })
+    await page.goto(baseUrl)
+    await page.locator('.session-card').focus()
+    await page.keyboard.press('Enter')
+    await expect.poll(() => page.url()).toContain(task.guild_id)
+    await page.locator('.app-layout .guild-name').waitFor()
+    await page.goto(baseUrl)
+    const trigger = page.locator('.new-btn')
+    await trigger.focus()
+    await page.keyboard.press('Enter')
+    const dialog = page.getByRole('dialog', { name: 'NEW GUILD', exact: true })
+    const input = page.getByLabel('Guild Name (optional)', { exact: true })
+    await dialog.waitFor()
+    expect(await dialog.evaluate((el) => el.matches(':modal'))).toBe(true)
+    expect(await input.evaluate((el) => el === document.activeElement)).toBe(true)
+    // Native dialogs may include a browser-chrome focus stop (body), not background controls.
+    for (let index = 0; index < 6; index++) {
+      await page.keyboard.press('Tab')
+      expect(
+        await dialog.evaluate(
+          (el) => el.contains(document.activeElement) || document.activeElement === document.body,
+        ),
+      ).toBe(true)
+    }
+    for (const viewport of [
+      { width: 320, height: 900 },
+      { width: 390, height: 360 },
+      { width: 1440, height: 900 },
+    ]) {
+      const { width, height } = viewport
+      await page.setViewportSize(viewport)
+      await page.evaluate(() => {
+        document.documentElement.style.fontSize = '200%'
+      })
+      const metrics = await page.locator('.modal').evaluate((el) => ({
+        overflow: el.scrollWidth - el.clientWidth,
+        right: el.getBoundingClientRect().right,
+        font: parseFloat(getComputedStyle(el.querySelector('input')!).fontSize),
+      }))
+      expect(metrics.overflow).toBeLessThanOrEqual(1)
+      expect(metrics.right).toBeLessThanOrEqual(width)
+      expect(metrics.font).toBeGreaterThanOrEqual(32)
+      await dialog.locator('button').last().scrollIntoViewIfNeeded()
+      const button = await dialog.locator('button').last().boundingBox()
+      expect(button!.y + button!.height).toBeLessThanOrEqual(height)
+    }
+    await expectTextContrast('.field-label', '.modal')
+    await input.focus()
+    expect(await input.evaluate((el) => getComputedStyle(el).outlineStyle)).toBe('solid')
+    await page.keyboard.press('Escape')
+    await expect.poll(() => dialog.count()).toBe(0)
+    expect(await trigger.evaluate((el) => el === document.activeElement)).toBe(true)
+    await trigger.click()
+    await input.fill('Finishing pass')
+    await input.press('Enter')
+    await expect.poll(() => createdName).toBe('Finishing pass')
+    await expect.poll(() => page.url()).toContain(task.guild_id)
+    await page.locator('.app-layout .guild-name').waitFor()
+  }, 30_000)
+
+  it('wraps Discord onboarding status at 200% text size and respects reduced motion', async () => {
+    await installTypographyFixture(page)
+    await page.route('**/api/discord/connect', (route) =>
+      route.fulfill({ json: { discord_username: 'long-discord-name'.repeat(12) } }),
+    )
+    // Vite proxies /auth; serve the SPA shell for this frontend-only navigation.
+    await page.route('**/auth/discord/connect*', async (route) =>
+      route.fulfill({ response: await route.fetch({ url: baseUrl }) }),
+    )
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.setViewportSize({ width: 320, height: 600 })
+    await page.goto(`${baseUrl}/auth/discord/connect?token=synthetic-token`)
+    await page.locator('.connect-success').waitFor()
+    await page.evaluate(() => {
+      document.documentElement.style.fontSize = '200%'
+    })
+    expect(
+      await page.locator('.connect-card').evaluate((el) => el.scrollWidth - el.clientWidth),
+    ).toBeLessThanOrEqual(1)
+    expect(
+      await page.locator('.connect-icon').evaluate((el) => getComputedStyle(el).animationName),
+    ).toBe('none')
+    await page.locator('.connect-btn').scrollIntoViewIfNeeded()
+    const button = await page.locator('.connect-btn').boundingBox()
+    expect(button!.y + button!.height).toBeLessThanOrEqual(600)
+    await page.goto(`${baseUrl}/auth/discord/connect`)
+    await page.locator('.connect-error').waitFor()
+    await expectTextContrast('.connect-error', '.connect-error')
+    await page.emulateMedia({ reducedMotion: null })
+  }, 30_000)
+
+  it('keeps attachment failures and the image dialog usable at 200% text size', async () => {
+    page.setDefaultTimeout(5000)
+    await installTypographyFixture(page)
+    const image = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6nxsAAAAASUVORK5CYII=',
+      'base64',
+    )
+    const name = `${'long-screenshot-name'.repeat(12)}.png`
+    let uploads = 0
+    await page.route(`**/guilds/${task.guild_id}/artifacts`, async (route) => {
+      uploads++
+      await route.fulfill({
+        status: 503,
+        json: { detail: `Upload failed: ${'long-error-message'.repeat(20)}` },
+      })
+    })
+    await page.route(`**/guilds/${task.guild_id}`, (route) =>
+      route.fulfill({
+        json: {
+          id: task.guild_id,
+          name: 'Attachment checks',
+          primary_repo: task.issue_repo,
+          agents: [],
+          messages: [
+            { type: 'chat', from: 'foreman', content: `[${name}](artifact://finishing-image)` },
+          ],
+        },
+      }),
+    )
+    await page.route(`**/guilds/${task.guild_id}/artifacts/finishing-image`, (route) =>
+      route.fulfill({
+        json: {
+          id: 'finishing-image',
+          url: '/api/artifacts/finishing-image/public',
+          contentType: 'image/png',
+        },
+      }),
+    )
+    await page.route('**/api/artifacts/finishing-image/public', (route) =>
+      route.fulfill({ contentType: 'image/png', body: image }),
+    )
+    await page.setViewportSize({ width: 320, height: 900 })
+    await page.goto(`${baseUrl}/${task.guild_id}`)
+    await page
+      .locator('.chat-pane input[type="file"]')
+      .setInputFiles({ name, mimeType: 'image/png', buffer: image })
+    await page.locator('.tray-error').waitFor()
+    await page.evaluate(() => {
+      document.documentElement.style.fontSize = '200%'
+    })
+    const metrics = await page.locator('.attachment-tray').evaluate((el) => ({
+      overflow: el.scrollWidth - el.clientWidth,
+      text: parseFloat(getComputedStyle(el.querySelector('.tray-error')!).fontSize),
+      remove: el.querySelector('.tray-remove')!.getBoundingClientRect().width,
+      retry: el.querySelector('.tray-retry')!.getBoundingClientRect().height,
+    }))
+    expect(metrics.overflow).toBeLessThanOrEqual(1)
+    expect(metrics.text).toBeGreaterThanOrEqual(26)
+    expect(metrics.remove).toBeGreaterThanOrEqual(44)
+    expect(metrics.retry).toBeGreaterThanOrEqual(44)
+    await expectTextContrast('.tray-error', '.chat-body')
+    expect(
+      await page.locator('.app-layout').evaluate((el) => el.scrollWidth - el.clientWidth),
+    ).toBeLessThanOrEqual(1)
+    await page.locator('.tray-retry').click()
+    await expect.poll(() => uploads).toBe(2)
+    await page.locator('.tray-remove').click()
+    await expect.poll(() => page.locator('.tray-item').count()).toBe(0)
+    await page.locator('.mobile-tab-bar').getByRole('button', { name: 'Tasks' }).click()
+    await page.getByRole('button', { name: 'Show filters and search' }).click()
+    expect(
+      await page.locator('.sidebar').evaluate((el) => el.scrollWidth - el.clientWidth),
+    ).toBeLessThanOrEqual(1)
+    await page.locator('.mobile-tab-bar').getByRole('button', { name: 'Work' }).click()
+    expect(
+      await page.locator('.app-layout').evaluate((el) => el.scrollWidth - el.clientWidth),
+    ).toBeLessThanOrEqual(1)
+    await page.getByRole('button', { name: /Projects \/ Issues/ }).click()
+    await page.locator('.issue-select').first().click()
+    expect(
+      await page.locator('.issue-viewer').evaluate((el) => el.scrollWidth - el.clientWidth),
+    ).toBeLessThanOrEqual(1)
+    expect(
+      await page.locator('.issue-tab-content').evaluate((el) => el.clientHeight),
+    ).toBeGreaterThan(0)
+    await page.getByRole('button', { name: /Tasks \/ Work/ }).click()
+    await page.locator('.mobile-tab-bar').getByRole('button', { name: 'Chat' }).click()
+    const thumbnail = page.locator('.artifact-thumb')
+    await thumbnail.focus()
+    await page.keyboard.press('Enter')
+    const dialog = page.locator('dialog.lightbox')
+    await dialog.waitFor()
+    expect(await dialog.evaluate((el) => el.matches(':modal'))).toBe(true)
+    for (let index = 0; index < 4; index++) {
+      await page.keyboard.press('Tab')
+      expect(
+        await dialog.evaluate(
+          (el) => el.contains(document.activeElement) || document.activeElement === document.body,
+        ),
+      ).toBe(true)
+    }
+    expect(await page.locator('.lightbox-name').textContent()).toBe(name)
+    await expect
+      .poll(() =>
+        page
+          .locator('.lightbox-img')
+          .evaluate((el) => (el instanceof HTMLImageElement ? el.naturalWidth : 0)),
+      )
+      .toBeGreaterThan(0)
+    expect(await dialog.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1)
+    expect(
+      await page.locator('.lightbox-img').evaluate((el) => el.getBoundingClientRect().height),
+    ).toBeGreaterThan(0)
+    expect(await page.locator('.lightbox-btn[download]').getAttribute('download')).toBe(name)
+    await page.keyboard.press('Escape')
+    await expect.poll(() => dialog.count()).toBe(0)
+    expect(await thumbnail.evaluate((el) => el === document.activeElement)).toBe(true)
   }, 30_000)
 })

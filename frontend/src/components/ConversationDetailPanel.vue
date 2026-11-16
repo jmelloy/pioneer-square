@@ -622,7 +622,7 @@ watch(
   background: var(--color-bg-tertiary);
   border-bottom: 1px solid var(--color-brass-dark);
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--text-small);
 }
 
 .pane-tasks-error {
@@ -693,7 +693,7 @@ watch(
 
 .linked-task-pr {
   color: var(--color-teal);
-  font-size: 10px;
+  font-size: var(--text-small);
   flex-shrink: 0;
 }
 
@@ -971,7 +971,8 @@ watch(
 }
 
 .reply-error {
-  font-size: 10px;
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
   color: var(--color-red);
 }
 

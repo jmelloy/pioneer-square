@@ -529,6 +529,5 @@ watch(
 
 .send-btn {
   padding: 6px 10px;
-  font-size: 10px;
 }
 </style>
