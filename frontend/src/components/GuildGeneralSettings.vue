@@ -18,6 +18,10 @@
 
   <div class="settings-field">
     <label class="settings-label">Primary Repo</label>
+    <p class="settings-hint">
+      The Foreman's default repo. When set, the Projects screen shows only this repo; your Projects
+      browsing list is kept separately and does not change it.
+    </p>
     <div class="settings-row">
       <select v-model="primaryRepoValue" class="settings-input" @change="savePrimaryRepo">
         <option value="">— select primary repo —</option>
