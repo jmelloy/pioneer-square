@@ -201,6 +201,31 @@ async def test_acquire_followup_falls_back_to_create_when_branch_missing(tmp_pat
     assert result.primary is not None
 
 
+@pytest.mark.parametrize("remote_status", [0, 128])
+async def test_failed_attach_does_not_recreate_existing_or_unreachable_branch(
+    tmp_path, repo_path, remote_status
+):
+    from unittest.mock import patch
+
+    from pioneer_worker import git_ops
+
+    tw = _tw(tmp_path)
+    with (
+        patch.object(git_ops, "attach_worktree", return_value=False),
+        patch.object(git_ops, "run_git", return_value=(remote_status, "", "")),
+        patch.object(git_ops, "create_worktree") as create,
+    ):
+        result = await tw.acquire(
+            "network-error",
+            [("acme/widgets", str(repo_path))],
+            mode="followup",
+            branch="feature/existing",
+        )
+    create.assert_not_called()
+    assert result.primary is None
+    assert result.failed == ["acme/widgets"]
+
+
 async def test_acquire_followup_uses_local_branch_checked_out_elsewhere(tmp_path, repo_path):
     tw = _tw(tmp_path)
     first = await tw.acquire(
@@ -223,6 +248,186 @@ async def test_acquire_followup_uses_local_branch_checked_out_elsewhere(tmp_path
 
     assert second.failed == []
     assert (Path(_primary(second)) / "local.txt").read_text() == "local change\n"
+
+
+@pytest.mark.parametrize("branch_in_use", [False, True])
+async def test_new_followup_uses_remote_head_not_stale_local_branch(
+    tmp_path, origin, repo_path, branch_in_use
+):
+    _push_new_branch(origin, "feature/shared", "feature.txt", "v1")
+    tw = _tw(tmp_path)
+    old = await tw.acquire(
+        "old", [("acme/widgets", str(repo_path))], mode="followup", branch="feature/shared"
+    )
+    _git(["checkout", "-b", "feature/shared"], cwd=_primary(old))
+    if not branch_in_use:
+        _git(["checkout", "--detach"], cwd=_primary(old))
+    _git(["checkout", "feature/shared"], cwd=str(origin))
+    (origin / "feature.txt").write_text("v2")
+    _git(["commit", "-am", "v2"], cwd=str(origin))
+    _git(["checkout", "main"], cwd=str(origin))
+    result = await tw.acquire(
+        "new", [("acme/widgets", str(repo_path))], mode="followup", branch="feature/shared"
+    )
+    assert (Path(_primary(result)) / "feature.txt").read_text() == "v2"
+
+
+@pytest.mark.parametrize("mode", ["followup", "review_pr"])
+@pytest.mark.parametrize("diverged", [False, True])
+async def test_reuse_preserves_unpublished_commits(tmp_path, origin, repo_path, diverged, mode):
+    _push_new_branch(origin, "feature/local", "feature.txt", "v1")
+    tw = _tw(tmp_path)
+    repos = [("acme/widgets", str(repo_path))]
+    first = await tw.acquire("local", repos, mode="followup", branch="feature/local")
+    wt = Path(_primary(first))
+    (wt / "local.txt").write_text("unpublished")
+    _git(["add", "."], cwd=str(wt))
+    _git(["commit", "-m", "unpublished"], cwd=str(wt))
+    before = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=wt)
+    if diverged:
+        _git(["checkout", "feature/local"], cwd=str(origin))
+        (origin / "remote.txt").write_text("remote")
+        _git(["add", "."], cwd=str(origin))
+        _git(["commit", "-m", "remote"], cwd=str(origin))
+        _git(["checkout", "main"], cwd=str(origin))
+    _git(["update-ref", "refs/pull/42/head", "feature/local"], cwd=str(origin))
+    await tw.acquire(
+        "local", repos, mode=mode, branch="feature/local", pr_repo="acme/widgets", pr_number=42
+    )
+    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=wt) == before
+    assert (wt / "local.txt").read_text() == "unpublished"
+
+
+async def test_reuse_rejects_wrong_branch_without_changing_it(tmp_path, repo_path):
+    tw = _tw(tmp_path)
+    repos = [("acme/widgets", str(repo_path))]
+    first = await tw.acquire("wrong", repos, mode="fresh", branch="expected")
+    wt = _primary(first)
+    _git(["checkout", "-b", "other"], cwd=wt)
+    result = await tw.acquire("wrong", repos, mode="followup", branch="expected")
+    assert result.primary is None
+    assert subprocess.check_output(["git", "branch", "--show-current"], cwd=wt).strip() == b"other"
+
+
+async def test_reuse_rejects_another_repository_at_same_path(tmp_path, origin, repo_path):
+    tw = _tw(tmp_path)
+    first = await tw.acquire(
+        "same-name", [("acme/widgets", str(repo_path))], mode="fresh", branch="expected"
+    )
+    other = tmp_path / "other-cache"
+    _clone(origin, other)
+    second = await tw.acquire(
+        "same-name", [("other/widgets", str(other))], mode="followup", branch="expected"
+    )
+    assert second.primary is None
+    assert second.failed == ["other/widgets"]
+    assert Path(_primary(first)).is_dir()
+
+
+@pytest.mark.parametrize("failed_command", ["fetch", "reset"])
+async def test_review_reuse_does_not_run_after_refresh_failure(
+    tmp_path, origin, repo_path, failed_command
+):
+    from unittest.mock import patch
+
+    from pioneer_worker import git_ops
+
+    _push_new_branch(origin, "feature/retry", "feature.txt", "v1")
+    _git(["update-ref", "refs/pull/42/head", "feature/retry"], cwd=str(origin))
+    tw = _tw(tmp_path)
+    repos = [("acme/widgets", str(repo_path))]
+    first = await tw.acquire("retry", repos, mode="followup", branch="feature/retry")
+    run_git = git_ops.run_git
+
+    async def checked_git(args, **kwargs):
+        if args[0] == failed_command:
+            return 128, "", "failed"
+        return await run_git(args, **kwargs)
+
+    with patch.object(git_ops, "run_git", side_effect=checked_git):
+        result = await tw.acquire(
+            "retry",
+            repos,
+            mode="review_pr",
+            branch="feature/retry",
+            pr_repo="acme/widgets",
+            pr_number=42,
+        )
+    assert result.primary is None
+    assert (Path(_primary(first)) / "feature.txt").read_text() == "v1"
+
+
+async def test_review_checkout_stays_detached_when_branch_is_in_use(tmp_path, origin, repo_path):
+    from unittest.mock import patch
+
+    from pioneer_worker import git_ops
+
+    _push_new_branch(origin, "feature/review", "feature.txt", "review me")
+    tw = _tw(tmp_path)
+    repos = [("acme/widgets", str(repo_path))]
+    implementation = await tw.acquire(
+        "implementation", repos, mode="followup", branch="feature/review"
+    )
+    _git(["checkout", "-b", "feature/review"], cwd=_primary(implementation))
+
+    async def checkout(args, cwd=None, token=None):
+        command = ["checkout"]
+        if "--detach" in args:
+            command.append("--detach")
+        return await git_ops.run_git([*command, "feature/review"], cwd=cwd)
+
+    with patch.object(git_ops, "run_gh", side_effect=checkout):
+        result = await tw.acquire(
+            "review",
+            repos,
+            mode="review_pr",
+            branch="feature/review",
+            pr_repo="acme/widgets",
+            pr_number=1,
+        )
+    wt = _primary(result)
+    assert subprocess.check_output(["git", "branch", "--show-current"], cwd=wt).strip() == b""
+    assert (Path(wt) / "feature.txt").read_text() == "review me"
+
+
+async def test_review_reuse_fetches_fork_head_from_pull_ref(tmp_path, origin, repo_path):
+    from unittest.mock import patch
+
+    from pioneer_worker import git_ops
+
+    _push_new_branch(origin, "fork-only", "feature.txt", "v1")
+    tw = _tw(tmp_path)
+    repos = [("acme/widgets", str(repo_path))]
+    first = await tw.acquire("fork", repos, mode="followup", branch="fork-only")
+    _git(["checkout", "fork-only"], cwd=str(origin))
+    (origin / "feature.txt").write_text("v2")
+    _git(["commit", "-am", "v2"], cwd=str(origin))
+    _git(["update-ref", "refs/pull/42/head", "HEAD"], cwd=str(origin))
+    _git(["checkout", "main"], cwd=str(origin))
+    _git(["branch", "-D", "fork-only"], cwd=str(origin))
+    second = await tw.acquire(
+        "fork", repos, mode="review_pr", branch="fork-only", pr_repo="acme/widgets", pr_number=42
+    )
+    assert second.primary == first.primary
+    assert (Path(_primary(second)) / "feature.txt").read_text() == "v2"
+
+    # A supporting repo uses its default head, without creating a review branch.
+    with patch.object(git_ops, "create_worktree") as create:
+        supporting = await tw.acquire(
+            "support",
+            repos,
+            mode="review_pr",
+            branch="fork-only",
+            pr_repo="acme/other",
+            pr_number=42,
+        )
+    create.assert_not_called()
+    assert (
+        subprocess.check_output(
+            ["git", "branch", "--show-current"], cwd=_primary(supporting)
+        ).strip()
+        == b""
+    )
 
 
 async def test_acquire_followup_reuse_pulls_latest_from_origin(tmp_path, origin, repo_path):
@@ -291,6 +496,8 @@ async def test_acquire_reuse_preserves_local_work(tmp_path, origin, repo_path, m
             [("acme/widgets", str(repo_path))],
             mode=mode,
             branch="feature/dirty",
+            pr_repo="acme/widgets",
+            pr_number=42,
             emit=emit,
         )
 

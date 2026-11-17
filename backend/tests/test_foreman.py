@@ -979,7 +979,8 @@ class TestExecToolsDispatching:
         assert len(followup_msgs) == 1
         assert followup_msgs[0]["tool"] == "pi"
 
-    async def test_send_followup_preserves_tool_model_when_omitted(self, db_session):
+    @pytest.mark.parametrize("phase", ["execute", "review"])
+    async def test_send_followup_preserves_tool_model_when_omitted(self, db_session, phase):
         """Backward compatibility: omitting tool/model/provider keeps the task's
         existing values unchanged (#838)."""
         insert_guild(db_session, "g-followup-preserve")
@@ -993,6 +994,9 @@ class TestExecToolsDispatching:
             tool="claude",
             model="claude-opus-4-8",
             branch="claude/test-branch-preserve",
+            phase=phase,
+            pr_repo="owner/repo",
+            pr_number=42,
         )
         broadcast_calls = []
 
@@ -1013,11 +1017,16 @@ class TestExecToolsDispatching:
         assert len(followup_msgs) == 1
         assert followup_msgs[0]["tool"] == "claude"
         assert followup_msgs[0]["model"] == "claude-opus-4-8"
+        expected_phase = "review" if phase == "review" else "followup"
+        assert followup_msgs[0]["phase"] == expected_phase
+        assert followup_msgs[0]["prRepo"] == "owner/repo"
+        assert followup_msgs[0]["prNumber"] == 42
 
         with _sync_session(db_session) as session:
             task = session.execute(select(Task).where(col(Task.id) == "t-preserve1")).scalar_one()
         assert task.tool == "claude"
         assert task.model == "claude-opus-4-8"
+        assert task.phase == expected_phase
 
     async def test_send_followup_tool_override_switches_agent(self, db_session):
         """Passing tool= on send_followup switches the coding agent and drops

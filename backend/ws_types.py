@@ -211,6 +211,9 @@ class TaskFollowupMsg(_WS):
     """Follow-up instructions dispatched to a worker."""
 
     type: Literal["task-followup"] = "task-followup"
+    phase: str = "followup"
+    prRepo: str | None = None
+    prNumber: int | None = None
     workerId: str
     taskId: str
     name: str = ""
