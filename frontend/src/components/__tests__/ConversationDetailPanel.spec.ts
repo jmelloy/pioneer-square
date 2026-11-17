@@ -5,6 +5,7 @@ import ConversationDetailPanel from '../ConversationDetailPanel.vue'
 import { useGuildStore } from '../../stores/guild'
 import { useConversationsStore } from '../../stores/conversations'
 import { useUiStore } from '../../stores/ui'
+import { useTasksStore } from '../../stores/tasks'
 import { api, ApiError } from '../../utils/api'
 
 vi.mock('../../utils/api', async () => {
@@ -114,6 +115,7 @@ describe('ConversationDetailPanel reply', () => {
 describe('ConversationDetailPanel linked task', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    apiMock.mockReset()
   })
 
   it('shows name, status and PR link for tasks linked to the conversation', async () => {
@@ -138,6 +140,61 @@ describe('ConversationDetailPanel linked task', () => {
     expect(text).toContain('working')
     expect(text).not.toContain('Other')
     expect(wrapper.find('.linked-task-pr').attributes('href')).toBe('https://x/pr/1')
+  })
+
+  it('loads finalized tasks even when the active task store is populated', async () => {
+    const guildStore = useGuildStore()
+    guildStore.currentGuild = { id: 'g1', name: 'Guild 1' }
+    useConversationsStore().conversations = [{ ...CONVERSATION }]
+    const tasks = useTasksStore()
+    tasks.tasks = [{ id: 'active', name: 'Active work', state: 'working', conversation_id: 42 }]
+    apiMock.mockResolvedValueOnce([])
+    apiMock.mockResolvedValueOnce([
+      {
+        id: 'finished',
+        name: 'Finalized work',
+        state: 'done',
+        finished_at: '2026-01-02T00:00:00Z',
+        conversation_id: 7,
+        conversation_ids: [7, 42],
+      },
+    ])
+    const wrapper = mount(ConversationDetailPanel, { props: { id: 42 } })
+    await flushPromises()
+    expect(apiMock).toHaveBeenCalledWith('/guilds/g1/tasks?conversation_id=42')
+    expect(wrapper.find('.pane-tasks').text()).toContain('Finalized work')
+    expect(wrapper.find('.linked-task-name').attributes('href')).toBe('/task/finished/log')
+    expect(wrapper.find('.pane-tasks').text()).toContain('done')
+    expect(wrapper.find('.pane-tasks').text()).toContain('Active work')
+    expect(tasks.tasks).toHaveLength(1)
+  })
+
+  it('keeps a task visible when finalization removes it from active work', async () => {
+    const { wrapper } = mountPanel()
+    await flushPromises()
+    const tasks = useTasksStore()
+    tasks.tasks = [{ id: 't-live', name: 'Live task', state: 'working', conversation_id: 42 }]
+    await flushPromises()
+    expect(wrapper.find('.pane-tasks').text()).toContain('Live task')
+    apiMock.mockResolvedValueOnce([
+      {
+        id: 't-live',
+        name: 'Live task',
+        state: 'done',
+        finished_at: '2026-01-02T00:00:00Z',
+        conversation_id: 42,
+      },
+    ])
+    tasks.handleWebSocketMessage({
+      type: 'task-update',
+      taskId: 't-live',
+      state: 'done',
+      finishedAt: '2026-01-02T00:00:00Z',
+    })
+    await flushPromises()
+    expect(tasks.tasks).toHaveLength(0)
+    expect(wrapper.find('.pane-tasks').text()).toContain('Live task')
+    expect(wrapper.find('.pane-tasks').text()).toContain('done')
   })
 
   it('interleaves task output, PR checks and replies without crossing conversations', async () => {
