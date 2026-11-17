@@ -46,6 +46,14 @@
         <div v-for="task in linkedTasks" :key="task.id" class="linked-task">
           <span class="linked-task-label">TASK</span>
           <a
+            v-if="task.finished_at"
+            :href="`/task/${task.id}/log`"
+            class="linked-task-name"
+            :title="'View task log ' + task.id"
+            >{{ task.name || task.id }}</a
+          >
+          <a
+            v-else
             href="#"
             class="linked-task-name"
             :title="'Open task ' + task.id"
@@ -201,11 +209,11 @@ import { useUiStore } from '../stores/ui'
 import { formatClock, formatRelative } from '../utils/format'
 import { renderMarkdown } from '../utils/markdown'
 import { vArtifacts } from '../utils/artifacts'
-import { ApiError } from '../utils/api'
+import { api, ApiError } from '../utils/api'
 import { useChatGrouping, isToolUseGroup } from '../composables/useChatGrouping'
 import type { GroupedMessage } from '../composables/useChatGrouping'
 import LogLine from './log-pane/LogLine.vue'
-import type { ChatMessage, LogEntry } from '../types'
+import type { ChatMessage, LogEntry, Task } from '../types'
 
 const props = defineProps<{
   id: number
@@ -234,12 +242,47 @@ const replyError = ref<string | null>(null)
 const conversation = computed(() => conversationsStore.conversations.find((c) => c.id === props.id))
 
 const tasksError = ref(false)
+const conversationTasks = ref<Task[]>([])
+let tasksRequest = 0
 
-// Tasks linked to this conversation (conversation_tasks is N:N; conversation_id is the primary).
+// Keep history separate from the active-work store, while using its live updates.
 const linkedTasks = computed(() =>
-  tasksStore.tasks.filter(
-    (t) => t.conversation_id === props.id || t.conversation_ids?.includes(props.id),
-  ),
+  [
+    ...new Map([...conversationTasks.value, ...tasksStore.tasks].map((t) => [t.id, t])).values(),
+  ].filter((t) => t.conversation_id === props.id || t.conversation_ids?.includes(props.id)),
+)
+
+async function loadConversationTasks() {
+  const guildId = guildStore.currentGuild?.id
+  if (!guildId) return
+  const conversationId = props.id
+  const request = ++tasksRequest
+  try {
+    const tasks = await api<Task[]>(`/guilds/${guildId}/tasks?conversation_id=${conversationId}`)
+    if (
+      request !== tasksRequest ||
+      props.id !== conversationId ||
+      guildStore.currentGuild?.id !== guildId
+    )
+      return
+    conversationTasks.value = tasks
+    tasksError.value = false
+  } catch {
+    if (
+      request === tasksRequest &&
+      props.id === conversationId &&
+      guildStore.currentGuild?.id === guildId
+    )
+      tasksError.value = true
+  }
+}
+
+// Finalization removes a row from the active store, not from conversation history.
+watch(
+  () => tasksStore.tasks.map((t) => t.id),
+  (ids, previous) => {
+    if (previous.some((id) => !ids.includes(id))) void loadConversationTasks()
+  },
 )
 
 function openTask(taskId: string) {
@@ -389,6 +432,8 @@ async function load() {
   if (!guildId) return
   const conversationId = props.id
   history.value = []
+  conversationTasks.value = []
+  tasksError.value = false
   hasOlder.value = false
   oldestId.value = undefined
   if (!conversation.value) {
@@ -408,9 +453,7 @@ async function load() {
   } finally {
     loadingMessages.value = false
   }
-  if (!tasksStore.tasks.length) {
-    tasksError.value = !(await tasksStore.fetchTasks(guildId))
-  }
+  await loadConversationTasks()
 }
 
 async function onReply() {

@@ -14,7 +14,14 @@ from datetime import UTC, datetime, timedelta
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
-from helpers import _sync_session, insert_guild, make_auth_token, raw_conn  # noqa: E402
+from helpers import (  # noqa: E402
+    _sync_session,
+    insert_conversation,
+    insert_guild,
+    insert_task,
+    make_auth_token,
+    raw_conn,
+)
 from models import Task, should_keep_until_issue_closed  # noqa: E402
 from sqlalchemy import select, update  # noqa: E402
 from sqlmodel import col  # noqa: E402
@@ -114,6 +121,33 @@ def test_list_hides_finished_tasks(client):
     assert t_live in ids
     assert t_done not in ids
     assert _read_task(db_url, t_done)["id"] == t_done  # row is kept
+
+
+def test_conversation_tasks_include_finished_and_secondary_links(client):
+    test_client, db_url = client
+    insert_guild(db_url, "g-history")
+    conv = insert_conversation(db_url, "g-history")
+    other = insert_conversation(db_url, "g-history")
+    insert_task(db_url, "g-history", "t-history-live", conversation_id=conv)
+    insert_task(db_url, "g-history", "t-history-done", conversation_id=other)
+    insert_task(db_url, "g-history", "t-history-other", conversation_id=other)
+    from models import link_conversation_task
+
+    with _sync_session(db_url) as session:
+        session.execute(link_conversation_task(conv, "t-history-done"))
+        session.commit()
+    _set_finished_at(db_url, "t-history-done", datetime.now(UTC))
+
+    resp = test_client.get(f"/guilds/g-history/tasks?conversation_id={conv}", headers=_auth(db_url))
+    assert resp.status_code == 200
+    assert {t["id"] for t in resp.json()} == {"t-history-live", "t-history-done"}
+    assert test_client.get(f"/guilds/g-history/tasks?conversation_id={conv}").status_code == 401
+    insert_guild(db_url, "g-history-other")
+    resp = test_client.get(
+        f"/guilds/g-history-other/tasks?conversation_id={conv}", headers=_auth(db_url)
+    )
+    assert resp.status_code == 200
+    assert resp.json() == []
 
 
 def test_get_task_logs_accessible_after_finish(client):
