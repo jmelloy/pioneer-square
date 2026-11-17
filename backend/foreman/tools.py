@@ -2076,6 +2076,9 @@ async def _handle_send_followup(inp: dict, ctx: ToolContext) -> tuple[str, bool]
             col(Task.issue_number),
             col(Task.issue_repo),
             col(Task.claude_session_id),
+            col(Task.phase),
+            col(Task.pr_repo),
+            col(Task.pr_number),
         ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
     )
     row = result.one_or_none()
@@ -2094,7 +2097,11 @@ async def _handle_send_followup(inp: dict, ctx: ToolContext) -> tuple[str, bool]
         task_issue_number,
         task_issue_repo,
         task_session_id,
+        task_phase,
+        task_pr_repo,
+        task_pr_number,
     ) = row
+    followup_phase = "review" if task_phase == "review" else "followup"
     target_worker_id = await _select_followup_worker(
         db,
         guild_id=guild_id,
@@ -2254,7 +2261,7 @@ async def _handle_send_followup(inp: dict, ctx: ToolContext) -> tuple[str, bool]
         else:
             update_vals: dict = {
                 "state": "working",
-                "phase": "followup",
+                "phase": followup_phase,
                 "worker_id": target_worker_id,
                 "tool": effective_tool,
                 "model": effective_model,
@@ -2301,6 +2308,9 @@ async def _handle_send_followup(inp: dict, ctx: ToolContext) -> tuple[str, bool]
                     issueNumber=task_issue_number,
                     issueRepo=task_issue_repo,
                     sessionId=followup_session_id,
+                    phase=followup_phase,
+                    prRepo=task_pr_repo,
+                    prNumber=task_pr_number,
                 ).model_dump(by_alias=True, exclude_none=True),
             )
             ctx.scheduler.spawn(

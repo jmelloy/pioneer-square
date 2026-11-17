@@ -225,7 +225,8 @@ async def test_review_phase_injects_no_pr_instructions(caplog: pytest.LogCapture
     assert "duplicating code already in the system" in desc_sent
 
 
-async def test_review_phase_checks_out_pr_branch_via_gh(caplog: pytest.LogCaptureFixture):
+@pytest.mark.parametrize("followup", [False, True])
+async def test_review_phase_checks_out_pr_branch_via_gh(caplog: pytest.LogCaptureFixture, followup):
     """Review-phase tasks must check out the PR's own branch (via `gh pr checkout`,
     wrapped by ``git_ops.checkout_pr_worktree``) instead of generating a new
     ``ps/...`` branch, and must never push commits (issue #799).
@@ -241,6 +242,8 @@ async def test_review_phase_checks_out_pr_branch_via_gh(caplog: pytest.LogCaptur
 
     task = {
         "id": "t-revcheckout",
+        "followup_instructions": "Review again" if followup else "",
+        "followup_branch": "stale-name" if followup else "",
         "name": "Review PR #42",
         "description": "Review the changes in PR #42",
         "phase": "review",
@@ -290,6 +293,47 @@ async def test_review_phase_checks_out_pr_branch_via_gh(caplog: pytest.LogCaptur
     assert not any(
         m.args[0].get("branch", "").startswith("ps/") for m in worker._send.await_args_list
     ), "review tasks must never record a generated ps/... branch"
+
+
+@pytest.mark.parametrize("pr_checkout_ok", [False, True])
+async def test_review_requires_pr_repo_and_uses_it_as_cwd(tmp_path, pr_checkout_ok):
+    from unittest.mock import patch
+
+    from pioneer_worker.task_worktree import AcquireResult, WorktreeEntry
+
+    worker = Worker(_make_cfg(repos=["owner/support", "owner/repo"]))
+    worker._joined = True
+    worker._send = AsyncMock()
+    worker.cfg.work_dir = str(tmp_path)
+    task = {
+        "id": "t-multi-review",
+        "description": "Review PR",
+        "phase": "review",
+        "pr_repo": "owner/repo",
+        "pr_number": 42,
+        "tool": "claude",
+    }
+    support = WorktreeEntry("owner/support", "/cache/support", str(tmp_path / "support"))
+    pr = WorktreeEntry("owner/repo", "/cache/repo", str(tmp_path / "repo"))
+    entries = [support, pr] if pr_checkout_ok else [support]
+    result = AcquireResult(entries, support.wt_path, [] if pr_checkout_ok else [pr.repo_full])
+    runner = AsyncMock(return_value=(True, "success", "done", None))
+    with (
+        patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/cache/repo"),
+        patch("pioneer_worker.worker.git_ops.get_pr_head_branch", return_value="feature/review"),
+        patch.object(worker.worktrees, "acquire", return_value=result) as acquire,
+        patch("pioneer_worker.worker.claude_runner.run_claude_auto", runner),
+        patch("pioneer_worker.worker.github_pr.find_existing_pr", return_value=None),
+        patch("pioneer_worker.worker.github_pr.push_branch") as push,
+    ):
+        await worker._execute_task(task, worker.agents[0])
+    assert acquire.call_args.args[1][0][0] == "owner/repo"
+    if pr_checkout_ok:
+        assert runner.await_args.args[1] == pr.wt_path
+    else:
+        runner.assert_not_called()
+        assert any(call.args[0].get("state") == "failed" for call in worker._send.call_args_list)
+    push.assert_not_called()
 
 
 async def test_review_prefers_pr_number_over_issue_number():

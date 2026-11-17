@@ -1906,7 +1906,7 @@ class Worker:
             return
 
         name = task.get("name") or desc
-        if is_review and not is_followup:
+        if is_review:
             # Fail fast, before ever touching git, when the metadata handoff
             # from assign_task dropped pr_repo/pr_number — this is the
             # contract review tasks depend on, and a clear error here beats
@@ -1978,6 +1978,20 @@ class Worker:
             await emit(f"Task: {desc}", level=LEVEL_WORKER)
             await emit(f"Branch: {branch}", level=LEVEL_WORKER)
 
+        if is_review:
+            # Never review a supporting repo when the PR repository is absent or fails.
+            if not any(
+                repo.lower() == pr_repo.lower() for repo in self.cfg.repos
+            ) and not pr_repo.startswith(org_prefixes):
+                await emit(
+                    f"✗ Review repository {pr_repo} is not configured on this worker.",
+                    level=LEVEL_WORKER,
+                )
+                await self._task_update(task_id, agent=agent, state="failed", finishedAt=_now_iso())
+                await self._set_state("idle", agent)
+                return
+            repos = [pr_repo, *(repo for repo in repos if repo.lower() != pr_repo.lower())]
+
         # Clone/fetch the shared per-repo cache for each repo this task
         # touches. This is a worker-wide concern independent of the task —
         # TaskWorktree.acquire only deals with the per-task worktree layered
@@ -2003,7 +2017,7 @@ class Worker:
                 continue
             cloned_repos.append((repo_full, repo_path))
 
-        mode = "followup" if is_followup else ("review_pr" if is_review else "fresh")
+        mode = "review_pr" if is_review else ("followup" if is_followup else "fresh")
         acquired = await self.worktrees.acquire(
             task_id,
             cloned_repos,
@@ -2015,6 +2029,15 @@ class Worker:
             emit=emit,
         )
         primary_wt = acquired.primary
+        if is_review:
+            primary_wt = next(
+                (
+                    entry.wt_path
+                    for entry in acquired.entries
+                    if entry.repo_full.lower() == pr_repo.lower()
+                ),
+                None,
+            )
 
         if not primary_wt:
             logger.error("Task %s: no worktrees created — aborting", task_id)

@@ -38,7 +38,7 @@ _LEVEL_WORKER = "worker"
 # "followup" attaches to an existing branch, falling back to "fresh" behaviour
 # if the branch never reached origin (e.g. the original run failed pre-push).
 # "review_pr" checks out an existing PR's branch via `gh pr checkout` for the
-# repo the PR lives in, and behaves like "fresh" for any other repo in the task.
+# repo the PR lives in; supporting repos use detached default-branch checkouts.
 ACQUIRE_MODES = frozenset({"fresh", "followup", "review_pr"})
 
 
@@ -141,12 +141,40 @@ class TaskWorktree:
             wt = self.wt_path(task_id, repo_full)
             repo_name = _repo_name(repo_full)
 
+            is_pr_repo = mode == "review_pr" and pr_repo and repo_full.lower() == pr_repo.lower()
             if _is_worktree_dir(wt):
+                rc, common_dir, _ = await git_ops.run_git(
+                    ["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=wt
+                )
+                repo_rc, repo_common_dir, _ = await git_ops.run_git(
+                    ["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=repo_path
+                )
+                branch_rc, current_branch, _ = await git_ops.run_git(
+                    ["symbolic-ref", "--quiet", "--short", "HEAD"], cwd=wt
+                )
+                if (
+                    rc != 0
+                    or repo_rc != 0
+                    or os.path.realpath(common_dir.strip())
+                    != os.path.realpath(repo_common_dir.strip())
+                    or branch_rc not in (0, 1)
+                    or (branch_rc == 0 and current_branch.strip() != branch)
+                ):
+                    logger.error(
+                        "Task %s: wrong repository or branch at %s; leaving untouched", task_id, wt
+                    )
+                    if emit:
+                        await emit(
+                            f"✗ Wrong repository or branch at {wt}; keeping local state",
+                            level=_LEVEL_WORKER,
+                        )
+                    failed.append(repo_full)
+                    continue
                 # Worktree from a prior run on the same task — reuse it.
                 logger.info("Task %s: reusing worktree at %s", task_id, wt)
                 if emit:
                     await emit(f"Reusing worktree {repo_name}", level=_LEVEL_WORKER)
-                if mode in ("followup", "review_pr"):
+                if mode == "followup" or is_pr_repo:
                     # Retained worktrees may contain unpublished edits; fail closed.
                     rc, status, _ = await git_ops.run_git(["status", "--porcelain"], cwd=wt)
                     if rc != 0 or status.strip():
@@ -164,31 +192,82 @@ class TaskWorktree:
                                 level=_LEVEL_WORKER,
                             )
                     else:
-                        await git_ops.run_git(["fetch", "origin", branch], cwd=wt, token=token)
-                        await git_ops.run_git(["reset", "--hard", f"origin/{branch}"], cwd=wt)
+                        # GitHub exposes fork PR heads on the base repo's pull refs too.
+                        remote_branch = (
+                            f"refs/pull/{pr_number}/head" if is_pr_repo else f"refs/heads/{branch}"
+                        )
+                        local_ref = (
+                            f"refs/pioneer/pr/{pr_number}"
+                            if is_pr_repo
+                            else f"refs/remotes/origin/{branch}"
+                        )
+                        fetched, _, _ = await git_ops.run_git(
+                            ["fetch", "origin", f"+{remote_branch}:{local_ref}"],
+                            cwd=wt,
+                            token=token,
+                        )
+                        if fetched != 0:
+                            # Local-only branches and offline recovery must retain their work.
+                            if is_pr_repo:
+                                failed.append(repo_full)
+                                continue
+                            if emit:
+                                await emit(
+                                    f"Could not refresh {repo_name}; keeping local state",
+                                    level=_LEVEL_WORKER,
+                                )
+                        else:
+                            rc, target, _ = await git_ops.run_git(
+                                ["rev-parse", "--verify", local_ref], cwd=wt
+                            )
+                            if rc != 0:
+                                failed.append(repo_full)
+                                continue
+                            rc, _, _ = await git_ops.run_git(
+                                ["merge-base", "--is-ancestor", "HEAD", target.strip()], cwd=wt
+                            )
+                            if rc == 0:
+                                rc, _, _ = await git_ops.run_git(
+                                    ["reset", "--hard", target.strip()], cwd=wt
+                                )
+                            elif rc == 1:
+                                # A clean index does not mean the local commits were published.
+                                if emit:
+                                    await emit(
+                                        f"Unpublished or divergent commits in {repo_name}; keeping local state",
+                                        level=_LEVEL_WORKER,
+                                    )
+                                rc = 0
+                            if rc != 0:
+                                failed.append(repo_full)
+                                continue
                 entries.append(WorktreeEntry(repo_full, repo_path, wt))
                 continue
 
             if mode == "followup":
                 logger.info("Task %s: attaching worktree %s to branch %s", task_id, wt, branch)
-                # attach_worktree fetches origin/<branch> before checking it out,
-                # so the new worktree starts at the latest remote commit.
+                # Start at the fetched head unless there are unpublished local commits.
                 ok = await git_ops.attach_worktree(repo_path, wt, branch, token)
                 if not ok:
-                    logger.warning(
-                        "Task %s: attach failed for %s — branch %s not found on origin; "
-                        "falling back to create_worktree",
-                        task_id,
-                        repo_full,
-                        branch,
+                    missing, _, _ = await git_ops.run_git(
+                        ["ls-remote", "--exit-code", "--heads", "origin", f"refs/heads/{branch}"],
+                        cwd=repo_path,
+                        token=token,
                     )
-                    if emit:
-                        await emit(
-                            f"Branch not found on origin; creating fresh branch {branch[:50]}",
-                            level=_LEVEL_WORKER,
+                    # Only a confirmed missing branch permits starting from the default head.
+                    if missing == 2:
+                        logger.warning(
+                            "Task %s: branch %s never reached origin; creating worktree",
+                            task_id,
+                            branch,
                         )
-                    ok = await git_ops.create_worktree(repo_path, wt, branch, token)
-            elif mode == "review_pr" and pr_repo and repo_full.lower() == pr_repo.lower():
+                        if emit:
+                            await emit(
+                                f"Branch not found on origin; creating fresh branch {branch[:50]}",
+                                level=_LEVEL_WORKER,
+                            )
+                        ok = await git_ops.create_worktree(repo_path, wt, branch, token)
+            elif is_pr_repo:
                 # Check out the PR's own branch via `gh pr checkout` instead of
                 # `git checkout -b` — review tasks read an existing PR, they
                 # never create a new branch.
@@ -202,15 +281,13 @@ class TaskWorktree:
                 ok = await git_ops.checkout_pr_worktree(repo_path, wt, pr_number, repo_full, token)
             else:
                 if mode == "review_pr":
-                    logger.warning(
-                        "Task %s: repo %s does not match PR repo %s (case-insensitive) — "
-                        "falling back to create_worktree instead of gh pr checkout",
-                        task_id,
-                        repo_full,
-                        pr_repo,
+                    rc, _, _ = await git_ops.run_git(
+                        ["worktree", "add", "--detach", wt, "origin/HEAD"], cwd=repo_path
                     )
-                logger.info("Task %s: creating worktree %s on branch %s", task_id, wt, branch)
-                ok = await git_ops.create_worktree(repo_path, wt, branch, token)
+                    ok = rc == 0
+                else:
+                    logger.info("Task %s: creating worktree %s on branch %s", task_id, wt, branch)
+                    ok = await git_ops.create_worktree(repo_path, wt, branch, token)
 
             if ok:
                 logger.info("Task %s: worktree ready at %s", task_id, wt)

@@ -198,29 +198,32 @@ async def attach_worktree(
     )
     if not _mkdir_parent(wt_path):
         return False
-    await run_git(["fetch", "origin", branch], cwd=repo_path, token=token)
-    # Prefer the local branch. If another worktree already has it checked out,
-    # attach detached at the same commit; push_branch pushes HEAD back to branch.
-    rc, _, _ = await run_git(["worktree", "add", wt_path, branch], cwd=repo_path)
-    if rc != 0:
-        rc_ref, _, _ = await run_git(["rev-parse", "--verify", branch], cwd=repo_path)
-        if rc_ref == 0:
-            rc, _, _ = await run_git(
-                ["worktree", "add", "--detach", wt_path, branch],
-                cwd=repo_path,
+    remote_ref = f"refs/remotes/origin/{branch}"
+    fetched, _, _ = await run_git(
+        ["fetch", "origin", f"+refs/heads/{branch}:{remote_ref}"], cwd=repo_path, token=token
+    )
+    local_rc, local_head, _ = await run_git(
+        ["rev-parse", "--verify", f"refs/heads/{branch}"], cwd=repo_path
+    )
+    target = local_head.strip() if local_rc == 0 else ""
+    if fetched == 0:
+        rc, remote_head, _ = await run_git(["rev-parse", "--verify", remote_ref], cwd=repo_path)
+        if rc != 0:
+            return False
+        # Keep unpublished/divergent local commits; otherwise start at the fetched head.
+        ancestor = 0
+        if target:
+            ancestor, _, _ = await run_git(
+                ["merge-base", "--is-ancestor", target, remote_head.strip()], cwd=repo_path
             )
-    if rc != 0:
-        rc, _, _ = await run_git(
-            ["worktree", "add", "-B", branch, wt_path, f"origin/{branch}"],
-            cwd=repo_path,
-        )
-    if rc != 0:
-        rc_ref, _, _ = await run_git(["rev-parse", "--verify", f"origin/{branch}"], cwd=repo_path)
-        if rc_ref == 0:
-            rc, _, _ = await run_git(
-                ["worktree", "add", "--detach", wt_path, f"origin/{branch}"],
-                cwd=repo_path,
-            )
+        if ancestor not in (0, 1):
+            return False
+        if ancestor == 0:
+            target = remote_head.strip()
+    if not target:
+        return False
+    # Publishing uses HEAD:<branch>; no need to claim a branch held by another task.
+    rc, _, _ = await run_git(["worktree", "add", "--detach", wt_path, target], cwd=repo_path)
     if rc != 0:
         logger.error("Worktree attach failed at %s for branch %s (rc=%d)", wt_path, branch, rc)
     return rc == 0
@@ -305,8 +308,8 @@ async def checkout_pr_worktree(
     Used for review-phase tasks: the worker must review the PR's actual branch
     rather than a freshly generated one. A detached worktree is created first
     (linked worktrees can't share a branch with the main checkout), then
-    ``gh pr checkout`` is run inside it so `gh` resolves the head branch
-    (including cross-fork PRs) and checks it out in place.
+    ``gh pr checkout --detach`` resolves the head (including cross-fork PRs)
+    without claiming a branch already checked out by an implementation task.
     """
     logger.info("Checking out PR #%s (%s) into worktree %s", pr_number, repo_full, wt_path)
     if not _mkdir_parent(wt_path):
@@ -317,7 +320,9 @@ async def checkout_pr_worktree(
         logger.error("Detached worktree add failed at %s (rc=%d)", wt_path, rc)
         return False
     rc, _, _ = await run_gh(
-        ["pr", "checkout", str(pr_number), "--repo", repo_full], cwd=wt_path, token=token
+        ["pr", "checkout", str(pr_number), "--repo", repo_full, "--detach"],
+        cwd=wt_path,
+        token=token,
     )
     if rc != 0:
         logger.error("gh pr checkout failed for PR #%s (%s) in %s", pr_number, repo_full, wt_path)
