@@ -94,6 +94,7 @@
             <div
               v-if="issue.body"
               class="issue-body markdown-body markdown-prose"
+              v-artifacts
               v-html="renderMarkdown(issue.body)"
             ></div>
             <div v-else class="issue-body-empty">No description provided.</div>
@@ -224,6 +225,7 @@ import { useTasksStore } from '../stores/tasks'
 import type { Task, LogEntry } from '../types'
 import { api } from '../utils/api'
 import { renderMarkdown } from '../utils/markdown'
+import { vArtifacts } from '../utils/artifacts'
 import { formatRelative } from '../utils/format'
 import { isVisibleLogEntry } from '../utils/logs'
 

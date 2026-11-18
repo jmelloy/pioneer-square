@@ -1,52 +1,28 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 
-vi.mock('../api', () => ({ api: vi.fn(), API_BASE: '' }))
+vi.mock('../api', () => ({ API_BASE: 'https://ps.example' }))
+vi.mock('../../composables/useLightbox', () => ({ openLightbox: vi.fn() }))
 
-import { api } from '../api'
 import { renderMarkdown } from '../markdown'
-import { hydrateArtifactLinks, parseArtifactId } from '../artifacts'
+import { enhanceArtifactImages } from '../artifacts'
+import { openLightbox } from '../../composables/useLightbox'
 
 const ID = '123e4567-e89b-12d3-a456-426614174000'
+const URL = `https://ps.example/api/artifacts/${ID}/public`
 
-describe('artifact:// links', () => {
-  beforeEach(() => vi.mocked(api).mockReset())
-
-  it('keeps artifact links through markdown sanitising, incl. bare URLs', () => {
-    const html = renderMarkdown(`[shot.png](artifact://${ID})\n\nalso artifact://${ID}-b here`)
-    expect(html).toContain(`href="artifact://${ID}"`)
-    expect(html).toContain(`href="artifact://${ID}-b"`)
-    expect(parseArtifactId(`artifact://${ID}`)).toBe(ID)
-    expect(parseArtifactId('https://x/y')).toBeNull()
+describe('artifact:// refs', () => {
+  it('render as inline images with the public URL, incl. bare refs', () => {
+    const html = renderMarkdown(`[shot.png](artifact://${ID})\n\nalso artifact://${ID} here`)
+    expect(html).not.toContain('artifact://')
+    expect(html.match(new RegExp(`<img src="${URL}" alt="(shot.png|image)">`, 'g'))).toHaveLength(2)
+    expect(html).toContain(`href="${URL}"`)
   })
 
-  it('renders images inline and degrades gracefully when missing', async () => {
-    vi.mocked(api).mockResolvedValueOnce({
-      id: ID,
-      url: 'https://s3.example/x.png',
-      contentType: 'image/png',
-    })
-    const ok = document.createElement('div')
-    ok.innerHTML = renderMarkdown(`[shot.png](artifact://${ID})`)
-    document.body.append(ok)
-    await hydrateArtifactLinks(ok, 'g-ok')
-    expect(ok.querySelector('img')?.getAttribute('src')).toBe('https://s3.example/x.png')
-
-    vi.mocked(api).mockResolvedValueOnce({
-      id: `${ID}-rel`,
-      url: `/api/artifacts/${ID}-rel/public`,
-      contentType: 'image/png',
-    })
-    const rel = document.createElement('div')
-    rel.innerHTML = renderMarkdown(`[rel.png](artifact://${ID}-rel)`)
-    document.body.append(rel)
-    await hydrateArtifactLinks(rel, 'g-rel')
-    expect(rel.querySelector('img')?.getAttribute('src')).toBe(`/api/artifacts/${ID}-rel/public`)
-
-    vi.mocked(api).mockRejectedValueOnce(new Error('404'))
-    const bad = document.createElement('div')
-    bad.innerHTML = renderMarkdown(`[gone.png](artifact://${ID}-gone)`)
-    document.body.append(bad)
-    await hydrateArtifactLinks(bad, 'g-bad')
-    expect(bad.querySelector('.artifact-missing')?.textContent).toContain('gone.png')
+  it('open the lightbox on click', () => {
+    const el = document.createElement('div')
+    el.innerHTML = renderMarkdown(`[shot.png](artifact://${ID})`)
+    enhanceArtifactImages(el)
+    el.querySelector('a')!.click()
+    expect(openLightbox).toHaveBeenCalledWith({ url: URL, name: 'shot.png' })
   })
 })
