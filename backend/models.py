@@ -661,10 +661,11 @@ class GuildKey(SQLModel, table=True):
 
 
 class ApiRequestLog(SQLModel, table=True):
-    """Full record of one Anthropic messages.create() call made by the foreman.
+    """Record of one Anthropic messages.create() call made by the foreman.
 
-    Created before the call (with model/system/messages/extra) and updated
-    after with request_id, response body, token usage, stop_reason, and
+    Metadata (attribution, tokens, timestamps) is queryable here; the full request/response
+    bodies are archived to private S3 and referenced by object key. Created before the call
+    and updated after with request_id, response reference, token usage, stop_reason, and
     completed_at. Linked from foreman_turns.request_id (FK to this table's id).
     """
 
@@ -678,11 +679,20 @@ class ApiRequestLog(SQLModel, table=True):
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
     model: str
-    # Full list of system content blocks sent (matches the list passed to the API).
+    # Payloads live in private S3 (see api_audit_store.py); the *_object_* columns are the
+    # references. The inline JSON columns below are LEGACY: populated only for rows written
+    # before archival, or when S3 is unconfigured / an upload failed. Readers fall back to them.
+    request_object_key: str | None = None  # gzip JSON {system, messages, extra}
+    request_object_bytes: int | None = None
+    request_sha256: str | None = None
+    response_object_key: str | None = None  # gzip JSON of the response body
+    response_object_bytes: int | None = None
+    response_sha256: str | None = None
+    # LEGACY inline: list of system content blocks sent.
     system: list | None = Field(default=None, sa_column=Column(JSON, nullable=True))
-    # Full outbound messages array.
+    # LEGACY inline: full outbound messages array.
     messages: list | None = Field(default=None, sa_column=Column(JSON, nullable=True))
-    # Full response body from Anthropic (model_dump() of the SDK Message object).
+    # LEGACY inline: response body from Anthropic (model_dump() of the SDK Message object).
     response: dict | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     input_tokens: int | None = None
     output_tokens: int | None = None
@@ -704,7 +714,7 @@ class ApiRequestLog(SQLModel, table=True):
     # user-followup. Lets usage be attributed by trigger source. Nullable:
     # pre-existing rows and any run whose entry point didn't pass one stay NULL.
     trigger: str | None = None
-    # Extra API parameters: max_tokens, tools list, tool_choice, etc.
+    # LEGACY inline: extra API parameters (max_tokens, tools list, tool_choice, etc.).
     extra: dict | None = Field(default=None, sa_column=Column(JSON, nullable=True))
 
 
