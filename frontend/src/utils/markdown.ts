@@ -11,24 +11,37 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   }
 })
 
-// `[text](artifact://<id>)`, `![text](artifact://<id>)`, or a bare `artifact://<id>`.
+// `[text](artifact://<id>)`, `![text](artifact://<id>)`, or a bare `artifact://<id>`; non-image
+// artifacts carry `?type=<html|text|pdf>` (see backend `routes/artifacts.artifact_uri`).
 const ARTIFACT_RE =
-  /!?\[([^\]\n]*)\]\(artifact:\/\/([A-Za-z0-9-]+)\/?\)|(^|\s)artifact:\/\/([A-Za-z0-9-]+)\/?(?=$|[\s).,;!?])/g
+  /!?\[([^\]\n]*)\]\(artifact:\/\/([A-Za-z0-9-]+)\/?(?:\?type=(\w+))?\)|(^|\s)artifact:\/\/([A-Za-z0-9-]+)\/?(?:\?type=(\w+))?(?=$|[\s).,;!?])/g
 
-/** Permanent public image URL; mirrors backend `artifact_service.public_url()`. */
+/** Permanent public artifact URL; mirrors backend `artifact_service.public_url()`. */
 export function artifactUrl(id: string): string {
   return `${API_BASE}/api/artifacts/${id}/public`
 }
 
-// Artifacts are always images (backend only accepts png/jpeg/webp/gif), so render them
-// inline as a linked <img> — no per-artifact metadata fetch needed.
+// The type rides in the ref, so render without a per-artifact metadata fetch: images inline as a
+// linked <img>, HTML as a link the `v-artifacts` directive previews, anything else as a plain link.
 function inlineArtifacts(text: string): string {
   return text.replace(
     ARTIFACT_RE,
-    (_m, label?: string, id?: string, pre?: string, bareId?: string) => {
+    (
+      _m,
+      label?: string,
+      id?: string,
+      type?: string,
+      pre?: string,
+      bareId?: string,
+      bareType?: string,
+    ) => {
       const url = artifactUrl((id ?? bareId)!)
-      const alt = (label ?? '').trim() || 'image'
-      return `${pre ?? ''}[![${alt}](${url})](${url})`
+      const kind = type ?? bareType ?? 'image'
+      const name = (label ?? '').trim()
+      if (kind === 'image') return `${pre ?? ''}[![${name || 'image'}](${url})](${url})`
+      // The endpoint ignores the query; it just marks HTML links for the directive.
+      const href = kind === 'html' ? `${url}?type=html` : url
+      return `${pre ?? ''}[${kind === 'html' ? '🌐' : '📄'} ${name || kind}](${href})`
     },
   )
 }

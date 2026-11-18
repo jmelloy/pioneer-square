@@ -25,4 +25,24 @@ describe('artifact:// refs', () => {
     el.querySelector('a')!.click()
     expect(openLightbox).toHaveBeenCalledWith({ url: URL, name: 'shot.png' })
   })
+
+  it('render HTML artifacts as a sandboxed-preview link', () => {
+    const el = document.createElement('div')
+    el.innerHTML = renderMarkdown(`[report.html](artifact://${ID}?type=html)`)
+    expect(el.querySelector('img')).toBeNull()
+    enhanceArtifactImages(el)
+    el.querySelector('a')!.click()
+    expect(openLightbox).toHaveBeenCalledWith({
+      url: `${URL}?type=html`,
+      name: 'report.html',
+      kind: 'html',
+    })
+  })
+
+  it('render other types as plain links, incl. bare refs', () => {
+    const html = renderMarkdown(`see artifact://${ID}?type=pdf now`)
+    expect(html).toContain(`href="${URL}"`)
+    expect(html).toContain('📄 pdf')
+    expect(html).not.toContain('<img')
+  })
 })
