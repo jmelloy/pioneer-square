@@ -1098,6 +1098,48 @@ async def test_notify_foreman_chat_stays_in_its_conversation(client, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_notify_foreman_chat_creates_missing_conversation_mirror(client, monkeypatch):
+    """An unmirrored conversation gets its thread created once, not its reply dropped."""
+    from auth_deps import get_guild_pk
+    from foreman.conversation_service import create_conversation
+
+    _, db_url = client
+    slug = "g-chat-lazy-mirror"
+    insert_guild(db_url, slug)
+    async with database_module.AsyncSessionLocal() as db:
+        guild_pk = await get_guild_pk(db, slug)
+        conversation = await create_conversation(db, guild_pk, "user-1", name="Lazy")
+        await db.commit()
+        conversation_id = conversation.id
+
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    post = AsyncMock()
+    create = AsyncMock(return_value="lazy-thread")
+    with (
+        patch.object(discord_notifier, "_post_foreman_chat_line", post),
+        patch.object(discord_notifier, "_resolve_channel_for_guild", AsyncMock(return_value="c")),
+        patch.object(discord_notifier, "_create_thread_in_channel", create),
+    ):
+        for text in ("one", "two"):
+            await discord_notifier.notify_foreman_chat(slug, text, conversation_id=conversation_id)
+
+    create.assert_awaited_once_with("c", "💬 Lazy")
+    assert [c.args for c in post.await_args_list] == [
+        ("lazy-thread", "one"),
+        ("lazy-thread", "two"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_post_foreman_chat_line_chunks_instead_of_truncating():
+    request = AsyncMock()
+    with patch.object(discord_notifier, "_bot_request", request):
+        await discord_notifier._post_foreman_chat_line("t", "a" * 2500)
+    sent = [c.args[2]["content"] for c in request.await_args_list]
+    assert "".join(sent) == "a" * 2500
+
+
+@pytest.mark.asyncio
 async def test_notify_foreman_chat_no_task_id_posts_directly_to_channel(monkeypatch):
     """With no task_id, notify_foreman_chat posts straight to the main channel."""
     monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)

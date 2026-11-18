@@ -32,12 +32,18 @@ Requires: ``DISCORD_BOT_TOKEN``, ``DISCORD_GATEWAY_ENABLED``
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 
 import discord_notifier
 
 logger = logging.getLogger(__name__)
+
+# ponytail: one global lock serialises mirror creation (rare, two API calls) so
+# concurrent sends for an unmirrored conversation can't fork duplicate threads.
+# Per-conversation locks if creation volume ever makes this a bottleneck.
+_create_lock = asyncio.Lock()
 
 
 async def on_conversation_created(
@@ -60,6 +66,31 @@ async def on_conversation_created(
     if not discord_notifier.is_configured():
         return None
 
+    async with _create_lock:
+        existing, stored_name = await _load_mirror_state(conversation_id)
+        if existing:
+            return existing
+        return await _create_mirror(conversation_id, guild_slug, name or stored_name)
+
+
+async def _load_mirror_state(conversation_id: int) -> tuple[str | None, str | None]:
+    """Return the conversation's ``(discord_thread_id, name)``; ``(None, None)`` on error."""
+    try:
+        from database import AsyncSessionLocal  # noqa: PLC0415
+        from models import Conversation  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
+            conversation = await db.get(Conversation, conversation_id)
+            if conversation is not None:
+                return conversation.discord_thread_id, conversation.name
+    except Exception:
+        logger.warning(
+            "thread_mirror: failed to load conversation=%s", conversation_id, exc_info=True
+        )
+    return None, None
+
+
+async def _create_mirror(conversation_id: int, guild_slug: str, name: str | None) -> str | None:
     channel = await discord_notifier._resolve_channel_for_guild(guild_slug)
     if not channel:
         logger.debug(
