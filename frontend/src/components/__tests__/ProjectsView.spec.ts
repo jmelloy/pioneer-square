@@ -203,14 +203,15 @@ describe('ProjectsView', () => {
 
   it('refetches immediately when the browsing scope changes, and clears stale detail', async () => {
     const store = useGitHubStore()
+    const guild = useGuildStore().currentGuild!
     const wrapper = render()
     await wrapper.findAll('.issue-select')[1]!.trigger('click')
     expect(wrapper.find('.viewer-stub').text()).toBe('factory #1')
-    store.setSelectedRepos(['team/engine'])
+    guild.browse_repos = ['team/engine']
     await flushPromises()
     expect(store.fetchIssues).toHaveBeenLastCalledWith(['team/engine'])
     expect(wrapper.find('.viewer-stub').exists()).toBe(false)
-    store.setSelectedRepos([])
+    guild.browse_repos = []
     await flushPromises()
     expect(store.fetchIssues).toHaveBeenLastCalledWith([])
     expect(wrapper.findAll('tbody tr')).toHaveLength(0)
