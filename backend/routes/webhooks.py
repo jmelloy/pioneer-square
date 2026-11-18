@@ -829,8 +829,13 @@ async def github_webhook(
         ).first()
         if owner:
             node = payload.get("pull_request") or issue_payload
+            conversation_name = (
+                f"Review PR #{pr_number}"
+                if event_type == "pull_request" and action == "review_requested"
+                else f"{repo}#{lookup_number}: {node.get('title', '')}"
+            )
             conversation = await ensure_conversation(
-                guild_id, owner, f"{repo}#{lookup_number}: {node.get('title', '')}", force_new=True
+                guild_id, owner, conversation_name, force_new=True
             )
             if conversation is not None:
                 task_conversation_id, task_user_id = conversation.id, owner
