@@ -51,6 +51,11 @@
             <GuildPreAgentsPrompt v-if="currentGuild" :guild-id="currentGuild.id" />
           </section>
 
+          <!-- Projects — shared repo browsing list and linked GitHub Projects -->
+          <section v-else-if="activeTab === 'projects'" class="settings-section">
+            <GuildProjectsSettings />
+          </section>
+
           <!-- Members -->
           <section v-else-if="activeTab === 'members'" class="settings-section">
             <GuildMembers v-if="currentGuild" :guild-id="currentGuild.id" />
@@ -74,9 +79,11 @@ import GuildGeneralSettings from './GuildGeneralSettings.vue'
 import GuildForemanSettings from './GuildForemanSettings.vue'
 import GuildWorkerSettings from './GuildWorkerSettings.vue'
 import GuildPreAgentsPrompt from './GuildPreAgentsPrompt.vue'
+import GuildProjectsSettings from './GuildProjectsSettings.vue'
 import GuildMembers from './GuildMembers.vue'
 import GuildDiscordSettings from './GuildDiscordSettings.vue'
 
+const props = defineProps<{ initialTab?: string }>()
 const emit = defineEmits<{ close: [] }>()
 
 const guildStore = useGuildStore()
@@ -87,10 +94,13 @@ const TABS = [
   { id: 'general', label: 'General' },
   { id: 'foreman', label: 'Foreman' },
   { id: 'spawn', label: 'Worker Settings' },
+  { id: 'projects', label: 'Projects' },
   { id: 'members', label: 'Members' },
   { id: 'discord', label: 'Discord' },
 ] as const
-const activeTab = ref<(typeof TABS)[number]['id']>('general')
+const activeTab = ref<(typeof TABS)[number]['id']>(
+  TABS.find((t) => t.id === props.initialTab)?.id ?? 'general',
+)
 
 const panelRef = ref<HTMLElement | null>(null)
 

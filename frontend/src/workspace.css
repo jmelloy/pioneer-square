@@ -757,28 +757,6 @@
 .primary-override {
   border-left: 3px solid var(--color-brass);
 }
-.repo-editor-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  display: grid;
-  place-items: center;
-  background: #000a;
-}
-.repo-editor {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: min(520px, 100vw - 16px);
-  max-height: calc(100vh - 16px);
-  overflow-y: auto;
-  padding: 14px;
-  background-color: #120b04;
-}
-.repo-editor h2,
-.repo-editor h3 {
-  margin: 0;
-}
 .repo-editor-list {
   list-style: none;
   margin: 0;
@@ -798,9 +776,4 @@
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.repo-editor footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
 }

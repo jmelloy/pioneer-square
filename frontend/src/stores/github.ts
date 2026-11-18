@@ -3,7 +3,7 @@ import { ref, computed } from 'vue'
 import { api } from '../utils/api'
 import { useUiStore } from './ui'
 import { useGuildStore } from './guild'
-import type { GitHubIssue, GitHubRepo } from '../types'
+import type { GitHubIssue, GitHubProject, GitHubRepo } from '../types'
 
 const GH_API = 'https://api.github.com'
 
@@ -80,6 +80,7 @@ export const useGitHubStore = defineStore('github', () => {
   const guildStore = useGuildStore()
   // Browsing scope is per guild and server-backed, so switching guilds swaps it.
   const selectedRepos = computed(() => guildStore.currentGuild?.browse_repos ?? [])
+  const linkedProjects = computed(() => guildStore.currentGuild?.browse_projects ?? [])
   const repos = ref<GitHubRepo[]>([])
   const issues = ref<GitHubIssue[]>([])
   const loading = ref(false)
@@ -138,6 +139,87 @@ export const useGitHubStore = defineStore('github', () => {
     )
     if (guildStore.currentGuild?.id === guild.id)
       guildStore.currentGuild.browse_repos = browse_repos
+  }
+
+  async function setLinkedProjects(projects: GitHubProject[]) {
+    const guild = guildStore.currentGuild
+    if (!guild) return
+    const { browse_projects } = await api<{ browse_projects: GitHubProject[] }>(
+      `/api/guilds/${guild.id}/browse-projects`,
+      { method: 'PUT', json: { projects } },
+    )
+    if (guildStore.currentGuild?.id === guild.id)
+      guildStore.currentGuild.browse_projects = browse_projects
+  }
+
+  // Lists GitHub Projects linkable to this guild: the authenticated user's, each
+  // owner's org/user projects, and each repo's. Classic Projects come from the REST
+  // endpoints (GitHub has sunset them, so 404/410 is tolerated); Projects v2 come from
+  // GraphQL. `repoNames` are "owner/repo" strings; owners are derived from them.
+  async function fetchAvailableProjects(repoNames: string[]): Promise<GitHubProject[]> {
+    if (!token.value) return []
+    const owners = [...new Set(repoNames.map((r) => r.split('/')[0]!))]
+    const out = new Map<string, GitHubProject>()
+    const add = (p: GitHubProject) => out.set(p.id, p)
+    // A failed or sunset endpoint contributes nothing rather than failing the list.
+    const classic = async (url: string, owner: string, kind: GitHubProject['kind']) => {
+      try {
+        const data = await fetchAllPages(url, 'GitHub projects')
+        for (const p of data)
+          add({
+            id: `classic-${p.id}`,
+            name: String(p.name),
+            url: String(p.html_url),
+            owner,
+            kind,
+          })
+      } catch {
+        /* classic projects unavailable for this scope */
+      }
+    }
+    const v2 = async (ownerLogin: string, kind: 'organization' | 'user') => {
+      try {
+        const res = await fetch(`${GH_API}/graphql`, {
+          method: 'POST',
+          headers: ghHeaders(token.value),
+          body: JSON.stringify({
+            query: `query($login:String!){${kind}(login:$login){projectsV2(first:50){nodes{id title url closed}}}}`,
+            variables: { login: ownerLogin },
+          }),
+        })
+        if (!res.ok) return
+        const body = await res.json()
+        const nodes = body?.data?.[kind]?.projectsV2?.nodes ?? []
+        for (const n of nodes as Array<{ id: string; title: string; url: string; closed: boolean }>)
+          if (!n.closed) add({ id: n.id, name: n.title, url: n.url, owner: ownerLogin, kind: 'v2' })
+      } catch {
+        /* Projects v2 unavailable for this scope */
+      }
+    }
+    let login = ''
+    try {
+      const res = await fetch(`${GH_API}/user`, { headers: ghHeaders(token.value) })
+      if (res.ok) login = (await res.json()).login ?? ''
+    } catch {
+      /* ignore */
+    }
+    const tasks: Promise<void>[] = []
+    if (login) {
+      tasks.push(classic(`${GH_API}/users/${login}/projects?per_page=100`, login, 'user'))
+      tasks.push(v2(login, 'user'))
+    }
+    for (const owner of owners) {
+      if (owner === login) continue
+      tasks.push(classic(`${GH_API}/orgs/${owner}/projects?per_page=100`, owner, 'org'))
+      tasks.push(classic(`${GH_API}/users/${owner}/projects?per_page=100`, owner, 'user'))
+      tasks.push(v2(owner, 'organization'))
+    }
+    for (const repo of repoNames)
+      tasks.push(
+        classic(`${GH_API}/repos/${repo}/projects?per_page=100`, repo.split('/')[0]!, 'repo'),
+      )
+    await Promise.all(tasks)
+    return [...out.values()]
   }
 
   async function fetchAllPages(url: string, what: string): Promise<Array<Record<string, unknown>>> {
@@ -275,6 +357,7 @@ export const useGitHubStore = defineStore('github', () => {
     token,
     repos,
     selectedRepos,
+    linkedProjects,
     issues,
     loading,
     error,
@@ -283,6 +366,8 @@ export const useGitHubStore = defineStore('github', () => {
     restoreGitHubToken,
     fetchRepos,
     setSelectedRepos,
+    setLinkedProjects,
+    fetchAvailableProjects,
     fetchIssues,
     clearIssues,
     fetchIssueDetail,

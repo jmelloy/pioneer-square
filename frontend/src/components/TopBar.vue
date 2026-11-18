@@ -70,12 +70,16 @@
     </button>
   </header>
 
-  <GuildSettingsPanel v-if="showSettings && currentGuild" @close="showSettings = false" />
+  <GuildSettingsPanel
+    v-if="showSettings && currentGuild"
+    :initial-tab="uiStore.settingsRequest ?? undefined"
+    @close="closeSettings"
+  />
   <UserPreferencesModal v-if="showUserPreferences" @close="showUserPreferences = false" />
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useGuildStore } from '../stores/guild'
 import { useAuthStore } from '../stores/auth'
@@ -95,6 +99,16 @@ const currentGuild = computed(() => guildStore.currentGuild)
 
 const showUserPreferences = ref(false)
 const showSettings = ref(false)
+function closeSettings() {
+  showSettings.value = false
+  uiStore.settingsRequest = null
+}
+watch(
+  () => uiStore.settingsRequest,
+  (req) => {
+    if (req) showSettings.value = true
+  },
+)
 
 function goHome() {
   router.push('/')

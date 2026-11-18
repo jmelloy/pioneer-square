@@ -133,6 +133,8 @@ export interface Guild {
   primary_repo?: string | null
   // Shared Projects browsing list; null/absent = never saved for this guild.
   browse_repos?: string[] | null
+  // GitHub Projects linked to this guild (shown in the Projects tab).
+  browse_projects?: GitHubProject[] | null
   github_app_installation_id?: string | null
   agents?: Array<{
     id: string
@@ -205,6 +207,15 @@ export interface GitHubIssue {
   pull_request?: unknown
   repo: string
   [key: string]: unknown
+}
+
+export interface GitHubProject {
+  id: string
+  name: string
+  url: string
+  owner: string
+  // Where it was listed: user, org, or repo (classic REST); v2 = Projects v2 (user/org).
+  kind: 'user' | 'org' | 'repo' | 'v2'
 }
 
 export interface GitHubRepo {
