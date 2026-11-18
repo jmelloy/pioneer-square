@@ -168,4 +168,20 @@ describe('AppView guild lifecycle', () => {
     expect(sockets[0].url).toContain('/ws/new')
     wrapper.unmount()
   })
+
+  it.each([
+    ['work', [[['team/main']]]],
+    ['projects', []],
+  ])('leaves the initial issue load to Projects when it is open (%s)', async (view, calls) => {
+    apiMock.mockImplementation(async (path) =>
+      path === '/guilds/old' ? { id: 'old', messages: [], primary_repo: 'team/main' } : [],
+    )
+    const github = useGitHubStore()
+    github.token = 't'
+    const fetchIssues = vi.spyOn(github, 'fetchIssues').mockResolvedValue([])
+    useUiStore().workspace = view as 'work' | 'projects'
+    mountView()
+    await flushPromises()
+    expect(fetchIssues.mock.calls).toEqual(calls)
+  })
 })

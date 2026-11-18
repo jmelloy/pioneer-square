@@ -85,7 +85,10 @@
       <div v-if="!ghStore.isConfigured" class="workspace-empty">
         Connect GitHub in your preferences to browse project issues.
       </div>
-      <div v-else-if="ghStore.error" class="workspace-empty" role="alert">{{ ghStore.error }}</div>
+      <div v-else-if="ghStore.error" class="workspace-empty" role="alert">
+        {{ ghStore.error }}
+        <button class="pixel-btn" :disabled="ghStore.loading" @click="refresh">Retry</button>
+      </div>
       <div class="project-split">
         <div class="project-table-pane">
           <div class="project-table-scroll">
@@ -306,7 +309,8 @@ const selectedIssue = computed(
   () => filteredIssues.value.find((issue) => issue.id === selectedId.value) ?? pageIssues.value[0],
 )
 
-watch([selectedRepo, state, search, sort], () => {
+const scopeKey = computed(() => repoNames.value.join('\n'))
+watch([scopeKey, selectedRepo, state, search, sort], () => {
   page.value = 1
   showDetail.value = false
   selectedId.value = null
@@ -339,7 +343,7 @@ const repoMatches = computed(() =>
       (name) =>
         !draft.value.includes(name) && name.toLowerCase().includes(repoQuery.value.toLowerCase()),
     )
-    // ponytail: capped render; fetchRepos only returns the first 100 anyway
+    // ponytail: capped render; search narrows the full paginated list
     .slice(0, 50),
 )
 
@@ -380,12 +384,13 @@ function saveRepos() {
   ghStore.setSelectedRepos(draft.value)
   editing.value = false
   projectParam.value = ''
-  refresh()
 }
+
+// Any scope change (edit, guild primary repo loading) refetches immediately.
+watch(scopeKey, refresh, { immediate: true })
 
 let refreshTimer: ReturnType<typeof setInterval> | undefined
 onMounted(() => {
-  refresh()
   refreshTimer = setInterval(() => ghStore.fetchIssues(repoNames.value, true), 180_000)
 })
 onUnmounted(() => clearInterval(refreshTimer))

@@ -170,7 +170,8 @@ async function initGuild(guildId: string) {
   // declared their own interest via subscribeWS when their store was first used.
   guildStore.connectWebSocket(guildId)
 
-  if (ghStore.isConfigured) {
+  // The Projects screen loads its own wider scope; a primary-only fetch here would race it.
+  if (ghStore.isConfigured && uiStore.workspace !== 'projects') {
     const reposToFetch = guild.primary_repo ? [guild.primary_repo] : undefined
     if (reposToFetch || ghStore.selectedRepos.length > 0) {
       ghStore.fetchIssues(reposToFetch)

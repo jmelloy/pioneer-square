@@ -187,7 +187,25 @@ describe('ProjectsView', () => {
     store.token = 'test-token'
     store.error = 'GitHub unavailable'
     await wrapper.vm.$nextTick()
-    expect(wrapper.find('[role="alert"]').text()).toBe('GitHub unavailable')
+    expect(wrapper.find('[role="alert"]').text()).toContain('GitHub unavailable')
+    vi.mocked(store.fetchIssues).mockClear()
+    await wrapper.find('[role="alert"] button').trigger('click')
+    expect(store.fetchIssues).toHaveBeenCalledWith(['team/factory', 'team/engine'])
+  })
+
+  it('refetches immediately when the browsing scope changes, and clears stale detail', async () => {
+    const store = useGitHubStore()
+    const wrapper = render()
+    await wrapper.findAll('.issue-select')[1]!.trigger('click')
+    expect(wrapper.find('.viewer-stub').text()).toBe('factory #1')
+    store.setSelectedRepos(['team/engine'])
+    await flushPromises()
+    expect(store.fetchIssues).toHaveBeenLastCalledWith(['team/engine'])
+    expect(wrapper.find('.viewer-stub').exists()).toBe(false)
+    store.setSelectedRepos([])
+    await flushPromises()
+    expect(store.fetchIssues).toHaveBeenLastCalledWith([])
+    expect(wrapper.findAll('tbody tr')).toHaveLength(0)
   })
 
   describe('repository list editor', () => {
