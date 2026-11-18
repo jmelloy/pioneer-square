@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useGitHubStore } from '../github'
+import { useGuildStore } from '../guild'
 
 describe('useGitHubStore', () => {
   beforeEach(() => {
@@ -17,7 +18,7 @@ describe('useGitHubStore', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json([active, archived])))
     const store = useGitHubStore()
     store.token = 'test-token'
-    store.selectedRepos = [archived.full_name]
+    useGuildStore().currentGuild = { id: 'g1', browse_repos: [archived.full_name] }
 
     expect(await store.fetchRepos()).toEqual([active])
     expect(store.repos).toEqual([active])
@@ -116,5 +117,17 @@ describe('useGitHubStore', () => {
     store.token = 't'
     expect(await store.fetchRepos()).toEqual([])
     expect(store.error).toContain('denied access to your repositories')
+  })
+
+  it('scopes the browsing list to the current guild', () => {
+    const store = useGitHubStore()
+    const guildStore = useGuildStore()
+    localStorage.setItem('gh_repos', JSON.stringify(['legacy/repo']))
+    expect(store.selectedRepos).toEqual([]) // legacy browser-global list is not the scope
+    guildStore.currentGuild = { id: 'a', browse_repos: ['a/one'] }
+    expect(store.selectedRepos).toEqual(['a/one'])
+    guildStore.currentGuild = { id: 'b', browse_repos: null }
+    expect(store.selectedRepos).toEqual([])
+    localStorage.clear()
   })
 })

@@ -102,6 +102,9 @@ class Guild(SoftDeleteMixin, SQLModel, table=True):
     name: str | None = None
     github_user_id: str | None = None
     primary_repo: str | None = None
+    # Shared Projects-page browsing list ("owner/repo" names). NULL = never
+    # saved (the UI may offer to import a legacy browser-local list); [] = empty.
+    browse_repos: list[str] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     # HMAC-SHA256 shared secret used to verify GitHub webhook deliveries for
     # this guild. NULL until an owner first requests one via the
     # webhook-secret endpoint.

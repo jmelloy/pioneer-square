@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { api } from '../utils/api'
 import { useUiStore } from './ui'
+import { useGuildStore } from './guild'
 import type { GitHubIssue, GitHubRepo } from '../types'
 
 const GH_API = 'https://api.github.com'
@@ -58,7 +59,9 @@ export interface GitHubIssueDetail {
   comments: number
 }
 
-function _readStoredRepos(): string[] {
+// Legacy browser-global browsing list (pre-#1453). Only read to offer a one-time
+// import into a guild that has never saved its own list.
+export function readLegacyRepos(): string[] {
   try {
     const parsed = JSON.parse(localStorage.getItem('gh_repos') || '[]')
     return Array.isArray(parsed) ? parsed : []
@@ -74,7 +77,9 @@ export function issueTabId(owner: string, repo: string, number: number): string 
 
 export const useGitHubStore = defineStore('github', () => {
   const token = ref<string>(localStorage.getItem('gh_token') || '')
-  const selectedRepos = ref<string[]>(_readStoredRepos())
+  const guildStore = useGuildStore()
+  // Browsing scope is per guild and server-backed, so switching guilds swaps it.
+  const selectedRepos = computed(() => guildStore.currentGuild?.browse_repos ?? [])
   const repos = ref<GitHubRepo[]>([])
   const issues = ref<GitHubIssue[]>([])
   const loading = ref(false)
@@ -124,9 +129,15 @@ export const useGitHubStore = defineStore('github', () => {
     }
   }
 
-  function setSelectedRepos(repoFullNames: string[]) {
-    selectedRepos.value = repoFullNames
-    localStorage.setItem('gh_repos', JSON.stringify(repoFullNames))
+  async function setSelectedRepos(repoFullNames: string[]) {
+    const guild = guildStore.currentGuild
+    if (!guild) return
+    const { browse_repos } = await api<{ browse_repos: string[] }>(
+      `/api/guilds/${guild.id}/browse-repos`,
+      { method: 'PUT', json: { repos: repoFullNames } },
+    )
+    if (guildStore.currentGuild?.id === guild.id)
+      guildStore.currentGuild.browse_repos = browse_repos
   }
 
   async function fetchAllPages(url: string, what: string): Promise<Array<Record<string, unknown>>> {
@@ -254,7 +265,6 @@ export const useGitHubStore = defineStore('github', () => {
 
   function logout() {
     token.value = ''
-    selectedRepos.value = []
     repos.value = []
     clearIssues()
     localStorage.removeItem('gh_token')

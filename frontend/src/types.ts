@@ -131,6 +131,8 @@ export interface Guild {
   id: string
   name?: string
   primary_repo?: string | null
+  // Shared Projects browsing list; null/absent = never saved for this guild.
+  browse_repos?: string[] | null
   github_app_installation_id?: string | null
   agents?: Array<{
     id: string
