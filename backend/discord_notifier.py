@@ -764,17 +764,15 @@ _MAX_MESSAGE_LENGTH = 2000
 
 
 async def _post_foreman_chat_line(thread_id: str, content: str) -> None:
-    """POST *content* to *thread_id*, applying the shared length guardrail.
+    """POST *content* to *thread_id*, split into Discord-sized messages.
 
     Both the per-task and daily-thread paths in ``notify_foreman_chat`` route
     through this helper so neither can skip the truncation applied to the
     other.
     """
-    await _bot_request(
-        "post",
-        f"/channels/{thread_id}/messages",
-        {"content": content[:_MAX_MESSAGE_LENGTH]},
-    )
+    # Chunk rather than truncate: a long Foreman reply must arrive whole.
+    for chunk in _chunk_content(content, _MAX_MESSAGE_LENGTH):
+        await _bot_request("post", f"/channels/{thread_id}/messages", {"content": chunk})
 
 
 async def notify_conversation_activity(guild_id: str, conversation_id: int, content: str) -> None:
@@ -805,8 +803,9 @@ async def notify_foreman_chat(
     """Mirror a Foreman → user chat line into Discord.
 
     An explicit *conversation_id* routes only to that conversation's Discord
-    thread, never another conversation or the main channel. If its mirror is
-    unavailable, skip delivery rather than leaking the message elsewhere.
+    thread, never another conversation or the main channel. A conversation with
+    no mirror yet gets one created on the spot; if that fails, skip delivery
+    rather than leaking the message elsewhere.
 
     Otherwise, when *channel_id* is given it wins outright: the line goes there and
     nothing else is consulted. That is the @-mention reply path (see
@@ -846,6 +845,13 @@ async def notify_foreman_chat(
         thread_id = await _lookup_foreman_thread_for_user(
             guild_id, user_id, conversation_id=conversation_id
         )
+        if not thread_id:
+            # Conversations created outside ensure_conversation (or whose
+            # thread creation failed once) have no mirror; create it now
+            # rather than dropping every reply for the conversation's life.
+            from discord.thread_mirror import on_conversation_created  # noqa: PLC0415
+
+            thread_id = await on_conversation_created(conversation_id, guild_id)
         if thread_id:
             await _post_foreman_chat_line(thread_id, content)
         else:
