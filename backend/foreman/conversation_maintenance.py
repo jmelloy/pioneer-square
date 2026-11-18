@@ -29,9 +29,9 @@ from task_lifecycle import TERMINAL_STATES
 logger = logging.getLogger(__name__)
 
 # How long an "active" conversation can go without activity before it's
-# auto-archived when no unfinished tasks remain; defaults to 24 hours.
+# auto-archived when no unfinished tasks remain; defaults to 4 hours.
 CONVERSATION_AUTO_ARCHIVE_AFTER_SECONDS = float(
-    os.environ.get("THREAD_AUTO_ARCHIVE_AFTER_SECONDS", str(24 * 3600))
+    os.environ.get("THREAD_AUTO_ARCHIVE_AFTER_SECONDS", str(4 * 3600))
 )
 # How long an "archived" conversation stays archived before it's auto-closed.
 # Defaults to 14 days.

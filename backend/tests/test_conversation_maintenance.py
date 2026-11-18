@@ -38,9 +38,9 @@ def db_session(monkeypatch):
 
     monkeypatch.setenv("DATABASE_URL", TEST_DATABASE_URL)
     # Keep the sweep from actually archiving/closing anything unless a test
-    # explicitly lowers these below zero — real defaults are days-long.
+    # explicitly lowers these below zero or backdates the conversation.
     monkeypatch.setattr(
-        conversation_maintenance, "CONVERSATION_AUTO_ARCHIVE_AFTER_SECONDS", 24 * 3600.0
+        conversation_maintenance, "CONVERSATION_AUTO_ARCHIVE_AFTER_SECONDS", 4 * 3600.0
     )
     monkeypatch.setattr(
         conversation_maintenance, "CONVERSATION_AUTO_CLOSE_AFTER_SECONDS", 14 * 24 * 3600.0
@@ -98,7 +98,7 @@ class TestSweepConversations:
     async def test_archives_stale_active_conversation(self, db_session):
         insert_guild(db_session, "g-sweep-archive")
         conv_id = await _new_conversation("g-sweep-archive")
-        await _backdate(conv_id, datetime.now(UTC) - timedelta(hours=25))
+        await _backdate(conv_id, datetime.now(UTC) - timedelta(hours=5))
 
         with patch("discord_notifier.is_configured", return_value=False):
             summary = await conversation_maintenance.sweep_conversations("g-sweep-archive")
@@ -110,7 +110,7 @@ class TestSweepConversations:
     async def test_unfinished_tasks_prevent_archiving(self, db_session, state):
         insert_guild(db_session, "g-sweep-tasks")
         conv_id = await _new_conversation("g-sweep-tasks")
-        await _backdate(conv_id, datetime.now(UTC) - timedelta(hours=25))
+        await _backdate(conv_id, datetime.now(UTC) - timedelta(hours=5))
         insert_task(db_session, "g-sweep-tasks", "t-sweep", state=state, conversation_id=conv_id)
 
         with patch("discord_notifier.is_configured", return_value=False):
@@ -120,10 +120,10 @@ class TestSweepConversations:
         assert summary == {"archived": int(should_archive), "closed": 0}
         assert await _status(conv_id) == ("archived" if should_archive else "active")
 
-    async def test_keeps_conversation_idle_less_than_24_hours(self, db_session):
+    async def test_keeps_conversation_idle_less_than_4_hours(self, db_session):
         insert_guild(db_session, "g-sweep-recent")
         conv_id = await _new_conversation("g-sweep-recent")
-        await _backdate(conv_id, datetime.now(UTC) - timedelta(hours=23))
+        await _backdate(conv_id, datetime.now(UTC) - timedelta(hours=3))
 
         assert await conversation_maintenance.sweep_conversations("g-sweep-recent") == ZERO
         assert await _status(conv_id) == "active"
