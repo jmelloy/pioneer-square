@@ -590,3 +590,20 @@ variable "webhook_debounce_seconds" {
   type        = string
   default     = "120"
 }
+
+variable "audit_bucket_name" {
+  description = "Optional explicit name for the private Foreman API audit payload bucket. Leave empty to derive a unique name from project/environment/account ID."
+  type        = string
+  default     = ""
+}
+
+variable "audit_retention_days" {
+  description = "Days before archived Foreman API audit payloads expire from S3. Postgres metadata is retained independently."
+  type        = number
+  default     = 90
+
+  validation {
+    condition     = var.audit_retention_days >= 1
+    error_message = "audit_retention_days must be at least 1."
+  }
+}

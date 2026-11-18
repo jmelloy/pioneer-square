@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
+import api_audit_store
 from auth_deps import get_guild_pk
 from database import AsyncSessionLocal, get_db
 from db.github_cache import conversation_item_filter
@@ -604,14 +605,17 @@ async def _create_api_request_log(
     """
     db = await get_db()
     try:
+        guild_pk = await get_guild_pk(db, guild_id) if guild_id else None
+        # Payload goes to S3 (inline fallback on failure); never raises into the LLM path.
+        payload_cols = await api_audit_store.archive_request(
+            guild_pk=guild_pk, system=system_blocks, messages=messages, extra=extra
+        )
         log = ApiRequestLog(
             created_at=datetime.now(UTC),
             model=model,
-            system=system_blocks,
-            messages=messages,
-            extra=extra or None,
+            **payload_cols,
             task_id=task_id,
-            guild_id=await get_guild_pk(db, guild_id) if guild_id else None,
+            guild_id=guild_pk,
             user_id=user_id,
             trigger=trigger,
         )
@@ -641,12 +645,20 @@ async def _complete_api_request_log(
 
     db = await get_db()
     try:
+        guild_pk = (
+            await db.exec(
+                select(col(ApiRequestLog.guild_id)).where(col(ApiRequestLog.id) == log_id)
+            )
+        ).first()
+        payload_cols = await api_audit_store.archive_response(
+            guild_pk=guild_pk, response=response_dict
+        )
         await db.exec(
             sa_update(ApiRequestLog)
             .where(col(ApiRequestLog.id) == log_id)
             .values(
                 request_id=request_id,
-                response=response_dict,
+                **payload_cols,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cache_read_tokens=cache_read_tokens,

@@ -81,6 +81,7 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "PIONEER_S3_BUCKET", value = aws_s3_bucket.assets.bucket },
         { name = "PIONEER_S3_PREFIX", value = "worker-sessions" },
         { name = "PIONEER_ARTIFACT_BUCKET", value = aws_s3_bucket.artifacts.bucket },
+        { name = "PIONEER_AUDIT_BUCKET", value = aws_s3_bucket.audit.bucket },
         { name = "PIONEER_ARTIFACT_REGION", value = local.region },
         { name = "AWS_DEFAULT_REGION", value = local.region },
         # Worker dispatch via ECS RunTask (backend/worker_runtime.py): the
@@ -387,6 +388,7 @@ resource "aws_ecs_task_definition" "worker" {
         { name = "PIONEER_S3_PREFIX", value = "worker-sessions" },
         { name = "AWS_DEFAULT_REGION", value = local.region },
         { name = "PIONEER_ARTIFACT_BUCKET", value = aws_s3_bucket.artifacts.bucket },
+        { name = "PIONEER_AUDIT_BUCKET", value = aws_s3_bucket.audit.bucket },
         { name = "PIONEER_ARTIFACT_REGION", value = local.region },
         { name = "BEDROCK_ROLE_ARN", value = var.bedrock_role_arn },
       ]
