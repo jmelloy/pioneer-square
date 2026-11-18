@@ -19,12 +19,14 @@ from __future__ import annotations
 
 import logging
 
-from auth_deps import require_member, require_worker_or_member_path
+from auth_deps import ensure_membership, require_member, require_worker_or_member_path
 from database import get_db_dep
 from fastapi import APIRouter, Depends, HTTPException
+from foreman import audit_payloads
 from foreman.conversation_service import close_active_conversation_for_user, resolve_conversation_id
 from foreman.runner import clear_foreman_history, get_foreman_history
 from models import (
+    ApiRequestLog,
     Guild,
     Worker,
 )
@@ -155,3 +157,90 @@ async def get_foreman_env_vars(
             for tool, kv in resolved.tool_env_vars.items()
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# API request log (audit) — metadata always from Postgres; payload lazily from S3
+# ---------------------------------------------------------------------------
+
+
+def _api_log_meta(row: ApiRequestLog) -> dict:
+    return {
+        "id": row.id,
+        "request_id": row.request_id,
+        "created_at": row.created_at,
+        "completed_at": row.completed_at,
+        "model": row.model,
+        "input_tokens": row.input_tokens,
+        "output_tokens": row.output_tokens,
+        "cache_read_tokens": row.cache_read_tokens,
+        "cache_write_tokens": row.cache_write_tokens,
+        "stop_reason": row.stop_reason,
+        "task_id": row.task_id,
+        "user_id": row.user_id,
+        "trigger": row.trigger,
+        "payload_status": audit_payloads.status(row),
+        "payload_archived_at": row.payload_archived_at,
+        "payload_expires_at": row.payload_expires_at,
+    }
+
+
+@router.get("/guilds/{guild_id}/foreman/api-requests")
+async def list_api_requests(
+    guild_id: str,
+    limit: int = 50,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Metadata-only list of API calls (never touches S3). Owners see the whole guild;
+    other members see only calls made on their behalf."""
+    role = await ensure_membership(db, guild_id, github_user_id)
+    guild_pk = (
+        await db.exec(select(col(Guild.id)).where(col(Guild.slug) == guild_id))
+    ).one_or_none()
+    q = select(ApiRequestLog).where(col(ApiRequestLog.guild_id) == guild_pk)
+    if role != "owner":
+        q = q.where(col(ApiRequestLog.user_id) == github_user_id)
+    rows = (
+        await db.exec(q.order_by(col(ApiRequestLog.id).desc()).limit(min(max(limit, 1), 200)))
+    ).all()
+    return {"requests": [_api_log_meta(r) for r in rows]}
+
+
+@router.get("/guilds/{guild_id}/foreman/api-requests/{log_id}")
+async def get_api_request(
+    guild_id: str,
+    log_id: int,
+    include_payload: bool = False,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """One API call. The payload (system/messages/extra/response) is fetched from S3 only
+    when ``include_payload=true`` and the caller is the user the call was made for or a
+    guild owner."""
+    role = await ensure_membership(db, guild_id, github_user_id)
+    guild_pk = (
+        await db.exec(select(col(Guild.id)).where(col(Guild.slug) == guild_id))
+    ).one_or_none()
+    row = (
+        await db.exec(
+            select(ApiRequestLog).where(
+                col(ApiRequestLog.id) == log_id, col(ApiRequestLog.guild_id) == guild_pk
+            )
+        )
+    ).one_or_none()
+    # 404 (not 403) for other users' rows so ids are not enumerable.
+    if row is None or (role != "owner" and row.user_id != github_user_id):
+        raise HTTPException(status_code=404, detail="API request not found")
+    out = _api_log_meta(row)
+    if include_payload:
+        try:
+            out["payload"] = await audit_payloads.read_payload(row)
+        except audit_payloads.PayloadUnavailable as exc:
+            # expired → 410 Gone; missing/error are distinct so failed uploads are not
+            # mistaken for retention expiry.
+            status_code = 410 if exc.reason == "expired" else 502 if exc.reason == "error" else 404
+            raise HTTPException(
+                status_code=status_code, detail={"payload_status": exc.reason}
+            ) from exc
+    return out

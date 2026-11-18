@@ -337,6 +337,17 @@ variable "s3_force_destroy" {
   default     = false
 }
 
+variable "api_log_retention_days" {
+  description = "Days Foreman API audit payloads (api_request_log objects under the api-request-log/ prefix) are retained. The app marks payloads expired after this many days; the S3 lifecycle rule expires objects one day later so it never deletes early."
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = var.api_log_retention_days >= 1
+    error_message = "api_log_retention_days must be at least 1."
+  }
+}
+
 variable "artifact_bucket_name" {
   description = "Optional explicit name for the screenshot/image artifact bucket. Leave empty to derive a unique name from project/environment/account ID."
   type        = string

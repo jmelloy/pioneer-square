@@ -51,6 +51,27 @@ resource "aws_s3_bucket_lifecycle_configuration" "assets" {
       noncurrent_days = 15
     }
   }
+
+  # Foreman API audit payloads (sensitive conversation / tool-output data). Scoped to the
+  # api-request-log/ prefix so worker session logs and other assets are unaffected. S3
+  # rounds expiry up to the next UTC midnight; +1 day keeps it from ever deleting before
+  # the app's payload_expires_at (var.api_log_retention_days).
+  rule {
+    id     = "expire-api-request-log-payloads"
+    status = "Enabled"
+
+    filter {
+      prefix = "${local.api_log_prefix}/"
+    }
+
+    expiration {
+      days = var.api_log_retention_days + 1
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
+    }
+  }
 }
 
 # Deny any non-TLS access to the bucket. ECS task access is granted via the
@@ -83,8 +104,51 @@ data "aws_iam_policy_document" "assets_bucket_policy" {
       values   = ["false"]
     }
   }
+
+  # Audit payloads are readable/writable only by the ECS task role (least privilege):
+  # everyone else, including other principals the account policy would otherwise allow,
+  # is denied on this prefix.
+  statement {
+    sid    = "DenyApiLogAccessExceptBackendTask"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions   = ["s3:GetObject", "s3:PutObject"]
+    resources = ["${aws_s3_bucket.assets.arn}/${local.api_log_prefix}/*"]
+
+    condition {
+      test     = "ArnNotEquals"
+      variable = "aws:PrincipalArn"
+      values   = [aws_iam_role.ecs_task.arn]
+    }
+  }
+
+  # Payloads must be encrypted at rest on upload.
+  statement {
+    sid    = "DenyUnencryptedApiLogUploads"
+    effect = "Deny"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.assets.arn}/${local.api_log_prefix}/*"]
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "s3:x-amz-server-side-encryption"
+      values   = ["AES256"]
+    }
+  }
 }
 
 locals {
+  api_log_prefix = "api-request-log"
   s3_bucket_name = var.s3_bucket_name != "" ? var.s3_bucket_name : "${local.name_prefix}-assets-${local.account_id}"
 }

@@ -706,6 +706,18 @@ class ApiRequestLog(SQLModel, table=True):
     trigger: str | None = None
     # Extra API parameters: max_tokens, tools list, tool_choice, etc.
     extra: dict | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    # Private-S3 archive references (issue #1487). When set, the matching inline JSON columns
+    # above are NULL: request_object_key holds system/messages/extra, response_object_key holds
+    # response. Rows with no keys are legacy/unarchived and still read inline.
+    request_object_key: str | None = None
+    response_object_key: str | None = None
+    payload_archived_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    # After this the S3 lifecycle rule may have removed the objects ("expired").
+    payload_expires_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
 
 
 class ForemanTurn(SQLModel, table=True):

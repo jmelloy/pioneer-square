@@ -385,6 +385,12 @@ async def lifespan(app: FastAPI):
     # Reap backend-spawned workers that have been idle past the configured
     # timeout (PIONEER_WORKER_IDLE_TIMEOUT) — see worker_lifecycle.
     idle_reaper = spawn(idle_worker_reaper(), name="idle-worker-reaper")
+    # Archive api_request_log payloads to private S3: backfills legacy rows and retries
+    # failed uploads. No-op unless PIONEER_API_LOG_BUCKET is set.
+    from database import get_db as _get_db  # noqa: PLC0415
+    from foreman.audit_payloads import sweeper_loop as _api_log_sweeper  # noqa: PLC0415
+
+    api_log_sweeper = spawn(_api_log_sweeper(_get_db), name="api-log-payload-sweeper")
 
     # Discord Gateway (Phase 4): persistent websocket for inbound messages.
     # No-op unless DISCORD_GATEWAY_ENABLED=true and DISCORD_BOT_TOKEN are set.
@@ -400,6 +406,11 @@ async def lifespan(app: FastAPI):
     finally:
         sweeper.cancel()
         idle_reaper.cancel()
+        api_log_sweeper.cancel()
+        try:
+            await api_log_sweeper
+        except (asyncio.CancelledError, Exception):
+            pass
         if discord_gw_task is not None:
             discord_gw_task.cancel()
         try:

@@ -17,6 +17,7 @@ from database import AsyncSessionLocal, get_db
 from db.github_cache import conversation_item_filter
 from db.github_events import conversation_event_filter
 from events import broadcast_msg
+from foreman import audit_payloads
 from foreman.constants import (
     _24H_SECS,
     MAX_CONVERSATION_EVENTS,
@@ -620,7 +621,11 @@ async def _create_api_request_log(
         await db.refresh(log)
         if log.id is None:
             raise RuntimeError("api_request_log row has no id after commit")
-        return log.id
+        log_id = log.id
+        # Move the payload to private S3 (no-op when unconfigured). Failures leave the
+        # inline payload in place for the sweeper and never fail the Foreman call.
+        await audit_payloads.archive_quietly(db, log_id, audit_payloads.REQUEST)
+        return log_id
     finally:
         await db.close()
 
@@ -656,6 +661,7 @@ async def _complete_api_request_log(
             )
         )
         await db.commit()
+        await audit_payloads.archive_quietly(db, log_id, audit_payloads.RESPONSE)
     finally:
         await db.close()
 
