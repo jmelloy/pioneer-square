@@ -8,6 +8,8 @@
       "workerId"
     ],
     "chat": [
+      "authorAvatar",
+      "authorName",
       "content",
       "conversationId",
       "createdAt",
@@ -140,6 +142,8 @@
       "workerId"
     ],
     "chat": [
+      "authorAvatar",
+      "authorName",
       "content",
       "conversationId",
       "createdAt",

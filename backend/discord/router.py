@@ -80,6 +80,7 @@ env vars as the Gateway (``DISCORD_GATEWAY_ENABLED`` + ``DISCORD_BOT_TOKEN``).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from datetime import UTC, datetime
@@ -724,6 +725,7 @@ async def _dispatch_author_scoped(message: dict, content: str, reply_channel_id:
         ps_user_id=ps_user_id,
         task_id=None,
         reply_channel_id=reply_channel_id,
+        author=author,
         task_name=f"foreman.discord-mention:{guild_slug}",
     )
 
@@ -764,6 +766,7 @@ async def _dispatch_channel_scoped(
         ps_user_id=ps_user_id,
         task_id=task_id,
         reply_channel_id=reply_channel_id,
+        author=author,
         task_name=f"foreman.discord-chat:{guild_slug}",
     )
 
@@ -777,6 +780,7 @@ async def _forward_to_foreman(
     task_id: str | None,
     reply_channel_id: str,
     task_name: str,
+    author: dict | None = None,
 ) -> None:
     """Persist the inbound message, then trigger the Foreman for *guild_slug*.
 
@@ -806,6 +810,7 @@ async def _forward_to_foreman(
             user_id=ps_user_id,
             task_id=task_id,
             discord_thread_id=reply_channel_id,
+            author=author,
         )
     except Exception:
         logger.warning(
@@ -895,6 +900,7 @@ async def _persist_inbound_message(
     user_id: str | None,
     task_id: str | None,
     discord_thread_id: str | None = None,
+    author: dict | None = None,
 ) -> int | None:
     """Write the inbound Discord message to the ``messages`` table and
     broadcast it over WS so the frontend chat panel shows it live, tagged
@@ -935,9 +941,13 @@ async def _persist_inbound_message(
         reactivate_conversation,
         resolve_conversation_id,
     )
+    from message_authors import discord_author  # noqa: PLC0415
     from models import Message  # noqa: PLC0415
     from ws_types import ChatMsg  # noqa: PLC0415
 
+    # The Discord author's own name/avatar (#1492), stored in meta so history
+    # shows the Discord identity rather than the linked GitHub one.
+    author_fields = discord_author(author) if author else {}
     created_at = datetime.now(UTC)
     conversation_id: int | None = None
     async with AsyncSessionLocal() as db:
@@ -998,6 +1008,7 @@ async def _persist_inbound_message(
                 task_id=task_id,
                 conversation_id=conversation_id,
                 source="discord",
+                meta=json.dumps(author_fields) if author_fields else None,
             )
         )
         await db.commit()
@@ -1013,6 +1024,7 @@ async def _persist_inbound_message(
             taskId=task_id,
             conversationId=conversation_id,
             source="discord",
+            **author_fields,
         ),
     )
 

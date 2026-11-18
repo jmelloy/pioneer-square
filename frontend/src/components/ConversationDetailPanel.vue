@@ -102,6 +102,11 @@
           ]"
         >
           <div v-if="!isWorkerContinuation(msg, i)" class="msg-header">
+            <MessageAvatar
+              v-if="!isToolUseGroup(msg) && msgSender(msg as ChatMessage) === 'user'"
+              :src="(msg as ChatMessage).authorAvatar"
+              :name="(msg as ChatMessage).authorName"
+            />
             <span
               class="msg-from"
               :class="
@@ -206,6 +211,7 @@
 <script setup lang="ts">
 import AttachmentTray from './AttachmentTray.vue'
 import AttachButton from './AttachButton.vue'
+import MessageAvatar from './MessageAvatar.vue'
 import { useAttachments } from '../composables/useAttachments'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useGuildStore } from '../stores/guild'
@@ -413,7 +419,7 @@ function messageClasses(msg: ChatMessage) {
 
 function senderLabel(msg: ChatMessage): string {
   const sender = msgSender(msg)
-  if (sender === 'user') return 'YOU'
+  if (sender === 'user') return msg.authorName || 'YOU'
   if (sender === 'system') return 'SYS'
   if (sender === 'foreman') return '⚙ FOREMAN'
   if (msg.source === 'worker') return `WORKER · ${sender}`

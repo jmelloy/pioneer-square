@@ -171,6 +171,10 @@ export interface ChatMessage {
   // ConversationDetailPanel filter the shared message stream down to one
   // conversation's own history.
   conversationId?: number | null
+  // Sender display name/avatar (#1492): GitHub identity for web/api messages,
+  // Discord identity for Discord-sourced ones. Absent for non-user senders.
+  authorName?: string | null
+  authorAvatar?: string | null
   detail?: LogDetail | null
   level?: LogLevel | null
   [key: string]: unknown
@@ -431,6 +435,8 @@ export const WS_INBOUND_FIELDS: { [K in WSInbound['type']]: readonly string[] } 
     'source',
     'taskId',
     'conversationId',
+    'authorName',
+    'authorAvatar',
     'detail',
     'level',
   ],

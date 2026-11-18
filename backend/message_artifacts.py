@@ -10,6 +10,7 @@ import re
 from datetime import UTC, datetime
 
 import artifact_service
+from message_authors import fill_authors
 from models import Artifact
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -127,4 +128,5 @@ async def message_payloads(messages, db: AsyncSession, guild_id: str, guild_pk: 
     # Also commit artifact rows from partially successful conversions.
     if changed or db.new:
         await db.commit()
+    await fill_authors(db, payloads)
     return payloads

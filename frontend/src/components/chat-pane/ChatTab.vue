@@ -8,6 +8,11 @@
       :class="isToolUseGroup(msg) ? 'from-foreman msg-tool' : messageClasses(msg as ChatMessage)"
     >
       <div class="msg-header">
+        <MessageAvatar
+          v-if="!isToolUseGroup(msg) && msgSender(msg as ChatMessage) === 'user'"
+          :src="(msg as ChatMessage).authorAvatar"
+          :name="(msg as ChatMessage).authorName"
+        />
         <span
           class="msg-from"
           :class="'msg-from--' + (isToolUseGroup(msg) ? msg.from : msgSender(msg as ChatMessage))"
@@ -107,6 +112,7 @@ import { renderMarkdown } from '../../utils/markdown'
 import { vArtifacts } from '../../utils/artifacts'
 import AttachmentTray from '../AttachmentTray.vue'
 import AttachButton from '../AttachButton.vue'
+import MessageAvatar from '../MessageAvatar.vue'
 import { useAttachments } from '../../composables/useAttachments'
 import { useGuildStore } from '../../stores/guild'
 import { useUiStore } from '../../stores/ui'
@@ -165,7 +171,7 @@ function messageClasses(msg: ChatMessage) {
 
 function senderLabel(msg: ChatMessage): string {
   const sender = msgSender(msg)
-  if (sender === 'user') return 'YOU'
+  if (sender === 'user') return msg.authorName || 'YOU'
   if (sender === 'system') return 'SYS'
   if (sender === 'foreman') return '⚙ FOREMAN'
   return sender.toUpperCase()

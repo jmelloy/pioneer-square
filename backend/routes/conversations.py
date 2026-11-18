@@ -32,6 +32,7 @@ from foreman.conversation_service import (
 )
 from foreman.runner import reset_foreman_poll
 from message_artifacts import message_payloads
+from message_authors import user_authors
 from models import THREAD_STATUSES, Conversation, Message
 from pydantic import BaseModel
 from sqlalchemy import func, or_
@@ -231,6 +232,7 @@ async def post_conversation_message(
                 "createdAt": created_at.isoformat(),
                 "userId": github_user_id,
                 "conversationId": conversation.id,
+                **(await user_authors(db, [github_user_id])).get(github_user_id, {}),
             }
         ),
     )
