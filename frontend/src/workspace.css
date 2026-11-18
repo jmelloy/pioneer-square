@@ -218,6 +218,19 @@
 .app-layout .chat-messages .worker-continuation::before {
   display: none;
 }
+/* User messages: the real avatar (or initial badge) takes the diamond's slot. */
+.app-layout .chat-messages .chat-message.from-user::before {
+  display: none;
+}
+.app-layout .chat-messages .from-user .msg-avatar {
+  position: absolute;
+  top: 20px;
+  left: 0;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--color-brass);
+  font-size: 16px;
+}
 .app-layout .chat-messages .worker-continuation {
   padding-top: 2px;
 }
@@ -644,6 +657,13 @@
   }
   .app-layout .chat-messages .chat-message::before {
     display: none;
+  }
+  .app-layout .chat-messages .from-user .msg-avatar {
+    position: static;
+    width: 16px;
+    height: 16px;
+    border: none;
+    font-size: 10px;
   }
   .projects-workspace {
     flex-direction: column;
