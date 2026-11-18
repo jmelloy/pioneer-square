@@ -141,6 +141,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+import artifact_service
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -242,6 +243,41 @@ async def notify(
 # ---------------------------------------------------------------------------
 
 
+# `[name](artifact://<id>)` (or a bare `artifact://<id>`) — the chat-message artifact reference.
+_ARTIFACT_REF = re.compile(
+    r"!?\[[^\]\n]*\]\(artifact://([A-Za-z0-9-]+)/?\)|artifact://([A-Za-z0-9-]+)/?"
+)
+
+
+def _artifact_url(artifact_id: str) -> str:
+    # ponytail: FRONTEND_URL is the public origin in prod (same-origin) and Vite proxies /api in dev.
+    base = os.environ.get("FRONTEND_URL", "http://localhost:5173").rstrip("/")
+    return f"{base}{artifact_service.public_url(artifact_id)}"
+
+
+def _inline_artifacts(body: dict | None) -> dict | None:
+    """Discord can't resolve ``artifact://``: swap in bare public image URLs, which Discord
+    previews inline in message content; embeds get the first image as ``embed.image``."""
+    if not body:
+        return body
+    body = dict(body)
+    if isinstance(body.get("content"), str):
+        body["content"] = _ARTIFACT_REF.sub(lambda m: _artifact_url(m[1] or m[2]), body["content"])
+    if isinstance(body.get("embeds"), list):
+        embeds = []
+        for embed in body["embeds"]:
+            desc = embed.get("description") if isinstance(embed, dict) else None
+            if isinstance(desc, str) and (ids := [a or b for a, b in _ARTIFACT_REF.findall(desc)]):
+                embed = {
+                    **embed,
+                    "description": _ARTIFACT_REF.sub(lambda m: _artifact_url(m[1] or m[2]), desc),
+                }
+                embed.setdefault("image", {"url": _artifact_url(ids[0])})
+            embeds.append(embed)
+        body["embeds"] = embeds
+    return body
+
+
 async def _bot_request_raw(
     method: str,
     path: str,
@@ -254,6 +290,7 @@ async def _bot_request_raw(
     that need to distinguish an expected API failure (``httpx.HTTPError``)
     from a genuine bug use this directly (see ``send_welcome_dm``).
     """
+    json_body = _inline_artifacts(json_body)
     token = bot_token()
     headers = {
         "Authorization": f"Bot {token}",

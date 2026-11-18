@@ -55,7 +55,7 @@
             msgSender(msg as ChatMessage) !== 'user' && msgSender(msg as ChatMessage) !== 'system'
           "
           class="msg-content msg-content--markdown markdown-prose"
-          v-artifacts="guildStore.currentGuild?.id"
+          v-artifacts
           v-html="renderMarkdown((msg as ChatMessage).content)"
         ></span>
         <span v-else class="msg-content">{{ (msg as ChatMessage).content }}</span>

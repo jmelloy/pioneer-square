@@ -13,7 +13,7 @@
           { 'log-text--markdown': isMarkdownLine, 'markdown-prose': isMarkdownLine },
         ]"
         v-html="renderedLine"
-        v-artifacts="guildStore.currentGuild?.id"
+        v-artifacts
       ></span>
       <span v-if="isExpandable" class="log-expand-icon">{{ expanded ? '▲' : '▼' }}</span>
     </div>
@@ -73,13 +73,11 @@
 import { computed } from 'vue'
 import { renderMarkdown } from '../../utils/markdown'
 import { vArtifacts } from '../../utils/artifacts'
-import { useGuildStore } from '../../stores/guild'
 import { formatClock } from '../../utils/format'
 import { claudeEventSummary } from '../../utils/claudeEventSummary'
 import { piEventSummary } from '../../utils/piEventSummary'
 import type { LogEntry } from '../../types'
 
-const guildStore = useGuildStore()
 
 const props = defineProps<{ log: LogEntry; expanded: boolean }>()
 

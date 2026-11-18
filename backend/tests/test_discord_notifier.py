@@ -2028,3 +2028,18 @@ async def test_post_to_thread_includes_flags_when_given(monkeypatch):
 
     body = mock_client.post.call_args[1]["json"]
     assert body["flags"] == 4096
+
+
+def test_inline_artifacts_rewrites_content_and_embeds(monkeypatch):
+    monkeypatch.setenv("FRONTEND_URL", "https://ps.example/")
+    url = "https://ps.example/api/artifacts/abc-1/public"
+    out = discord_notifier._inline_artifacts(
+        {
+            "content": "done [shot.png](artifact://abc-1) and artifact://abc-1",
+            "embeds": [{"title": "t", "description": "see [image](artifact://abc-1)"}],
+        }
+    )
+    assert out["content"] == f"done {url} and {url}"
+    assert out["embeds"][0]["description"] == f"see {url}"
+    assert out["embeds"][0]["image"] == {"url": url}
+    assert discord_notifier._inline_artifacts({"archived": True}) == {"archived": True}

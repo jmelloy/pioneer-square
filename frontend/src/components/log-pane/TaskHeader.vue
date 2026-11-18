@@ -18,7 +18,7 @@
     <div
       class="pane-description-body task-description--markdown markdown-prose"
       v-html="renderedDescription"
-      v-artifacts="guildStore.currentGuild?.id"
+      v-artifacts
     ></div>
   </div>
 </template>
@@ -27,9 +27,7 @@
 import { computed } from 'vue'
 import { renderMarkdown } from '../../utils/markdown'
 import { vArtifacts } from '../../utils/artifacts'
-import { useGuildStore } from '../../stores/guild'
 
-const guildStore = useGuildStore()
 
 const props = defineProps<{
   taskId?: string
