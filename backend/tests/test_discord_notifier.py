@@ -2042,4 +2042,9 @@ def test_inline_artifacts_rewrites_content_and_embeds(monkeypatch):
     assert out["content"] == f"done {url} and {url}"
     assert out["embeds"][0]["description"] == f"see {url}"
     assert out["embeds"][0]["image"] == {"url": url}
+    # Non-image artifacts become plain links; they must not be used as the embed image.
+    html = discord_notifier._inline_artifacts(
+        {"embeds": [{"description": "[r.html](artifact://abc-1?type=html)"}]}
+    )
+    assert html["embeds"][0] == {"description": url}
     assert discord_notifier._inline_artifacts({"archived": True}) == {"archived": True}

@@ -1,4 +1,4 @@
-"""Artifact (screenshot/image) uploads: ``POST /guilds/{guild_id}/artifacts``.
+"""Artifact (image/HTML/text/PDF) uploads: ``POST /guilds/{guild_id}/artifacts``.
 
 Workers and guild members upload via multipart; the backend validates and stores the
 bytes in S3 (see ``artifact_service``) and records an ``artifacts`` row.
@@ -29,20 +29,27 @@ def _link_text(name: str | None) -> str:
     return base or "artifact"
 
 
+def artifact_uri(a: Artifact) -> str:
+    # Non-image types carry ``?type=`` so renderers know how to display without a lookup.
+    return f"artifact://{a.id}" + ("" if a.type == "image" else f"?type={a.type}")
+
+
 def _payload(a: Artifact, name: str | None = None) -> dict:
+    uri = artifact_uri(a)
     return {
         "id": a.id,
         "key": a.key,
         # Stored url may be a legacy presigned link; always hand out the permanent one.
         "url": artifact_service.public_url(a.id),
         "contentType": a.content_type,
+        "type": a.type,
         "sizeBytes": a.size_bytes,
         "taskId": a.task_id,
         "uploadedByWorkerId": a.uploaded_by_worker_id,
         "createdAt": a.created_at.isoformat(),
-        "artifactUri": f"artifact://{a.id}",
+        "artifactUri": uri,
         # Reference in message content; the frontend resolves artifact:// links.
-        "markdown": f"[{_link_text(name)}](artifact://{a.id})",
+        "markdown": f"[{_link_text(name)}]({uri})",
     }
 
 
@@ -51,6 +58,7 @@ async def upload_artifact(
     guild_id: str,
     file: UploadFile = File(...),
     task_id: str | None = Form(default=None),
+    type: str | None = Form(default=None),  # optional; must match the file's content type
     principal: str = Depends(require_worker_or_member_path),
     db: AsyncSession = Depends(get_db_dep),
 ):
@@ -72,6 +80,12 @@ async def upload_artifact(
     limit = cfg.max_bytes if cfg else artifact_service.MAX_ARTIFACT_BYTES_DEFAULT
     data = await file.read(limit + 1)  # bounded read; validate() rejects oversize
     try:
+        if type:
+            actual = artifact_service.artifact_type(
+                artifact_service.validate(data, file.content_type, limit)
+            )
+            if type != actual:
+                raise artifact_service.ArtifactError(f"File is a {actual} artifact, not {type}", 415)
         obj = await artifact_service.store(data, file.content_type, guild_id, task_id)
     except artifact_service.ArtifactError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
@@ -83,6 +97,7 @@ async def upload_artifact(
         key=obj.key,
         url=obj.url,
         content_type=obj.content_type,
+        type=obj.type,
         size_bytes=obj.size_bytes,
         uploaded_by_worker_id=worker_id,
         task_id=task_id,
@@ -127,8 +142,10 @@ async def public_artifact(artifact_id: str, db: AsyncSession = Depends(get_db_de
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     return StreamingResponse(
         body.iter_chunks(64 * 1024),  # sync iterator; Starlette runs it in a threadpool
-        media_type=row.content_type,  # validated image type from upload
+        media_type=row.content_type,  # validated type from upload
         headers={
+            # Opaque origin: uploaded HTML may run scripts but can't touch app cookies/storage.
+            **({"Content-Security-Policy": "sandbox allow-scripts"} if row.type == "html" else {}),
             "Cache-Control": "public, max-age=31536000, immutable",
             "X-Content-Type-Options": "nosniff",
             **({"Content-Length": str(row.size_bytes)} if row.size_bytes else {}),

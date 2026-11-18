@@ -28,12 +28,54 @@ def test_validate_accepts_png_and_alias():
         (PNG, "image/svg+xml", 415),
         (b"not an image", "image/png", 415),
         (PNG + b"0" * 2000, "image/png", 413),
+        (b"\xff\xfe bad utf8", "text/html", 415),
+        (b"a\x00b", "text/plain", 415),
+        (b"<html>", "application/pdf", 415),
     ],
 )
 def test_validate_rejects(data, ctype, status):
     with pytest.raises(artifact_service.ArtifactError) as ei:
         artifact_service.validate(data, ctype, 1000)
     assert ei.value.status_code == status
+
+
+def test_validate_accepts_documents():
+    assert artifact_service.validate(b"<h1>hi</h1>", "text/html; charset=utf-8", 1000) == "text/html"
+    assert artifact_service.validate(b"%PDF-1.7", "application/pdf", 1000) == "application/pdf"
+    assert artifact_service.artifact_type("text/markdown") == "text"
+    assert artifact_service.artifact_type("image/gif") == "image"
+
+
+def test_html_upload_is_typed_and_sandboxed(client, monkeypatch):
+    c, db = client
+    insert_guild(db, "art2")
+    insert_member(db, "art2", "m-art2", "member")
+    h = {"Authorization": f"Bearer {make_auth_token(db, user_id='m-art2', username='m-art2')}"}
+    html = b"<script>alert(1)</script>"
+
+    async def fake_store(data, ctype, guild, task_id):
+        c_ = artifact_service.validate(data, ctype, 1000)
+        t = artifact_service.artifact_type(c_)
+        return artifact_service.StoredObject("id-h", "a/id-h.html", "u", c_, len(data), t)
+
+    monkeypatch.setattr(artifact_service, "store", fake_store)
+    files = {"file": ("r.html", html, "text/html")}
+    r = c.post("/guilds/art2/artifacts", files=files, data={"type": "html"}, headers=h)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["type"] == "html"
+    assert body["markdown"] == "[r.html](artifact://id-h?type=html)"
+    wrong = c.post("/guilds/art2/artifacts", files=files, data={"type": "image"}, headers=h)
+    assert wrong.status_code == 415
+
+    class Body:
+        def iter_chunks(self, size):
+            yield html
+
+    monkeypatch.setattr(artifact_service, "open_object", lambda key: Body())
+    pub = c.get("/api/artifacts/id-h/public")
+    assert pub.headers["content-type"].startswith("text/html")
+    assert pub.headers["content-security-policy"] == "sandbox allow-scripts"
 
 
 def test_upload_route(client, monkeypatch):
@@ -66,6 +108,8 @@ def test_upload_route(client, monkeypatch):
     assert pub.content == PNG and seen == ["a/art1/id-1.png"]
     assert pub.headers["content-type"] == "image/png"
     assert "immutable" in pub.headers["cache-control"]
+    assert "content-security-policy" not in pub.headers
+    assert r.json()["type"] == "image" and r.json()["markdown"] == "[s.png](artifact://id-1)"
     assert c.get("/api/artifacts/nope/public").status_code == 404
     bad = c.post("/guilds/art1/artifacts", files={"file": ("s.png", b"zz", "image/png")}, headers=h)
     assert bad.status_code == 415
