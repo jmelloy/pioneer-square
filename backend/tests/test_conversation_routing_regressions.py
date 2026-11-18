@@ -16,7 +16,7 @@ from discord import router
 from foreman import runner, tools
 from foreman.conversation_service import create_conversation
 from helpers import insert_agent, insert_guild, insert_task, insert_worker
-from models import ConversationTask, GithubEvent, Task, task_conversation_id
+from models import Conversation, ConversationTask, GithubEvent, Task, task_conversation_id
 from routes.debug_query import _validate_readonly_query
 from sqlmodel import select
 
@@ -462,6 +462,8 @@ async def test_unowned_review_request_creates_pr_context_not_latest_chat(client)
             )
         ).one()
         assert cached.conversation_id == event.conversation_id == conversation_id
+        conversation = await db.get(Conversation, conversation_id)
+        assert conversation.name == "Review PR #88"
 
 
 async def test_followup_task_links_to_issue_owner_conversation(client):

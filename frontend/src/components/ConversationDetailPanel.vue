@@ -5,9 +5,15 @@
       <div class="pane-header">
         <div class="pane-title">
           <span class="title-icon">💬</span>
-          <span class="title-text" :title="String(conversation.name || conversation.id)">{{
-            conversation.name || conversation.id
-          }}</span>
+          <button
+            class="title-text"
+            :class="{ 'title-expanded': titleExpanded }"
+            :aria-expanded="titleExpanded"
+            :title="String(conversation.name || conversation.id)"
+            @click="titleExpanded = !titleExpanded"
+          >
+            {{ conversation.name || conversation.id }}
+          </button>
           <code v-show="!headerCollapsed" class="entity-id-chip">{{ conversation.id }}</code>
         </div>
         <div v-show="!headerCollapsed" class="pane-meta">
@@ -223,6 +229,14 @@ const guildStore = useGuildStore()
 const conversationsStore = useConversationsStore()
 const tasksStore = useTasksStore()
 const uiStore = useUiStore()
+
+const titleExpanded = ref(false)
+watch(
+  () => props.id,
+  () => {
+    titleExpanded.value = false
+  },
+)
 
 const HEADER_STORAGE_KEY = 'conversationHeaderCollapsed'
 const headerCollapsed = ref(localStorage.getItem(HEADER_STORAGE_KEY) === 'true')
@@ -598,6 +612,11 @@ watch(
 }
 
 .title-text {
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
   font: 400 var(--text-page-title) / var(--leading-heading) var(--font-display);
   white-space: nowrap;
   overflow: hidden;
@@ -605,6 +624,11 @@ watch(
   min-width: 0;
   flex: 0 1 auto;
   color: var(--color-brass-light);
+}
+
+.title-text.title-expanded {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .entity-id-chip {

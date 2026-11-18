@@ -54,6 +54,32 @@ describe('ConversationDetailPanel reply', () => {
     expect(wrapper.text()).not.toContain('123456789')
   })
 
+  it('toggles the full title and resets expansion when switching conversations', async () => {
+    const { wrapper, conversationsStore } = mountPanel()
+    const name = 'A long conversation title that needs more than one line to display in full'
+    conversationsStore.conversations = [
+      { ...CONVERSATION, name },
+      { ...CONVERSATION, id: 43 },
+    ]
+    await flushPromises()
+
+    const title = wrapper.get('button.title-text')
+    expect(title.text()).toBe(name)
+    expect(title.attributes('aria-expanded')).toBe('false')
+    await title.trigger('click')
+    expect(title.classes()).toContain('title-expanded')
+    expect(title.attributes('aria-expanded')).toBe('true')
+    await title.trigger('click')
+    expect(title.classes()).not.toContain('title-expanded')
+
+    await title.trigger('click')
+    apiMock.mockResolvedValue([])
+    await wrapper.setProps({ id: 43 })
+    await flushPromises()
+    expect(wrapper.get('.title-text').attributes('aria-expanded')).toBe('false')
+    wrapper.unmount()
+  })
+
   it('disables send while input is empty', async () => {
     const { wrapper } = mountPanel()
     await flushPromises()
