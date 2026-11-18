@@ -85,7 +85,9 @@ async def upload_artifact(
                 artifact_service.validate(data, file.content_type, limit)
             )
             if type != actual:
-                raise artifact_service.ArtifactError(f"File is a {actual} artifact, not {type}", 415)
+                raise artifact_service.ArtifactError(
+                    f"File is a {actual} artifact, not {type}", 415
+                )
         obj = await artifact_service.store(data, file.content_type, guild_id, task_id)
     except artifact_service.ArtifactError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc

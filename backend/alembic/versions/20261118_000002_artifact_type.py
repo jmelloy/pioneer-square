@@ -10,9 +10,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "artifacts", sa.Column("type", sa.Text(), nullable=False, server_default="image")
-    )
+    op.add_column("artifacts", sa.Column("type", sa.Text(), nullable=False, server_default="image"))
 
 
 def downgrade() -> None:

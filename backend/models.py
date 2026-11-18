@@ -1290,7 +1290,9 @@ class Artifact(SQLModel, table=True):
     url: str = Field(sa_column=Column(Text, nullable=False))
     content_type: str = Field(sa_column=Column(Text, nullable=False))
     # image | html | text | pdf — how clients render it; derived from content_type.
-    type: str = Field(default="image", sa_column=Column(Text, nullable=False, server_default="image"))
+    type: str = Field(
+        default="image", sa_column=Column(Text, nullable=False, server_default="image")
+    )
     size_bytes: int
     uploaded_by_worker_id: str | None = Field(default=None, foreign_key="workers.id")
     task_id: str | None = Field(default=None, foreign_key="tasks.id", index=True)

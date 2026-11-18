@@ -40,7 +40,9 @@ def test_validate_rejects(data, ctype, status):
 
 
 def test_validate_accepts_documents():
-    assert artifact_service.validate(b"<h1>hi</h1>", "text/html; charset=utf-8", 1000) == "text/html"
+    assert (
+        artifact_service.validate(b"<h1>hi</h1>", "text/html; charset=utf-8", 1000) == "text/html"
+    )
     assert artifact_service.validate(b"%PDF-1.7", "application/pdf", 1000) == "application/pdf"
     assert artifact_service.artifact_type("text/markdown") == "text"
     assert artifact_service.artifact_type("image/gif") == "image"

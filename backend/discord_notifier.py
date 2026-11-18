@@ -273,9 +273,7 @@ def _inline_artifacts(body: dict | None) -> dict | None:
         for embed in body["embeds"]:
             desc = embed.get("description") if isinstance(embed, dict) else None
             if isinstance(desc, str) and _ARTIFACT_REF.search(desc):
-                images = [
-                    m[1] or m[3] for m in _ARTIFACT_REF.finditer(desc) if not (m[2] or m[4])
-                ]
+                images = [m[1] or m[3] for m in _ARTIFACT_REF.finditer(desc) if not (m[2] or m[4])]
                 embed = {**embed, "description": _ARTIFACT_REF.sub(_ref_url, desc)}
                 if images:
                     embed.setdefault("image", {"url": _artifact_url(images[0])})

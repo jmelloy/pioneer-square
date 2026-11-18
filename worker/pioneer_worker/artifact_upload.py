@@ -1,4 +1,4 @@
-"""Upload screenshots/images an agent saved to the per-task artifact dir.
+"""Upload images and reports (HTML/text/PDF) an agent saved to the per-task artifact dir.
 
 Agents are told (see ``prompt_note``) to save images under ``artifact_dir(task_id)``, which
 lives outside the git worktree so it never dirties it. After the run the worker uploads each
@@ -18,7 +18,9 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+# Mirrors backend artifact_service.ALLOWED_TYPES.
+ARTIFACT_EXTS = set(".png .jpg .jpeg .webp .gif .pdf .html .htm .txt .md .csv .json".split())
+mimetypes.add_type("text/markdown", ".md")  # not in every platform's mime table
 MAX_BYTES = 10 * 1024 * 1024
 MAX_FILES = 10
 
@@ -31,9 +33,10 @@ def prompt_note(task_id: str) -> str:
     d = artifact_dir(task_id)
     d.mkdir(parents=True, exist_ok=True)
     return (
-        "\n\nSCREENSHOTS: if you capture screenshots or images (e.g. from browser automation) "
-        f"save them as PNG/JPG/WebP/GIF files (max 10MB) in {d}. They are uploaded "
-        "automatically and linked in your completion message as "
+        "\n\nSCREENSHOTS & REPORTS: if you capture screenshots or images (e.g. from browser "
+        "automation) or produce a report worth sharing, save it as a PNG/JPG/WebP/GIF image, "
+        "a self-contained HTML page, or a PDF/TXT/MD/CSV/JSON file (max 10MB) in "
+        f"{d}. They are uploaded automatically and linked in your completion message as "
         "[name](artifact://<id>) markdown links. Do not put artifact:// links in "
         "commit messages or PR descriptions; GitHub cannot resolve them."
     )
@@ -42,11 +45,11 @@ def prompt_note(task_id: str) -> str:
 async def upload_task_artifacts(
     http_url: str, guild_id: str, auth_token: str, task_id: str
 ) -> list[dict]:
-    """Upload images in the task's artifact dir; return backend payloads. Never raises."""
+    """Upload files in the task's artifact dir; return backend payloads. Never raises."""
     d = artifact_dir(task_id)
     if not d.is_dir():
         return []
-    files = sorted(p for p in d.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS)[
+    files = sorted(p for p in d.iterdir() if p.is_file() and p.suffix.lower() in ARTIFACT_EXTS)[
         :MAX_FILES
     ]
     out: list[dict] = []
@@ -79,5 +82,5 @@ async def upload_task_artifacts(
 def append_markdown(text: str, artifacts: list[dict]) -> str:
     if not artifacts:
         return text
-    links = "\n".join(a.get("markdown") or f"[screenshot](artifact://{a['id']})" for a in artifacts)
-    return f"{text}\n\n**Screenshots:**\n{links}".lstrip()
+    links = "\n".join(a.get("markdown") or f"[artifact](artifact://{a['id']})" for a in artifacts)
+    return f"{text}\n\n**Artifacts:**\n{links}".lstrip()
