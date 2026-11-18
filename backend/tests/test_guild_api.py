@@ -648,3 +648,58 @@ def test_get_guild_pre_agents_prompt_helper(client):
     )
     assert asyncio.run(get_guild_pre_agents_prompt("g-set7")) == "hello"
     assert asyncio.run(get_guild_pre_agents_prompt("missing")) is None
+
+
+# ---------------------------------------------------------------------------
+# browse_repos — shared Projects browsing list (#1453)
+# ---------------------------------------------------------------------------
+
+
+def test_browse_repos_round_trip_isolated_per_guild(client):
+    test_client, db_url = client
+    h = _auth(make_auth_token(db_url))
+    insert_guild(db_url, "g-br1")
+    insert_guild(db_url, "g-br2")
+    assert test_client.get("/guilds/g-br1", headers=h).json()["browse_repos"] is None
+
+    resp = test_client.put(
+        "/api/guilds/g-br1/browse-repos", headers=h, json={"repos": ["a/b", "c/.github", "a/b"]}
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"browse_repos": ["a/b", "c/.github"]}
+    assert test_client.get("/guilds/g-br1", headers=h).json()["browse_repos"] == [
+        "a/b",
+        "c/.github",
+    ]
+    assert test_client.get("/guilds/g-br2", headers=h).json()["browse_repos"] is None
+
+    # empty is a saved selection, distinct from never-saved (None)
+    test_client.put("/api/guilds/g-br1/browse-repos", headers=h, json={"repos": []})
+    assert test_client.get("/guilds/g-br1", headers=h).json()["browse_repos"] == []
+
+
+def test_browse_repos_rejects_invalid_names(client):
+    test_client, db_url = client
+    h = _auth(make_auth_token(db_url))
+    insert_guild(db_url, "g-br3")
+    for bad in (["no-slash"], ["a/b/c"], ["../x"], ["a/.."], ["a/b"] * 101):
+        resp = test_client.put("/api/guilds/g-br3/browse-repos", headers=h, json={"repos": bad})
+        assert resp.status_code == 422, bad
+
+
+def test_browse_repos_authorization(client):
+    from helpers import insert_member
+
+    test_client, db_url = client
+    insert_guild(db_url, "g-br4")
+    insert_member(db_url, "g-br4", "br-member", role="member")
+    insert_member(db_url, "g-br4", "br-viewer", role="viewer")
+    body = {"repos": ["a/b"]}
+    url = "/api/guilds/g-br4/browse-repos"
+    member = _auth(make_auth_token(db_url, user_id="br-member", username="brm"))
+    viewer = _auth(make_auth_token(db_url, user_id="br-viewer", username="brv"))
+    outsider = _auth(make_auth_token(db_url, user_id="br-out", username="bro"))
+    assert test_client.put(url, headers=member, json=body).status_code == 200
+    assert test_client.put(url, headers=viewer, json=body).status_code == 403
+    assert test_client.put(url, headers=outsider, json=body).status_code == 403
+    assert test_client.put(url, json=body).status_code == 401

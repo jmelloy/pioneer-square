@@ -44,7 +44,7 @@ describe('ProjectsView', () => {
     })
     const store = useGitHubStore()
     store.token = 'test-token'
-    store.selectedRepos = ['team/factory', 'team/engine']
+    useGuildStore().currentGuild = { id: 'g1', browse_repos: ['team/factory', 'team/engine'] }
     store.issues = [
       issue(1),
       issue(2, 'team/engine', 'closed'),
@@ -53,7 +53,11 @@ describe('ProjectsView', () => {
     ]
     vi.spyOn(store, 'fetchIssues').mockResolvedValue([])
   })
-  afterEach(() => vi.restoreAllMocks())
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+    localStorage.clear()
+  })
 
   it('defaults to open issues in configured repositories, newest first', () => {
     const wrapper = render()
@@ -108,7 +112,7 @@ describe('ProjectsView', () => {
     const rows = (w: ReturnType<typeof render>) =>
       w.findAll('tbody tr').map((row) => row.find('td').text())
     beforeEach(() => {
-      useGuildStore().currentGuild = { primary_repo: 'team/engine' } as never
+      useGuildStore().currentGuild!.primary_repo = 'team/engine'
       useGitHubStore().issues.push(issue(5, 'team/engine'))
     })
 
@@ -120,7 +124,7 @@ describe('ProjectsView', () => {
     })
 
     it('is listed even when not in the browsing list', () => {
-      useGuildStore().currentGuild = { primary_repo: 'team/main' } as never
+      useGuildStore().currentGuild!.primary_repo = 'team/main'
       render()
       expect(useGitHubStore().fetchIssues).toHaveBeenCalledWith([
         'team/main',
@@ -146,8 +150,12 @@ describe('ProjectsView', () => {
     it('applies when the guild loads after the page', async () => {
       useGuildStore().currentGuild = null
       const wrapper = render()
-      expect(rows(wrapper)).toEqual(['5', '3', '1'])
-      useGuildStore().currentGuild = { primary_repo: 'team/engine' } as never
+      expect(rows(wrapper)).toEqual([])
+      useGuildStore().currentGuild = {
+        id: 'g1',
+        browse_repos: ['team/factory', 'team/engine'],
+        primary_repo: 'team/engine',
+      }
       await flushPromises()
       expect(rows(wrapper)).toEqual(['5'])
     })
@@ -195,14 +203,15 @@ describe('ProjectsView', () => {
 
   it('refetches immediately when the browsing scope changes, and clears stale detail', async () => {
     const store = useGitHubStore()
+    const guild = useGuildStore().currentGuild!
     const wrapper = render()
     await wrapper.findAll('.issue-select')[1]!.trigger('click')
     expect(wrapper.find('.viewer-stub').text()).toBe('factory #1')
-    store.setSelectedRepos(['team/engine'])
+    guild.browse_repos = ['team/engine']
     await flushPromises()
     expect(store.fetchIssues).toHaveBeenLastCalledWith(['team/engine'])
     expect(wrapper.find('.viewer-stub').exists()).toBe(false)
-    store.setSelectedRepos([])
+    guild.browse_repos = []
     await flushPromises()
     expect(store.fetchIssues).toHaveBeenLastCalledWith([])
     expect(wrapper.findAll('tbody tr')).toHaveLength(0)
@@ -222,11 +231,21 @@ describe('ProjectsView', () => {
       await flushPromises()
       return wrapper
     }
+    function mockPut(status = 200) {
+      const fetchMock = vi.fn(async (_url: string, init: RequestInit) =>
+        status === 200
+          ? Response.json({ browse_repos: JSON.parse(init.body as string).repos })
+          : Response.json({ detail: 'This action requires one of: owner, member' }, { status }),
+      )
+      vi.stubGlobal('fetch', fetchMock)
+      return fetchMock
+    }
     const selected = (w: ReturnType<typeof render>) =>
       w.findAll('[aria-label="Selected repositories"] li span').map((s) => s.text())
 
     it('searches, adds, removes, and saves the browsing list', async () => {
       mockRepos()
+      const fetchMock = mockPut()
       const wrapper = await openEditor()
       expect(selected(wrapper)).toEqual(['team/factory', 'team/engine'])
       await wrapper.find('[aria-label="Search GitHub repositories"]').setValue('acme')
@@ -236,6 +255,10 @@ describe('ProjectsView', () => {
       expect(selected(wrapper)).toEqual(['team/factory', 'acme/site'])
       const save = wrapper.findAll('.repo-editor footer button').find((b) => b.text() === 'Save')!
       await save.trigger('click')
+      await flushPromises()
+      const [url, init] = fetchMock.mock.calls[0]!
+      expect(url).toContain('/api/guilds/g1/browse-repos')
+      expect(init).toMatchObject({ method: 'PUT' })
       const store = useGitHubStore()
       expect(store.selectedRepos).toEqual(['team/factory', 'acme/site'])
       expect(store.fetchIssues).toHaveBeenLastCalledWith(['team/factory', 'acme/site'])
@@ -273,9 +296,40 @@ describe('ProjectsView', () => {
       expect(wrapper.find('[aria-label="Add team/docs"]').exists()).toBe(true)
     })
 
+    it('keeps the editor open with the error when the save is rejected', async () => {
+      mockRepos()
+      mockPut(403)
+      const wrapper = await openEditor()
+      await wrapper.find('[aria-label="Remove team/engine"]').trigger('click')
+      await wrapper
+        .findAll('.repo-editor footer button')
+        .find((b) => b.text() === 'Save')!
+        .trigger('click')
+      await flushPromises()
+      expect(wrapper.find('.repo-editor [role="alert"]').text()).toContain('owner, member')
+      expect(useGitHubStore().selectedRepos).toEqual(['team/factory', 'team/engine'])
+    })
+
+    it('imports a legacy browser list only after confirmation, and only if never saved', async () => {
+      localStorage.setItem('gh_repos', JSON.stringify(['team/docs']))
+      const fetchMock = mockPut()
+      expect(render().text()).not.toContain('Import into') // guild already has a saved list
+      useGuildStore().currentGuild!.browse_repos = null
+      const wrapper = render()
+      expect(fetchMock).not.toHaveBeenCalled()
+      await wrapper
+        .findAll('button')
+        .find((b) => b.text() === 'Import')!
+        .trigger('click')
+      await flushPromises()
+      expect(useGitHubStore().selectedRepos).toEqual(['team/docs'])
+      expect(localStorage.getItem('gh_repos')).toBeNull()
+      expect(wrapper.text()).not.toContain('Import into')
+    })
+
     it('offers an actionable empty state', async () => {
       mockRepos()
-      useGitHubStore().selectedRepos = []
+      useGuildStore().currentGuild!.browse_repos = []
       const wrapper = render()
       await wrapper.find('.project-list .workspace-empty button').trigger('click')
       await flushPromises()

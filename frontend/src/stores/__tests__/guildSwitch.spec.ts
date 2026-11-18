@@ -101,12 +101,11 @@ describe('guild switch request isolation', () => {
   it('clears issues and tabs, ignores pending issues, and keeps account preferences', async () => {
     const store = useGitHubStore()
     store.token = 'account-token'
-    store.selectedRepos = ['owner/repo']
     store.openIssueTab('owner', 'repo', 1)
     store.error = 'old error'
     const pending = deferred<Response>()
     vi.stubGlobal('fetch', vi.fn().mockReturnValueOnce(pending.promise))
-    const request = store.fetchIssues()
+    const request = store.fetchIssues(['owner/repo'])
     store.clearIssues()
     expect(store.openedIssueKeys).toEqual([])
     expect(store.loading).toBe(false)
@@ -115,6 +114,5 @@ describe('guild switch request isolation', () => {
     await request
     expect(store.issues).toEqual([])
     expect(store.token).toBe('account-token')
-    expect(store.selectedRepos).toEqual(['owner/repo'])
   })
 })

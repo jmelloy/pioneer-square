@@ -673,6 +673,39 @@ def _guild_settings_dict(guild: Guild) -> dict:
     }
 
 
+# GitHub owner (alnum + hyphen) / repo name, excluding the "." and ".." path segments.
+_REPO_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/(?!\.\.?$)[A-Za-z0-9_.-]+")
+
+
+class BrowseReposUpdate(BaseModel):
+    repos: list[str] = Field(max_length=100)
+
+    @field_validator("repos")
+    @classmethod
+    def _valid_repos(cls, repos: list[str]) -> list[str]:
+        for repo in repos:
+            if not _REPO_RE.fullmatch(repo):
+                raise ValueError(f"invalid repository name: {repo!r}")
+        return list(dict.fromkeys(repos))
+
+
+@router.put("/api/guilds/{guild_id}/browse-repos")
+async def set_browse_repos(
+    guild_id: str,
+    data: BrowseReposUpdate,
+    github_user_id: str = Depends(require_member("owner", "member")),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Replace the guild's shared Projects browsing list (owners and members; not viewers)."""
+    res = await db.exec(select(Guild).where(col(Guild.slug) == guild_id))
+    guild = res.one_or_none()
+    if not guild:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    guild.browse_repos = data.repos
+    await db.commit()
+    return {"browse_repos": guild.browse_repos}
+
+
 @router.get("/api/guilds/{guild_id}/settings")
 async def get_guild_settings(
     guild_id: str,

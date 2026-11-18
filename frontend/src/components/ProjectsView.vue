@@ -31,6 +31,15 @@
           ><span :title="repo">{{ repo.split('/').pop() }}</span
           ><span class="count">{{ scopedIssues.filter((i) => i.repo === repo).length }}</span>
         </button>
+        <div v-if="legacyRepos.length" class="workspace-empty" role="region" aria-label="Import">
+          <p>
+            This browser has {{ legacyRepos.length }} saved
+            {{ legacyRepos.length === 1 ? 'repository' : 'repositories' }}. Import into this guild's
+            shared list?
+          </p>
+          <button class="pixel-btn" @click="importLegacy">Import</button>
+          <button class="pixel-btn" @click="legacyDismissed = true">Not now</button>
+        </div>
         <div v-if="!repoNames.length" class="workspace-empty">
           <p>No repositories selected for browsing.</p>
           <button class="pixel-btn" @click="openEditor">+ Add repositories</button>
@@ -186,8 +195,8 @@
       >
         <h2 id="repo-editor-title">Browse repositories</h2>
         <p class="repo-editor-hint">
-          Only changes which repositories this screen lists. The Foreman's primary repo and worker
-          repository access are configured separately.
+          Changes which repositories this screen lists for everyone in this guild. The Foreman's
+          primary repo and worker repository access are configured separately.
         </p>
         <p v-if="primaryRepo" class="primary-override">
           The guild's primary repo <strong>{{ primaryRepo }}</strong> is always listed and is the
@@ -225,6 +234,7 @@
           </li>
           <li v-if="!repoMatches.length" class="workspace-empty">No matching repositories.</li>
         </ul>
+        <p v-if="saveError" class="workspace-empty" role="alert">{{ saveError }}</p>
         <footer>
           <button class="pixel-btn" @click="cancelEdit">Cancel</button>
           <button class="pixel-btn" @click="saveRepos">Save</button>
@@ -236,7 +246,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useGitHubStore } from '../stores/github'
+import { readLegacyRepos, useGitHubStore } from '../stores/github'
 import { useGuildStore } from '../stores/guild'
 import { formatAge } from '../utils/format'
 import IssueViewer from './IssueViewer.vue'
@@ -380,14 +390,37 @@ function cancelEdit() {
   editing.value = false
 }
 
-function saveRepos() {
-  ghStore.setSelectedRepos(draft.value)
+const saveError = ref('')
+async function saveRepos() {
+  saveError.value = ''
+  try {
+    await ghStore.setSelectedRepos(draft.value)
+  } catch (e: unknown) {
+    saveError.value = e instanceof Error ? e.message : String(e)
+    return
+  }
   editing.value = false
   projectParam.value = ''
 }
 
 // Any scope change (edit, guild primary repo loading) refetches immediately.
 watch(scopeKey, refresh, { immediate: true })
+
+// One-time, confirmed import of the pre-#1453 browser-global list into a guild
+// that has never saved a shared list (browse_repos null).
+const legacyDismissed = ref(false)
+const legacyRepos = computed(() =>
+  !legacyDismissed.value && guildStore.currentGuild?.browse_repos == null ? readLegacyRepos() : [],
+)
+async function importLegacy() {
+  draft.value = legacyRepos.value
+  await saveRepos()
+  if (saveError.value) {
+    editing.value = true
+  } else {
+    localStorage.removeItem('gh_repos')
+  }
+}
 
 let refreshTimer: ReturnType<typeof setInterval> | undefined
 onMounted(() => {
