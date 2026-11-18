@@ -11,7 +11,8 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
 })
 
 // Default DOMPurify URI allow-list plus our artifact:// scheme.
-const ALLOWED_URI_REGEXP = /^(?:(?:https?|mailto|tel|artifact):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i
+const ALLOWED_URI_REGEXP =
+  /^(?:(?:https?|mailto|tel|artifact):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i
 
 // Bare `artifact://<id>` (no link text) becomes a link so it renders like the others.
 const BARE_ARTIFACT_RE = /(^|\s)(artifact:\/\/[A-Za-z0-9-]+)(?=$|[\s).,;!?])/g
