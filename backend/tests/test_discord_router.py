@@ -360,6 +360,44 @@ async def test_persist_inbound_message_broadcast_carries_conversation_id(client)
 
 
 @pytest.mark.asyncio
+async def test_persist_inbound_message_stores_discord_author(client):
+    """#1492: the Discord author's name and CDN avatar ride along in meta (so
+    history shows them) and on the live broadcast."""
+    import json
+
+    import database as database_module
+    from models import Message
+    from sqlmodel import col, select
+
+    _test_client, db_url = client
+    insert_guild(db_url, "g-author")
+    broadcast = AsyncMock()
+    with (
+        patch("discord.thread_mirror.on_conversation_created", new=AsyncMock()),
+        patch("events.broadcast_msg", new=broadcast),
+    ):
+        await router._persist_inbound_message(
+            "g-author",
+            "authored message",
+            user_id=None,
+            task_id=None,
+            author={"id": "42", "username": "wump", "global_name": "Wumpus", "avatar": "abc"},
+        )
+
+    async with database_module.AsyncSessionLocal() as db:
+        result = await db.exec(select(Message).where(col(Message.content) == "authored message"))
+        message = result.first()
+
+    expected = {
+        "authorName": "Wumpus",
+        "authorAvatar": "https://cdn.discordapp.com/avatars/42/abc.png?size=64",
+    }
+    assert message is not None and json.loads(message.meta) == expected
+    sent = broadcast.await_args.args[1]
+    assert (sent.authorName, sent.authorAvatar) == tuple(expected.values())
+
+
+@pytest.mark.asyncio
 async def test_persist_inbound_message_two_top_level_messages_get_separate_conversations(client):
     """Two distinct top-level messages from the same user each spawn their own
     Conversation (#1296) — "conversations are the durable unit of work,"

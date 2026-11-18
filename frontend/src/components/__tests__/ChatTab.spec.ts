@@ -37,4 +37,27 @@ describe('ChatTab conversation isolation', () => {
     expect(wrapper.text()).not.toContain('Live reply')
     wrapper.unmount()
   })
+
+  it('shows the author name and avatar, falling back to an initial', async () => {
+    useGuildStore().messages = [
+      {
+        type: 'chat',
+        from: 'user',
+        content: 'hi',
+        authorName: 'octocat',
+        authorAvatar: 'https://avatars.githubusercontent.com/u/1?v=4',
+      },
+      { type: 'chat', from: 'user', content: 'yo', source: 'discord', authorName: 'wumpus' },
+    ]
+    const wrapper = mount(ChatTab)
+    expect(wrapper.text()).toContain('octocat')
+    expect(wrapper.text()).toContain('wumpus')
+    const img = wrapper.find('img.msg-avatar')
+    expect(img.attributes('src')).toBe('https://avatars.githubusercontent.com/u/1?v=4')
+    expect(wrapper.find('.msg-avatar--placeholder').text()).toBe('W')
+
+    await img.trigger('error')
+    expect(wrapper.findAll('.msg-avatar--placeholder').map((el) => el.text())).toEqual(['O', 'W'])
+    wrapper.unmount()
+  })
 })

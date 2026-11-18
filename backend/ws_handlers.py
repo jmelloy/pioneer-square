@@ -40,6 +40,7 @@ from foreman.tools import maybe_post_plan_comment
 from guild_settings import get_guild_pre_agents_prompt
 from lock_service import LockService
 from message_artifacts import externalize_images
+from message_authors import user_authors
 from models import Agent, Message, Task, TaskEvent, TaskLog, User, Worker, task_conversation_id
 from pydantic import ValidationError
 from sqlalchemy import delete, func, update
@@ -576,6 +577,11 @@ async def handle_chat(ctx: WSContext, msg: ChatMsg) -> None:
                 "createdAt": created_at.isoformat(),
                 "userId": ctx.ws_user_id if from_agent == "user" else None,
                 "conversationId": conversation_id,
+                **(
+                    (await user_authors(ctx.db, [ctx.ws_user_id])).get(ctx.ws_user_id, {})
+                    if from_agent == "user" and ctx.ws_user_id
+                    else {}
+                ),
             }
         ),
     )
