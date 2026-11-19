@@ -706,6 +706,39 @@ async def set_browse_repos(
     return {"browse_repos": guild.browse_repos}
 
 
+class LinkedProject(BaseModel):
+    id: str = Field(max_length=100)
+    name: str = Field(max_length=200)
+    url: str = Field(max_length=500)
+    owner: str = Field(max_length=100)
+    # "user" | "org" | "repo" scope the project was listed under; "v2" marks Projects v2.
+    kind: str = Field(max_length=20)
+
+
+class BrowseProjectsUpdate(BaseModel):
+    projects: list[LinkedProject] = Field(max_length=50)
+
+
+@router.put("/api/guilds/{guild_id}/browse-projects")
+async def set_browse_projects(
+    guild_id: str,
+    data: BrowseProjectsUpdate,
+    github_user_id: str = Depends(require_member("owner", "member")),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Replace the guild's linked GitHub Projects (owners and members; not viewers)."""
+    res = await db.exec(select(Guild).where(col(Guild.slug) == guild_id))
+    guild = res.one_or_none()
+    if not guild:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    seen: dict[str, dict] = {}
+    for p in data.projects:
+        seen.setdefault(p.id, p.model_dump())
+    guild.browse_projects = list(seen.values())
+    await db.commit()
+    return {"browse_projects": guild.browse_projects}
+
+
 @router.get("/api/guilds/{guild_id}/settings")
 async def get_guild_settings(
     guild_id: str,

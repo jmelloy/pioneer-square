@@ -703,3 +703,22 @@ def test_browse_repos_authorization(client):
     assert test_client.put(url, headers=viewer, json=body).status_code == 403
     assert test_client.put(url, headers=outsider, json=body).status_code == 403
     assert test_client.put(url, json=body).status_code == 401
+
+
+def test_browse_projects_round_trip(client):
+    test_client, db_url = client
+    h = _auth(make_auth_token(db_url))
+    insert_guild(db_url, "g-bp1")
+    proj = {
+        "id": "1",
+        "name": "Roadmap",
+        "url": "https://github.com/orgs/a/projects/1",
+        "owner": "a",
+        "kind": "org",
+    }
+    resp = test_client.put(
+        "/api/guilds/g-bp1/browse-projects", headers=h, json={"projects": [proj, proj]}
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"browse_projects": [proj]}
+    assert test_client.get("/guilds/g-bp1", headers=h).json()["browse_projects"] == [proj]

@@ -4,6 +4,7 @@ import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import ProjectsView from '../ProjectsView.vue'
 import { useGitHubStore } from '../../stores/github'
+import { useUiStore } from '../../stores/ui'
 import { useGuildStore } from '../../stores/guild'
 import type { GitHubIssue } from '../../types'
 
@@ -217,97 +218,20 @@ describe('ProjectsView', () => {
     expect(wrapper.findAll('tbody tr')).toHaveLength(0)
   })
 
-  describe('repository list editor', () => {
-    function mockRepos(names = ['team/factory', 'team/engine', 'team/docs', 'acme/site']) {
-      return vi.spyOn(useGitHubStore(), 'fetchRepos').mockImplementation(async () => {
-        const store = useGitHubStore()
-        store.repos = names.map((full_name) => ({ full_name }) as never)
-        return store.repos
-      })
-    }
-    async function openEditor() {
-      const wrapper = render()
-      await wrapper.find('.projects-heading button:last-child').trigger('click')
-      await flushPromises()
-      return wrapper
-    }
-    function mockPut(status = 200) {
+  describe('settings handoff', () => {
+    function mockPut() {
       const fetchMock = vi.fn(async (_url: string, init: RequestInit) =>
-        status === 200
-          ? Response.json({ browse_repos: JSON.parse(init.body as string).repos })
-          : Response.json({ detail: 'This action requires one of: owner, member' }, { status }),
+        Response.json({ browse_repos: JSON.parse(init.body as string).repos }),
       )
       vi.stubGlobal('fetch', fetchMock)
       return fetchMock
     }
-    const selected = (w: ReturnType<typeof render>) =>
-      w.findAll('[aria-label="Selected repositories"] li span').map((s) => s.text())
 
-    it('searches, adds, removes, and saves the browsing list', async () => {
-      mockRepos()
-      const fetchMock = mockPut()
-      const wrapper = await openEditor()
-      expect(selected(wrapper)).toEqual(['team/factory', 'team/engine'])
-      await wrapper.find('[aria-label="Search GitHub repositories"]').setValue('acme')
-      expect(wrapper.findAll('[aria-label="Available repositories"] li span')).toHaveLength(1)
-      await wrapper.find('[aria-label="Add acme/site"]').trigger('click')
-      await wrapper.find('[aria-label="Remove team/engine"]').trigger('click')
-      expect(selected(wrapper)).toEqual(['team/factory', 'acme/site'])
-      const save = wrapper.findAll('.repo-editor footer button').find((b) => b.text() === 'Save')!
-      await save.trigger('click')
-      await flushPromises()
-      const [url, init] = fetchMock.mock.calls[0]!
-      expect(url).toContain('/api/guilds/g1/browse-repos')
-      expect(init).toMatchObject({ method: 'PUT' })
-      const store = useGitHubStore()
-      expect(store.selectedRepos).toEqual(['team/factory', 'acme/site'])
-      expect(store.fetchIssues).toHaveBeenLastCalledWith(['team/factory', 'acme/site'])
+    it('opens the guild settings Projects tab instead of an inline editor', async () => {
+      const wrapper = render()
+      await wrapper.find('.projects-heading button:last-child').trigger('click')
+      expect(useUiStore().settingsRequest).toBe('projects')
       expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
-    })
-
-    it('adds the first match with Enter and discards changes on Escape', async () => {
-      mockRepos()
-      const wrapper = await openEditor()
-      const input = wrapper.find('[aria-label="Search GitHub repositories"]')
-      await input.setValue('docs')
-      await input.trigger('keydown', { key: 'Enter' })
-      expect(selected(wrapper)).toContain('team/docs')
-      await wrapper.find('[role="dialog"]').trigger('keydown', { key: 'Escape' })
-      expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
-      expect(useGitHubStore().selectedRepos).toEqual(['team/factory', 'team/engine'])
-    })
-
-    it('shows load errors with retry without clobbering the issues error', async () => {
-      const store = useGitHubStore()
-      store.error = 'issues failed'
-      const spy = vi.spyOn(store, 'fetchRepos').mockImplementation(async () => {
-        store.error = 'GitHub error 500'
-        return []
-      })
-      const wrapper = await openEditor()
-      expect(wrapper.find('.repo-editor [role="alert"]').text()).toContain('GitHub error 500')
-      expect(store.error).toBe('issues failed')
-      spy.mockImplementation(async () => {
-        store.repos = [{ full_name: 'team/docs' } as never]
-        return store.repos
-      })
-      await wrapper.find('.repo-editor [role="alert"] button').trigger('click')
-      await flushPromises()
-      expect(wrapper.find('[aria-label="Add team/docs"]').exists()).toBe(true)
-    })
-
-    it('keeps the editor open with the error when the save is rejected', async () => {
-      mockRepos()
-      mockPut(403)
-      const wrapper = await openEditor()
-      await wrapper.find('[aria-label="Remove team/engine"]').trigger('click')
-      await wrapper
-        .findAll('.repo-editor footer button')
-        .find((b) => b.text() === 'Save')!
-        .trigger('click')
-      await flushPromises()
-      expect(wrapper.find('.repo-editor [role="alert"]').text()).toContain('owner, member')
-      expect(useGitHubStore().selectedRepos).toEqual(['team/factory', 'team/engine'])
     })
 
     it('imports a legacy browser list only after confirmation, and only if never saved', async () => {
@@ -327,13 +251,19 @@ describe('ProjectsView', () => {
       expect(wrapper.text()).not.toContain('Import into')
     })
 
-    it('offers an actionable empty state', async () => {
-      mockRepos()
-      useGuildStore().currentGuild!.browse_repos = []
-      const wrapper = render()
-      await wrapper.find('.project-list .workspace-empty button').trigger('click')
-      await flushPromises()
-      expect(wrapper.find('[role="dialog"]').text()).toContain('Nothing selected yet')
+    it('lists linked GitHub projects in the sidebar', () => {
+      useGuildStore().currentGuild!.browse_projects = [
+        {
+          id: 'p1',
+          name: 'Roadmap',
+          url: 'https://github.com/orgs/team/projects/1',
+          owner: 'team',
+          kind: 'org',
+        },
+      ]
+      const link = render().find('a.project-choice')
+      expect(link.text()).toContain('Roadmap')
+      expect(link.attributes('href')).toContain('/projects/1')
     })
   })
 })

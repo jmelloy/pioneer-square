@@ -17,6 +17,8 @@ export function conversationTabId(id: number): string {
 export const useUiStore = defineStore('ui', () => {
   const activeTab = ref<string>('factory')
   const workspace = ref<'work' | 'projects'>('work')
+  // Set by any screen to ask TopBar to open guild settings on a given tab.
+  const settingsRequest = ref<string | null>(null)
 
   const selectedWorkerId = ref<string | null>(null)
   const openedWorkerIds = ref<string[]>([])
@@ -132,6 +134,7 @@ export const useUiStore = defineStore('ui', () => {
   return {
     activeTab,
     workspace,
+    settingsRequest,
     selectedWorkerId,
     openedWorkerIds,
     selectedAgentId,
