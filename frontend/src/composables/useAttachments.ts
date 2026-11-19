@@ -1,5 +1,5 @@
 import { ref, computed, onBeforeUnmount, type Ref } from 'vue'
-import { imagesFromTransfer, uploadArtifact, validateImage } from '../utils/artifactUpload'
+import { filesFromTransfer, uploadArtifact, validateFile } from '../utils/artifactUpload'
 
 export interface Attachment {
   key: number
@@ -71,7 +71,7 @@ export function useAttachments(guildId: () => string | undefined) {
   function addFiles(files: File[]) {
     notice.value = null
     for (const file of files) {
-      const err = validateImage(file)
+      const err = validateFile(file)
       if (err) {
         notice.value = err
         continue
@@ -114,7 +114,7 @@ export function useAttachments(guildId: () => string | undefined) {
   }
 
   function onPaste(e: ClipboardEvent) {
-    const files = imagesFromTransfer(e.clipboardData)
+    const files = filesFromTransfer(e.clipboardData)
     if (!files.length) return
     e.preventDefault()
     addFiles(files)
@@ -135,7 +135,7 @@ export function useAttachments(guildId: () => string | undefined) {
   }
   function onDrop(e: DragEvent) {
     dragging.value = false
-    const files = imagesFromTransfer(e.dataTransfer)
+    const files = filesFromTransfer(e.dataTransfer)
     if (!files.length) return
     e.preventDefault()
     addFiles(files)

@@ -1282,7 +1282,7 @@ class ModelCatalog(SQLModel, table=True):
 
 
 class Artifact(SQLModel, table=True):
-    """An image (screenshot etc.) stored in S3 and referenced from tasks/messages."""
+    """A file (image, HTML report, text, PDF) stored in S3 and referenced from tasks/messages."""
 
     __tablename__ = "artifacts"  # type: ignore[assignment]
 
@@ -1291,6 +1291,10 @@ class Artifact(SQLModel, table=True):
     key: str = Field(sa_column=Column(Text, nullable=False))
     url: str = Field(sa_column=Column(Text, nullable=False))
     content_type: str = Field(sa_column=Column(Text, nullable=False))
+    # image | html | text | pdf — how clients render it; derived from content_type.
+    type: str = Field(
+        default="image", sa_column=Column(Text, nullable=False, server_default="image")
+    )
     size_bytes: int
     uploaded_by_worker_id: str | None = Field(default=None, foreign_key="workers.id")
     task_id: str | None = Field(default=None, foreign_key="tasks.id", index=True)

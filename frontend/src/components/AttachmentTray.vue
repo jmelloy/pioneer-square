@@ -3,7 +3,13 @@
     <div v-if="notice" class="tray-notice" role="status">{{ notice }}</div>
     <div v-if="attachments.length" class="tray-items">
       <div v-for="a in attachments" :key="a.key" class="tray-item" :class="a.status">
-        <img class="tray-thumb" :src="a.previewUrl" :alt="a.file.name" />
+        <img
+          v-if="a.file.type.startsWith('image/')"
+          class="tray-thumb"
+          :src="a.previewUrl"
+          :alt="a.file.name"
+        />
+        <span v-else class="tray-thumb tray-file" :title="a.file.name">📄 {{ a.file.name }}</span>
         <button
           type="button"
           class="tray-remove"
@@ -82,6 +88,16 @@ const emit = defineEmits<{ (e: 'remove', key: number): void; (e: 'retry', key: n
   object-fit: cover;
   border: 2px solid var(--color-brass-dark);
   background: var(--color-bg);
+}
+.tray-file {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  box-sizing: border-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font: var(--text-small) / 1.2 var(--font-ui);
 }
 .tray-item.error .tray-thumb {
   border-color: var(--color-red);

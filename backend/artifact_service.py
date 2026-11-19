@@ -1,4 +1,4 @@
-"""S3-backed artifact storage for screenshots and images.
+"""S3-backed artifact storage for screenshots, images, HTML reports, text and PDFs.
 
 Configuration (env vars; credentials come from the standard boto3 chain, i.e. an
 IAM role in ECS or ``AWS_ACCESS_KEY_ID``/``AWS_SECRET_ACCESS_KEY`` locally):
@@ -24,14 +24,26 @@ from dataclasses import dataclass
 MAX_ARTIFACT_BYTES_DEFAULT = 10 * 1024 * 1024
 PRESIGN_EXPIRY_SECONDS = 7 * 24 * 3600
 
-# content type -> extension. Magic bytes are checked so the declared type can't lie.
+# content type -> (extension, artifact type). Binary formats are checked by magic bytes so
+# the declared type can't lie; text formats must be valid UTF-8.
 ALLOWED_TYPES = {
-    "image/png": "png",
-    "image/jpeg": "jpg",
-    "image/webp": "webp",
-    "image/gif": "gif",
+    "image/png": ("png", "image"),
+    "image/jpeg": ("jpg", "image"),
+    "image/webp": ("webp", "image"),
+    "image/gif": ("gif", "image"),
+    "application/pdf": ("pdf", "pdf"),
+    "text/html": ("html", "html"),
+    "text/plain": ("txt", "text"),
+    "text/markdown": ("md", "text"),
+    "text/csv": ("csv", "text"),
+    "application/json": ("json", "text"),
 }
-_ALIASES = {"image/jpg": "image/jpeg"}
+ARTIFACT_TYPES = {"image", "html", "text", "pdf"}
+_ALIASES = {"image/jpg": "image/jpeg", "text/x-markdown": "text/markdown"}
+
+
+def artifact_type(content_type: str) -> str:
+    return ALLOWED_TYPES[content_type][1]
 
 
 class ArtifactError(Exception):
@@ -72,7 +84,16 @@ def sniff_content_type(data: bytes) -> str | None:
         return "image/webp"
     if data[:6] in (b"GIF87a", b"GIF89a"):
         return "image/gif"
+    if data.startswith(b"%PDF-"):
+        return "application/pdf"
     return None
+
+
+def _is_text(data: bytes) -> bool:
+    try:
+        return "\x00" not in data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
 
 
 def validate(data: bytes, declared_type: str | None, max_bytes: int) -> str:
@@ -84,8 +105,13 @@ def validate(data: bytes, declared_type: str | None, max_bytes: int) -> str:
     declared = (declared_type or "").split(";")[0].strip().lower()
     declared = _ALIASES.get(declared, declared)
     if declared not in ALLOWED_TYPES:
-        raise ArtifactError("Unsupported type; allowed: PNG, JPG, JPEG, WebP, GIF", 415)
-    if sniff_content_type(data) != declared:
+        raise ArtifactError(
+            "Unsupported type; allowed: PNG, JPG, WebP, GIF, PDF, HTML, TXT, MD, CSV, JSON", 415
+        )
+    if declared.startswith("text/") or declared == "application/json":
+        if not _is_text(data):
+            raise ArtifactError("Text artifacts must be UTF-8 without NUL bytes", 415)
+    elif sniff_content_type(data) != declared:
         raise ArtifactError("File contents do not match declared content type", 415)
     return declared
 
@@ -146,6 +172,7 @@ class StoredObject:
     url: str
     content_type: str
     size_bytes: int
+    type: str = "image"
 
 
 async def store(
@@ -157,7 +184,7 @@ async def store(
     content_type = validate(data, declared_type, cfg.max_bytes)
     artifact_id = str(uuid.uuid4())
     parts = [p for p in (cfg.prefix, guild_slug, task_id or "misc") if p]
-    key = "/".join(parts) + f"/{artifact_id}.{ALLOWED_TYPES[content_type]}"
+    key = "/".join(parts) + f"/{artifact_id}.{ALLOWED_TYPES[content_type][0]}"
 
     def _put() -> None:
         _s3(cfg).put_object(
@@ -172,4 +199,11 @@ async def store(
         await asyncio.to_thread(_put)
     except Exception as exc:  # botocore errors
         raise ArtifactError(f"Upload failed: {exc}", 502) from exc
-    return StoredObject(artifact_id, key, public_url(artifact_id), content_type, len(data))
+    return StoredObject(
+        artifact_id,
+        key,
+        public_url(artifact_id),
+        content_type,
+        len(data),
+        artifact_type(content_type),
+    )

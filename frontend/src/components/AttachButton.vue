@@ -2,17 +2,18 @@
   <button
     type="button"
     class="pixel-btn attach-btn"
-    title="Attach image"
-    aria-label="Attach image"
+    title="Attach image or file"
+    aria-label="Attach image or file"
     @click="input?.click()"
   >
     📎
   </button>
-  <input ref="input" type="file" accept="image/*" multiple hidden @change="onChange" />
+  <input ref="input" type="file" :accept="ACCEPT" multiple hidden @change="onChange" />
 </template>
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import { ACCEPT } from '../utils/artifactUpload'
 
 const emit = defineEmits<{ (e: 'files', files: File[]): void }>()
 const input = ref<HTMLInputElement | null>(null)

@@ -21,7 +21,16 @@
         <button class="pixel-btn lightbox-btn" aria-label="Close" @click="closeLightbox">✕</button>
       </div>
       <div class="lightbox-stage">
-        <img class="lightbox-img" :src="lightboxImage.url" :alt="lightboxImage.name" />
+        <!-- No allow-same-origin: the page runs in an opaque origin, away from app storage. -->
+        <iframe
+          v-if="lightboxImage.kind === 'html'"
+          class="lightbox-frame"
+          sandbox="allow-scripts"
+          referrerpolicy="no-referrer"
+          :src="lightboxImage.url"
+          :title="lightboxImage.name"
+        ></iframe>
+        <img v-else class="lightbox-img" :src="lightboxImage.url" :alt="lightboxImage.name" />
       </div>
     </dialog>
   </Teleport>
@@ -106,6 +115,13 @@ onBeforeUnmount(() => dialog.value?.close())
   display: flex;
   align-items: center;
   justify-content: center;
+}
+.lightbox-frame {
+  width: 100%;
+  max-width: 1200px;
+  height: 100%;
+  background: #fff;
+  border: 2px solid var(--color-brass-dark);
 }
 .lightbox-img {
   max-width: 100%;

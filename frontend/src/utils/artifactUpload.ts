@@ -9,9 +9,37 @@ export interface UploadedArtifact {
 
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
-/** Returns an error message, or null when the file is an acceptable image. */
-export function validateImage(file: File): string | null {
-  if (!file.type.startsWith('image/')) return `${file.name || 'File'} is not an image`
+// extension -> content type; mirrors backend `artifact_service.ALLOWED_TYPES`.
+const TYPES: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  gif: 'image/gif',
+  pdf: 'application/pdf',
+  html: 'text/html',
+  htm: 'text/html',
+  txt: 'text/plain',
+  md: 'text/markdown',
+  csv: 'text/csv',
+  json: 'application/json',
+}
+const KNOWN = new Set(Object.values(TYPES))
+
+/** `<input accept>` value for the file picker. */
+export const ACCEPT = Object.keys(TYPES)
+  .map((e) => `.${e}`)
+  .join(',')
+
+/** Content type to upload as, or null when unsupported. Browsers often leave `.md` etc. untyped. */
+export function contentType(file: File): string | null {
+  if (KNOWN.has(file.type)) return file.type
+  return TYPES[file.name.split('.').pop()?.toLowerCase() ?? ''] ?? null
+}
+
+/** Returns an error message, or null when the file is an acceptable artifact. */
+export function validateFile(file: File): string | null {
+  if (!contentType(file)) return `${file.name || 'File'} is not a supported file type`
   if (file.size === 0) return `${file.name || 'File'} is empty`
   if (file.size > MAX_UPLOAD_BYTES) {
     return `${file.name || 'File'} is larger than ${MAX_UPLOAD_BYTES / 1024 / 1024}MB`
@@ -19,17 +47,17 @@ export function validateImage(file: File): string | null {
   return null
 }
 
-/** Extract image files from a drop/paste DataTransfer. */
-export function imagesFromTransfer(dt: DataTransfer | null): File[] {
+/** Extract supported files from a drop/paste DataTransfer. */
+export function filesFromTransfer(dt: DataTransfer | null): File[] {
   if (!dt) return []
   const files: File[] = []
   if (dt.files && dt.files.length) {
-    for (const f of Array.from(dt.files)) if (f.type.startsWith('image/')) files.push(f)
+    for (const f of Array.from(dt.files)) if (contentType(f)) files.push(f)
   } else if (dt.items) {
     for (const item of Array.from(dt.items)) {
-      if (item.kind === 'file' && item.type.startsWith('image/')) {
+      if (item.kind === 'file') {
         const f = item.getAsFile()
-        if (f) files.push(f)
+        if (f && contentType(f)) files.push(f)
       }
     }
   }
@@ -78,7 +106,9 @@ export function uploadArtifact(
       signal.addEventListener('abort', () => xhr.abort(), { once: true })
     }
     const form = new FormData()
-    form.append('file', file, file.name || 'image.png')
+    // Re-type the blob so untyped files (e.g. `.md`) reach the backend with a usable type.
+    const blob = file.slice(0, file.size, contentType(file) ?? file.type)
+    form.append('file', blob, file.name || 'image.png')
     xhr.send(form)
   })
 }

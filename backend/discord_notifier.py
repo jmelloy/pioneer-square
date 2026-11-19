@@ -243,9 +243,10 @@ async def notify(
 # ---------------------------------------------------------------------------
 
 
-# `[name](artifact://<id>)` (or a bare `artifact://<id>`) — the chat-message artifact reference.
+# `[name](artifact://<id>[?type=<t>])` (or bare `artifact://<id>`) — the chat artifact reference.
 _ARTIFACT_REF = re.compile(
-    r"!?\[[^\]\n]*\]\(artifact://([A-Za-z0-9-]+)/?\)|artifact://([A-Za-z0-9-]+)/?"
+    r"!?\[[^\]\n]*\]\(artifact://([A-Za-z0-9-]+)/?(?:\?type=(\w+))?\)"
+    r"|artifact://([A-Za-z0-9-]+)/?(?:\?type=(\w+))?"
 )
 
 
@@ -255,24 +256,27 @@ def _artifact_url(artifact_id: str) -> str:
     return f"{base}{artifact_service.public_url(artifact_id)}"
 
 
+def _ref_url(m: re.Match) -> str:
+    return _artifact_url(m[1] or m[3])
+
+
 def _inline_artifacts(body: dict | None) -> dict | None:
-    """Discord can't resolve ``artifact://``: swap in bare public image URLs, which Discord
+    """Discord can't resolve ``artifact://``: swap in bare public URLs, which Discord
     previews inline in message content; embeds get the first image as ``embed.image``."""
     if not body:
         return body
     body = dict(body)
     if isinstance(body.get("content"), str):
-        body["content"] = _ARTIFACT_REF.sub(lambda m: _artifact_url(m[1] or m[2]), body["content"])
+        body["content"] = _ARTIFACT_REF.sub(_ref_url, body["content"])
     if isinstance(body.get("embeds"), list):
         embeds = []
         for embed in body["embeds"]:
             desc = embed.get("description") if isinstance(embed, dict) else None
-            if isinstance(desc, str) and (ids := [a or b for a, b in _ARTIFACT_REF.findall(desc)]):
-                embed = {
-                    **embed,
-                    "description": _ARTIFACT_REF.sub(lambda m: _artifact_url(m[1] or m[2]), desc),
-                }
-                embed.setdefault("image", {"url": _artifact_url(ids[0])})
+            if isinstance(desc, str) and _ARTIFACT_REF.search(desc):
+                images = [m[1] or m[3] for m in _ARTIFACT_REF.finditer(desc) if not (m[2] or m[4])]
+                embed = {**embed, "description": _ARTIFACT_REF.sub(_ref_url, desc)}
+                if images:
+                    embed.setdefault("image", {"url": _artifact_url(images[0])})
             embeds.append(embed)
         body["embeds"] = embeds
     return body

@@ -3,6 +3,7 @@ import { ref } from 'vue'
 export interface LightboxImage {
   url: string
   name: string
+  kind?: 'html' // default: image
 }
 
 // Module-level singleton so any component can open the shared <ImageLightbox />.

@@ -50,6 +50,7 @@ async def externalize_images(
                     key=obj.key,
                     url=obj.url,
                     content_type=obj.content_type,
+                    type=obj.type,
                     size_bytes=obj.size_bytes,
                     task_id=task_id,
                     created_at=datetime.now(UTC),
