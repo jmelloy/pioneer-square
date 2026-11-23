@@ -1956,8 +1956,10 @@ class Worker:
             # worker pushed it and the foreman wants the same PR updated.
             if followup_branch:
                 branch = followup_branch
-            elif task.get("pr_number") and pr_repo and (
-                pr_head := await git_ops.get_pr_head_branch(pr_repo, task["pr_number"], token)
+            elif (
+                task.get("pr_number")
+                and pr_repo
+                and (pr_head := await git_ops.get_pr_head_branch(pr_repo, task["pr_number"], token))
             ):
                 # Task targets an existing PR: reuse its head branch rather than
                 # generating a new name (which would fail to push to that PR).
