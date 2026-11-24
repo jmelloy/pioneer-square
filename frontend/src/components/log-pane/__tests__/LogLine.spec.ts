@@ -237,3 +237,13 @@ describe('LogLine expansion toggle', () => {
     expect(wrapper.emitted('toggle')).toBeUndefined()
   })
 })
+
+describe('LogLine artifact uploads', () => {
+  it('renders a worker artifact-upload line as an inline image (#1519)', () => {
+    const log = makeLog({ line: '📎 [shot.png](artifact://abc-123)' })
+    const wrapper = mount(LogLine, { props: { log, expanded: false } })
+    const img = wrapper.find('img.artifact-image')
+    expect(img.exists()).toBe(true)
+    expect(img.attributes('src')).toContain('/api/artifacts/abc-123/public')
+  })
+})
