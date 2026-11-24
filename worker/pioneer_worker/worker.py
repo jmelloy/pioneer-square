@@ -1906,6 +1906,7 @@ class Worker:
             return
 
         name = task.get("name") or desc
+        targets_existing_branch = False
         if is_review:
             # Fail fast, before ever touching git, when the metadata handoff
             # from assign_task dropped pr_repo/pr_number — this is the
@@ -1955,6 +1956,15 @@ class Worker:
             # worker pushed it and the foreman wants the same PR updated.
             if followup_branch:
                 branch = followup_branch
+            elif (
+                task.get("pr_number")
+                and pr_repo
+                and (pr_head := await git_ops.get_pr_head_branch(pr_repo, task["pr_number"], token))
+            ):
+                # Task targets an existing PR: reuse its head branch rather than
+                # generating a new name (which would fail to push to that PR).
+                branch = pr_head
+                targets_existing_branch = True
             else:
                 # Prefer the linked GitHub issue number as the branch prefix
                 # (e.g. "1158/...") so the branch is traceable to its issue at
@@ -2017,7 +2027,11 @@ class Worker:
                 continue
             cloned_repos.append((repo_full, repo_path))
 
-        mode = "review_pr" if is_review else ("followup" if is_followup else "fresh")
+        mode = (
+            "review_pr"
+            if is_review
+            else ("followup" if is_followup or targets_existing_branch else "fresh")
+        )
         acquired = await self.worktrees.acquire(
             task_id,
             cloned_repos,
