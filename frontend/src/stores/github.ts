@@ -358,6 +358,19 @@ export const useGitHubStore = defineStore('github', () => {
     })
   }
 
+  // Issues on a linked Projects v2 board, served from the backend cache (#1513).
+  // `sync` asks the backend to refresh from GitHub first.
+  async function fetchProjectIssues(projectId: string, sync = false): Promise<GitHubIssue[]> {
+    const guild = guildStore.currentGuild
+    if (!guild) return []
+    const url = `/api/guilds/${guild.id}/projects/${encodeURIComponent(projectId)}/issues`
+    const { issues } = await api<{ issues: GitHubIssue[] }>(
+      sync ? `${url}/sync` : url,
+      sync ? { method: 'POST' } : {},
+    )
+    return issues
+  }
+
   function logout() {
     token.value = ''
     repos.value = []
@@ -384,6 +397,7 @@ export const useGitHubStore = defineStore('github', () => {
     fetchIssues,
     clearIssues,
     fetchIssueDetail,
+    fetchProjectIssues,
     postComment,
     updateIssue,
     openIssueTab,

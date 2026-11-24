@@ -829,6 +829,36 @@ class GithubIssue(SQLModel, table=True):
     )
 
 
+class GithubProjectItem(SQLModel, table=True):
+    """Membership of a cached issue (``github_issues``) in a linked GitHub Project (#1513).
+
+    Synced from Projects v2 by ``github_projects.sync_project``; the issue's own
+    fields live in ``github_issues``, this row only records which project holds it
+    and the project's Status column value.
+    """
+
+    __tablename__ = "github_project_items"  # type: ignore[assignment]
+    __table_args__ = (
+        Index(
+            "uq_github_project_items_project_repo_number",
+            "project_id",
+            "repo",
+            "number",
+            unique=True,
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    project_id: str  # GitHub node id (Projects v2), as stored in guilds.browse_projects
+    repo: str  # "owner/repo"
+    number: int
+    status: str | None = None  # Projects v2 "Status" single-select value
+    position: int = 0  # order within the project, as GitHub returned it
+    synced_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    )
+
+
 class GithubPullRequest(SQLModel, table=True):
     """Local cache of a GitHub pull request's state, upserted from webhooks and backfill.
 

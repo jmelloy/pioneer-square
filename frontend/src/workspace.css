@@ -497,6 +497,12 @@
   color: var(--color-teal);
   background: #00b5d315;
 }
+.board-status {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-text-dim);
+  font: var(--text-caption) / 1.4 var(--font-ui);
+}
 .project-pagination {
   display: flex;
   flex-wrap: wrap;

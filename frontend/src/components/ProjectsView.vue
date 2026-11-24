@@ -14,8 +14,8 @@
       <div class="project-list">
         <button
           class="project-choice"
-          :class="{ selected: !selectedRepo }"
-          @click="selectedRepo = ''"
+          :class="{ selected: !selectedRepo && !selectedBoard }"
+          @click="selectRepo('')"
         >
           <span aria-hidden="true">◈</span><span>All projects</span
           ><span class="count">{{ scopedIssues.length }}</span>
@@ -24,15 +24,29 @@
           v-for="repo in filteredRepos"
           :key="repo"
           class="project-choice"
-          :class="{ selected: selectedRepo === repo }"
-          @click="selectedRepo = repo"
+          :class="{ selected: !selectedBoard && selectedRepo === repo }"
+          @click="selectRepo(repo)"
         >
           <span class="project-gem" aria-hidden="true">◆</span
           ><span :title="repo">{{ repo.split('/').pop() }}</span
           ><span class="count">{{ scopedIssues.filter((i) => i.repo === repo).length }}</span>
         </button>
+        <button
+          v-for="project in boardProjects"
+          :key="project.id"
+          class="project-choice"
+          :class="{ selected: selectedBoard?.id === project.id }"
+          :title="`${project.owner} / ${project.name} (GitHub project)`"
+          @click="boardParam = project.id"
+        >
+          <span aria-hidden="true">▦</span><span>{{ project.name }}</span
+          ><span class="count">{{
+            selectedBoard?.id === project.id ? boardIssues.length : ''
+          }}</span>
+        </button>
+        <!-- Classic projects have no item API left; they still link out. -->
         <a
-          v-for="project in ghStore.linkedProjects"
+          v-for="project in classicProjects"
           :key="project.id"
           class="project-choice"
           :href="project.url"
@@ -81,7 +95,10 @@
 
     <div class="project-main panel-bg" :class="{ 'show-detail': showDetail }">
       <header class="projects-heading">
-        <h1><span class="project-gem" aria-hidden="true">◆</span> Projects / Issues</h1>
+        <h1>
+          <span class="project-gem" aria-hidden="true">◆</span>
+          {{ selectedBoard ? selectedBoard.name : 'Projects / Issues' }}
+        </h1>
         <input
           v-model="search"
           type="search"
@@ -92,13 +109,17 @@
           <option value="newest">Newest first</option>
           <option value="oldest">Oldest first</option>
         </select>
-        <button
-          class="pixel-btn"
-          :disabled="ghStore.loading || !ghStore.isConfigured"
-          @click="refresh"
-        >
-          {{ ghStore.loading ? 'Loading…' : '↻ Refresh' }}
+        <button class="pixel-btn" :disabled="listLoading || !ghStore.isConfigured" @click="refresh">
+          {{ listLoading ? 'Loading…' : selectedBoard ? '↻ Sync' : '↻ Refresh' }}
         </button>
+        <a
+          v-if="selectedBoard"
+          class="pixel-btn"
+          :href="selectedBoard.url"
+          target="_blank"
+          rel="noopener noreferrer"
+          >↗ Open in GitHub</a
+        >
         <button class="pixel-btn" :disabled="!ghStore.isConfigured" @click="openSettings">
           ⚙ Manage in settings
         </button>
@@ -106,9 +127,9 @@
       <div v-if="!ghStore.isConfigured" class="workspace-empty">
         Connect GitHub in your preferences to browse project issues.
       </div>
-      <div v-else-if="ghStore.error" class="workspace-empty" role="alert">
-        {{ ghStore.error }}
-        <button class="pixel-btn" :disabled="ghStore.loading" @click="refresh">Retry</button>
+      <div v-else-if="listError" class="workspace-empty" role="alert">
+        {{ listError }}
+        <button class="pixel-btn" :disabled="listLoading" @click="refresh">Retry</button>
       </div>
       <div class="project-split">
         <div class="project-table-pane">
@@ -145,13 +166,14 @@
                   </td>
                   <td>
                     <span class="project-state" :class="issue.state">{{ issue.state }}</span>
+                    <span v-if="issue.status" class="board-status">{{ issue.status }}</span>
                   </td>
                   <td class="issue-created">{{ formatAge(issue.created_at) }}</td>
                 </tr>
               </tbody>
             </table>
             <p v-if="!filteredIssues.length" class="workspace-empty">
-              {{ ghStore.loading ? 'Loading issues…' : 'No matching issues.' }}
+              {{ listLoading ? 'Loading issues…' : 'No matching issues.' }}
             </p>
           </div>
           <footer class="project-pagination">
@@ -208,6 +230,7 @@ import { useUiStore } from '../stores/ui'
 import { formatAge } from '../utils/format'
 import IssueViewer from './IssueViewer.vue'
 import { useQueryRef } from '../composables/useQueryRef'
+import type { GitHubIssue } from '../types'
 
 const ghStore = useGitHubStore()
 const guildStore = useGuildStore()
@@ -227,6 +250,43 @@ const stateOptions = [
   { value: 'closed', label: 'Closed' },
 ]
 useQueryRef('project', projectParam, '')
+// ?board=<Projects v2 id> shows that linked board's cached issues instead of a repo.
+const boardParam = ref('')
+useQueryRef('board', boardParam, '')
+const boardProjects = computed(() => ghStore.linkedProjects.filter((p) => p.kind === 'v2'))
+const classicProjects = computed(() => ghStore.linkedProjects.filter((p) => p.kind !== 'v2'))
+const selectedBoard = computed(() => boardProjects.value.find((p) => p.id === boardParam.value))
+const boardIssues = ref<GitHubIssue[]>([])
+const boardLoading = ref(false)
+const boardError = ref('')
+const listLoading = computed(() => (selectedBoard.value ? boardLoading.value : ghStore.loading))
+const listError = computed(() => (selectedBoard.value ? boardError.value : ghStore.error))
+let boardGeneration = 0
+async function loadBoard(sync = false) {
+  const board = selectedBoard.value
+  const generation = ++boardGeneration
+  boardError.value = ''
+  if (!board) {
+    boardIssues.value = []
+    boardLoading.value = false
+    return
+  }
+  boardLoading.value = true
+  try {
+    const issues = await ghStore.fetchProjectIssues(board.id, sync)
+    if (generation === boardGeneration) boardIssues.value = issues
+  } catch (e: unknown) {
+    if (generation === boardGeneration)
+      boardError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    if (generation === boardGeneration) boardLoading.value = false
+  }
+}
+watch(
+  () => selectedBoard.value?.id,
+  () => loadBoard(),
+  { immediate: true },
+)
 useQueryRef(
   'state',
   state,
@@ -254,8 +314,16 @@ const scopedIssues = computed(() =>
   ghStore.issues.filter((issue) => repoNames.value.includes(issue.repo)),
 )
 const projectIssues = computed(() =>
-  scopedIssues.value.filter((issue) => !selectedRepo.value || issue.repo === selectedRepo.value),
+  selectedBoard.value
+    ? boardIssues.value
+    : scopedIssues.value.filter(
+        (issue) => !selectedRepo.value || issue.repo === selectedRepo.value,
+      ),
 )
+function selectRepo(repo: string) {
+  boardParam.value = ''
+  selectedRepo.value = repo
+}
 const filteredIssues = computed(() =>
   projectIssues.value
     .filter(
@@ -277,7 +345,7 @@ const selectedIssue = computed(
 )
 
 const scopeKey = computed(() => repoNames.value.join('\n'))
-watch([scopeKey, selectedRepo, state, search, sort], () => {
+watch([scopeKey, selectedRepo, selectedBoard, state, search, sort], () => {
   page.value = 1
   showDetail.value = false
   selectedId.value = null
@@ -295,14 +363,14 @@ function selectIssue(id: number) {
 }
 
 function refresh() {
-  return ghStore.fetchIssues(repoNames.value)
+  return selectedBoard.value ? loadBoard(true) : ghStore.fetchIssues(repoNames.value)
 }
 function openSettings() {
   useUiStore().settingsRequest = 'projects'
 }
 
 // Any scope change (edit, guild primary repo loading) refetches immediately.
-watch(scopeKey, refresh, { immediate: true })
+watch(scopeKey, () => ghStore.fetchIssues(repoNames.value), { immediate: true })
 
 // One-time, confirmed import of the pre-#1453 browser-global list into a guild
 // that has never saved a shared list (browse_repos null).
