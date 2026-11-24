@@ -385,6 +385,10 @@ async def lifespan(app: FastAPI):
     # Reap backend-spawned workers that have been idle past the configured
     # timeout (PIONEER_WORKER_IDLE_TIMEOUT) — see worker_lifecycle.
     idle_reaper = spawn(idle_worker_reaper(), name="idle-worker-reaper")
+    # Keep linked GitHub Projects' cached issues fresh (#1513).
+    from github_projects import project_sync_sweeper  # noqa: PLC0415
+
+    project_syncer = spawn(project_sync_sweeper(), name="project-sync-sweeper")
 
     # Discord Gateway (Phase 4): persistent websocket for inbound messages.
     # No-op unless DISCORD_GATEWAY_ENABLED=true and DISCORD_BOT_TOKEN are set.
@@ -400,6 +404,7 @@ async def lifespan(app: FastAPI):
     finally:
         sweeper.cancel()
         idle_reaper.cancel()
+        project_syncer.cancel()
         if discord_gw_task is not None:
             discord_gw_task.cancel()
         try:
@@ -408,6 +413,10 @@ async def lifespan(app: FastAPI):
             pass
         try:
             await idle_reaper
+        except (asyncio.CancelledError, Exception):
+            pass
+        try:
+            await project_syncer
         except (asyncio.CancelledError, Exception):
             pass
         if discord_gw_task is not None:

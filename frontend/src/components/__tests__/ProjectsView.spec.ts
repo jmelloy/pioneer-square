@@ -261,5 +261,40 @@ describe('ProjectsView', () => {
       expect(link.text()).toContain('Roadmap')
       expect(link.attributes('href')).toContain('/projects/1')
     })
+
+    it('shows a linked Projects v2 board inline from the backend cache', async () => {
+      const store = useGitHubStore()
+      useGuildStore().currentGuild!.browse_projects = [
+        {
+          id: 'PVT_1',
+          name: 'Board',
+          url: 'https://github.com/orgs/team/projects/2',
+          owner: 'team',
+          kind: 'v2',
+        },
+      ]
+      const fetchBoard = vi
+        .spyOn(store, 'fetchProjectIssues')
+        .mockResolvedValue([{ ...issue(9, 'team/engine'), status: 'In Progress' }])
+      const wrapper = render()
+      expect(wrapper.find('a.project-choice').exists()).toBe(false) // v2 no longer links out
+      const board = wrapper
+        .findAll('.project-list .project-choice')
+        .find((b) => b.text().includes('Board'))!
+      await board.trigger('click')
+      await flushPromises()
+      expect(fetchBoard).toHaveBeenCalledWith('PVT_1', false)
+      expect(router.currentRoute.value.query.board).toBe('PVT_1')
+      expect(wrapper.findAll('tbody tr').map((r) => r.find('td').text())).toEqual(['9'])
+      expect(wrapper.find('.board-status').text()).toBe('In Progress')
+      expect(wrapper.find('.viewer-stub').text()).toBe('engine #9')
+      expect(wrapper.find('.projects-heading a').attributes('href')).toContain('/projects/2')
+      await wrapper.find('.projects-heading button').trigger('click')
+      expect(fetchBoard).toHaveBeenLastCalledWith('PVT_1', true)
+      await wrapper.findAll('.project-list .project-choice')[0]!.trigger('click')
+      await flushPromises()
+      expect(router.currentRoute.value.query.board).toBeUndefined()
+      expect(wrapper.findAll('tbody tr')).toHaveLength(2)
+    })
   })
 })

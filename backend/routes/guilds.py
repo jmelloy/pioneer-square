@@ -13,6 +13,7 @@ import re
 import secrets
 from datetime import UTC, datetime
 
+import httpx
 from auth_deps import get_guild_pk, require_member, require_user, require_worker_or_member_path
 from database import get_db_dep
 from events import broadcast_msg
@@ -737,6 +738,66 @@ async def set_browse_projects(
     guild.browse_projects = list(seen.values())
     await db.commit()
     return {"browse_projects": guild.browse_projects}
+
+
+async def _linked_v2_project(db: AsyncSession, guild_id: str, project_id: str) -> dict:
+    res = await db.exec(select(Guild).where(col(Guild.slug) == guild_id))
+    guild = res.one_or_none()
+    if not guild:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    project = next((p for p in guild.browse_projects or [] if p.get("id") == project_id), None)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project is not linked to this guild")
+    if project.get("kind") != "v2":
+        raise HTTPException(status_code=400, detail="Classic projects can't be synced")
+    return project
+
+
+async def _sync_linked_project(db: AsyncSession, guild_id: str, project_id: str, user_id: str):
+    from foreman.tools import _guild_github_token  # noqa: PLC0415
+    from github_projects import ProjectSyncError, sync_project  # noqa: PLC0415
+
+    creds = await _guild_github_token(guild_id, user_id)
+    if not creds:
+        raise HTTPException(status_code=401, detail="No GitHub token on file — please log in")
+    try:
+        await sync_project(db, project_id, creds[0])
+    except (ProjectSyncError, httpx.HTTPError) as e:
+        raise HTTPException(status_code=502, detail=str(e) or "GitHub request failed") from e
+
+
+@router.get("/api/guilds/{guild_id}/projects/{project_id}/issues")
+async def get_project_issues(
+    guild_id: str,
+    project_id: str,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Cached issues on a linked Projects v2 board (#1513), in board order."""
+    from github_projects import list_project_issues  # noqa: PLC0415
+
+    await _linked_v2_project(db, guild_id, project_id)
+    issues = await list_project_issues(db, project_id)
+    if not issues:
+        # ponytail: fill on miss; an empty board re-syncs on every view, which is cheap.
+        await _sync_linked_project(db, guild_id, project_id, github_user_id)
+        issues = await list_project_issues(db, project_id)
+    return {"issues": issues}
+
+
+@router.post("/api/guilds/{guild_id}/projects/{project_id}/issues/sync")
+async def sync_project_issues(
+    guild_id: str,
+    project_id: str,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Refresh a linked project's cached issues from GitHub now."""
+    from github_projects import list_project_issues  # noqa: PLC0415
+
+    await _linked_v2_project(db, guild_id, project_id)
+    await _sync_linked_project(db, guild_id, project_id, github_user_id)
+    return {"issues": await list_project_issues(db, project_id)}
 
 
 @router.get("/api/guilds/{guild_id}/settings")
