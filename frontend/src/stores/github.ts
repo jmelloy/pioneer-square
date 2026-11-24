@@ -179,19 +179,32 @@ export const useGitHubStore = defineStore('github', () => {
     }
     const v2 = async (ownerLogin: string, kind: 'organization' | 'user') => {
       try {
-        const res = await fetch(`${GH_API}/graphql`, {
-          method: 'POST',
-          headers: ghHeaders(token.value),
-          body: JSON.stringify({
-            query: `query($login:String!){${kind}(login:$login){projectsV2(first:50){nodes{id title url closed}}}}`,
-            variables: { login: ownerLogin },
-          }),
-        })
-        if (!res.ok) return
-        const body = await res.json()
-        const nodes = body?.data?.[kind]?.projectsV2?.nodes ?? []
-        for (const n of nodes as Array<{ id: string; title: string; url: string; closed: boolean }>)
-          if (!n.closed) add({ id: n.id, name: n.title, url: n.url, owner: ownerLogin, kind: 'v2' })
+        let after: string | null = null
+        // Page through all Projects v2 (GraphQL caps a page at 100 nodes).
+        for (let page = 0; page < 10; page++) {
+          const res = await fetch(`${GH_API}/graphql`, {
+            method: 'POST',
+            headers: ghHeaders(token.value),
+            body: JSON.stringify({
+              query: `query($login:String!,$after:String){${kind}(login:$login){projectsV2(first:100,after:$after){nodes{id title url closed}pageInfo{hasNextPage endCursor}}}}`,
+              variables: { login: ownerLogin, after },
+            }),
+          })
+          if (!res.ok) return
+          const body = await res.json()
+          const conn = body?.data?.[kind]?.projectsV2
+          const nodes = conn?.nodes ?? []
+          for (const n of nodes as Array<{
+            id: string
+            title: string
+            url: string
+            closed: boolean
+          }>)
+            if (!n.closed)
+              add({ id: n.id, name: n.title, url: n.url, owner: ownerLogin, kind: 'v2' })
+          if (!conn?.pageInfo?.hasNextPage || !conn.pageInfo.endCursor) return
+          after = conn.pageInfo.endCursor
+        }
       } catch {
         /* Projects v2 unavailable for this scope */
       }
