@@ -212,6 +212,13 @@
           </div>
         </template>
       </div>
+
+      <IssueForemanPane
+        :owner="owner"
+        :repo="repo"
+        :issue-number="issueNumber"
+        :tasks="issueTasks"
+      />
     </template>
   </div>
 </template>
@@ -228,6 +235,7 @@ import { renderMarkdown } from '../utils/markdown'
 import { vArtifacts } from '../utils/artifacts'
 import { formatRelative } from '../utils/format'
 import { isVisibleLogEntry } from '../utils/logs'
+import IssueForemanPane from './IssueForemanPane.vue'
 
 const props = defineProps<{
   owner: string
@@ -407,7 +415,10 @@ async function submitComment() {
   }
 }
 
-onMounted(loadIssue)
+onMounted(() => {
+  loadIssue()
+  loadIssueTasks() // the foreman pane links conversations through the issue's tasks
+})
 </script>
 
 <style scoped>
