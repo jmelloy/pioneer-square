@@ -30,6 +30,7 @@ from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from foreman.conversation_service import ensure_conversation
 from foreman.runner import ensure_poll_loop, run_foreman_ai
+from github_labels import is_ready_label
 from lock_service import LockService
 from models import (
     Conversation,
@@ -102,12 +103,6 @@ _MAX_PAYLOAD_BYTES = 64 * 1024
 # events we want to react to.
 _BOT_OK_EVENTS = frozenset({"check_run", "check_suite", "status"})
 
-# Label names (case-insensitive) that mark a GitHub issue ready for the foreman
-# to pick up. Mirrors the "Periodic devReady issue pickup" label list in
-# foreman/prompt.py so a webhook-triggered claim and the periodic sweep agree
-# on what counts as devReady.
-_DEVREADY_LABELS = frozenset({"devready", "dev-ready", "ready-for-dev", "ready"})
-
 
 def _issue_label_names(issue_obj: dict) -> list[str]:
     labels = issue_obj.get("labels") or []
@@ -115,16 +110,16 @@ def _issue_label_names(issue_obj: dict) -> list[str]:
 
 
 def _matching_devready_label(label_names: list[str]) -> str | None:
-    return next((name for name in label_names if name.lower() in _DEVREADY_LABELS), None)
+    return next((name for name in label_names if is_ready_label(name)), None)
 
 
 def _devready_issue_trigger(event_type: str, action: str | None, payload: dict) -> str | None:
     """Return the matched devReady label name if this ``issues`` event should trigger
     immediate pickup, else ``None``.
 
-    Triggers on ``action == "labeled"`` where the label just applied is a devReady
-    alias, or ``action in {"opened", "reopened"}`` where the issue already carries one
-    (e.g. it was created with the label already attached, or reopened after having it).
+    Triggers on ``action == "labeled"`` where the label just applied is ``ps:ready``
+    or a legacy devReady alias (see ``github_labels``), or ``action in {"opened",
+    "reopened"}`` where the issue already carries one (e.g. it was created with the label already attached, or reopened after having it).
     """
     if event_type != "issues":
         return None
@@ -134,9 +129,7 @@ def _devready_issue_trigger(event_type: str, action: str | None, payload: dict) 
     if action == "labeled":
         label_obj = payload.get("label")
         label_name = label_obj.get("name") if isinstance(label_obj, dict) else None
-        if label_name and label_name.lower() in _DEVREADY_LABELS:
-            return label_name
-        return None
+        return label_name if is_ready_label(label_name) else None
     if action in {"opened", "reopened"}:
         return _matching_devready_label(_issue_label_names(issue_obj))
     return None
@@ -643,7 +636,7 @@ def _build_foreman_summary(
             f"Issue title: {title}\n"
             f"Issue URL: {issue_url}\n"
             f"Current assignees: {assignee_str}\n"
-            "This issue is devReady — run the devReady pickup flow now (same as "
+            "This issue is ps:ready — run the ps:ready pickup flow now (same as "
             "periodic-check): skip if already assigned to someone else, or if a "
             "non-terminal task already references this issue number in the current "
             "<state> task list; otherwise claim_github_issue, then create_task + "

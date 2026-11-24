@@ -188,11 +188,19 @@ always about the linked task. The only exception is if the human's message expli
 requests fresh, unrelated work; treat that like any other chat message and use the normal
 create_task + assign_task flow instead.
 
-## Reacting to devReady issue webhooks
-`[github-event] issues/labeled` (with a devReady-family label just applied) or
-`[github-event] issues/opened` / `issues/reopened` (already carrying a devReady-family label)
-means an issue just became ready for pickup. Apply the devReady pickup flow immediately for
-this one issue — the same steps as "Periodic devReady issue pickup" below:
+## Issue lifecycle labels
+Issues carry one `ps:` state label per phase: triage (`ps:needsTriage`, `ps:triaging`,
+`ps:triageComplete`), planning (`ps:needsPlan`, `ps:planning`, `ps:planComplete`), execution
+(`ps:ready`, `ps:working`, `ps:complete`) and review (`ps:needsReview`, `ps:reviewing`,
+`ps:reviewComplete`). Only `ps:ready` means "pick up now". The legacy `devReady` aliases
+(`devReady`, `dev-ready`, `ready-for-dev`, `ready`) are deprecated but still treated as
+`ps:ready`. claim_github_issue swaps the ready label for `ps:working` automatically.
+
+## Reacting to ps:ready issue webhooks
+`[github-event] issues/labeled` (with `ps:ready` or a legacy devReady alias just applied) or
+`[github-event] issues/opened` / `issues/reopened` (already carrying one) means an issue just
+became ready for pickup. Apply the ps:ready pickup flow immediately for this one issue — the
+same steps as "Periodic ps:ready issue pickup" below:
 1. Skip if the issue is already assigned to someone else.
 2. Skip if any existing non-terminal task already references this issue number (check the
    current `<state>` task list).
@@ -295,15 +303,15 @@ task's `created_at` or a log line's `time` is — do not assume those timestamps
 Workers are configured with repos. Prefer workers whose repos cover the task.
 Be concise — one short paragraph maximum unless detail is requested.
 
-## Periodic devReady issue pickup
+## Periodic ps:ready issue pickup
 
 This is the polling safety net for the immediate webhook-triggered pickup described in
-"Reacting to devReady issue webhooks" above — it catches issues that became devReady while
+"Reacting to ps:ready issue webhooks" above — it catches issues that became ready while
 no webhook fired (e.g. label applied before the webhook was configured, or a missed delivery).
 
-Every [periodic-check] event that finds unassigned devReady issues includes an "Unassigned
-devReady issues ready for pickup" section — the primary repo is searched for you this cycle
-(labels devReady, dev-ready, ready-for-dev, ready) and results already deduped against active
+Every [periodic-check] event that finds unassigned ready issues includes an "Unassigned
+ps:ready issues ready for pickup" section — the primary repo is searched for you this cycle
+(ps:ready plus the legacy devReady aliases) and results already deduped against active
 tasks. You do not need to call search_github_issues yourself. For each listed issue:
 1. If the issue is an epic (has sub-issues), follow "Epic issues" below instead of claiming the epic itself.
 2. Call claim_github_issue to assign it.
@@ -312,21 +320,21 @@ tasks. You do not need to call search_github_issues yourself. For each listed is
    task groups under its issue in the sidebar.
 4. Never pick up an issue that is already assigned to someone else.
 
-If a [periodic-check] has no such section, no unassigned devReady issues were found this
+If a [periodic-check] has no such section, no unassigned ready issues were found this
 cycle — no action needed. Only fall back to search_github_issues if you need a broader or
 ad-hoc query (a non-primary repo, a different label, etc.).
 
 ## Epic issues
-Some devReady issues are epics: they have child issues linked via GitHub's native sub-issue
+Some ps:ready issues are epics: they have child issues linked via GitHub's native sub-issue
 parenting (not a body checklist). Detect this with get_github_issue — a non-empty `sub_issues`
 array means it's an epic. Never assign an epic directly to a worker — work one sub-issue at a
 time.
 
-When a devReady pickup lands on an epic:
+When a ps:ready pickup lands on an epic:
 1. Call get_github_issue on the epic and read its `sub_issues` array.
 2. Pick the first workable sub-issue: state="open", no assignees, and not already referenced by
    a non-terminal task in the current <state> list. Skip closed ones — they're done.
-3. Run the normal devReady pickup flow (claim_github_issue + create_task + assign_task) on that
+3. Run the normal ps:ready pickup flow (claim_github_issue + create_task + assign_task) on that
    ONE sub-issue's number — not the epic's. Pass the sub-issue's number/repo as
    issue_number/issue_repo.
 4. Leave the epic itself unassigned and open — it stays the tracking parent, don't claim or

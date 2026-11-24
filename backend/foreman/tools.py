@@ -39,6 +39,7 @@ from foreman.tools_schema import (
     FOREMAN_TOOLS,  # noqa: F401 — re-exported for test compatibility
 )
 from github_app_auth import get_app_installation_token, get_app_slug
+from github_labels import PS_WORKING, ensure_ps_labels, is_ready_label
 from guild_settings import get_guild_pre_agents_prompt
 from lock_service import LockService
 from models import (
@@ -2705,7 +2706,23 @@ async def _handle_claim_github_issue(inp: dict, ctx: ToolContext) -> tuple[str, 
         token,
         {"assignees": [username]},
     )
+    try:
+        await _to_thread(_transition_to_working, repo, num, token)
+    except Exception:
+        # Assignment is the claim; the label swap is cosmetic and must not fail it.
+        logger.warning("ps:working label swap failed for %s#%s", repo, num, exc_info=True)
     return f"Issue #{num} in {repo} assigned to {username}.", False
+
+
+def _transition_to_working(repo: str, num: int, token: str) -> None:
+    """Swap ps:ready (and any legacy devReady alias, migrating it) for ps:working."""
+    ensure_ps_labels(repo, token, _gh_api_post)
+    issue = _gh_api(f"/repos/{repo}/issues/{num}", token)
+    for label in issue.get("labels", []):
+        if is_ready_label(label["name"]):
+            path = f"/repos/{repo}/issues/{num}/labels/{urllib.parse.quote(label['name'])}"
+            _gh_api_post(path, token, {}, method="DELETE")  # 200 + remaining labels
+    _gh_api_post(f"/repos/{repo}/issues/{num}/labels", token, {"labels": [PS_WORKING]})
 
 
 async def _handle_create_github_issue(inp: dict, ctx: ToolContext) -> tuple[str, bool]:

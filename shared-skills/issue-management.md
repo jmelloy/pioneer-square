@@ -54,7 +54,7 @@ Use these heuristics:
 
 Pioneer Square has no formal priority field; use these inputs and say so when you report:
 
-1. **Readiness** — a `devReady`-family label (`devReady`, `dev-ready`, `ready-for-dev`, `ready`) means "pick up now". Unlabelled issues are not auto-picked up.
+1. **Readiness** — `ps:ready` means "pick up now" (legacy `devReady`, `dev-ready`, `ready-for-dev`, `ready` still count, but are deprecated). Claiming swaps it for `ps:working`. Other `ps:` labels (`ps:needsTriage`, `ps:needsPlan`, `ps:needsReview`, …) mark lifecycle state and are not auto-picked up; neither are unlabelled issues.
 2. **Severity** — prod outage / data loss / security > broken workflow > cosmetic.
 3. **Blocking** — does it block other tasks or an epic's next sub-issue?
 4. **Cost** — pick the `tier` (`cheap`, `standard`, `powerful`) to match difficulty; don't spend `powerful` on a typo.
@@ -79,7 +79,7 @@ New / newly-labelled issue
 ├─ Has sub_issues (epic)? ─────────────────────── yes → pick ONE workable sub-issue
 │        (state=open, no assignees, no non-terminal task); leave the epic open and
 │        unclaimed; if none workable, do nothing this cycle
-├─ Not devReady and human didn't ask for it? ──── yes → leave it; ask if unclear
+├─ Not ps:ready and human didn't ask for it? ─── yes → leave it; ask if unclear
 ├─ Spec too vague to implement? ───────────────── yes → create_task(phase="plan")
 └─ otherwise → go to Execution
 ```
@@ -186,7 +186,7 @@ idle worker that pulls the branch from GitHub. Force one with `preferred_worker_
 
 | Event | Foreman action |
 |-------|----------------|
-| `issues/labeled` (devReady), `issues/opened|reopened` with devReady | Pickup flow (triage tree, then execute) |
+| `issues/labeled` (ps:ready/devReady), `issues/opened|reopened` with one | Pickup flow (triage tree, then execute) |
 | `pull_request/review_requested` | Create a review task (§3) unless one already exists for the PR |
 | `pull_request/closed` merged=true | `get_pr_status` → `finalize_task` |
 | `check_run` failure | `send_followup` |
