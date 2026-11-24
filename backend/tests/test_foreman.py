@@ -307,7 +307,7 @@ class TestBuildSystemPrompt:
         notifications now that there is no issue-root anchor task."""
         from foreman.prompt import FOREMAN_SYSTEM
 
-        section_start = FOREMAN_SYSTEM.index("Periodic devReady issue pickup")
+        section_start = FOREMAN_SYSTEM.index("Periodic ps:ready issue pickup")
         section = FOREMAN_SYSTEM[section_start:]
         assert "issue_repo on both calls" in section
 
@@ -2969,11 +2969,14 @@ class TestExecToolsResultHandling:
         assert parsed[0]["head"] == "feat/add-x"
 
     async def test_claim_github_issue(self, db_session):
+        """Claim assigns, then swaps ps:ready + legacy devReady for ps:working (#1491)."""
         insert_guild(db_session, "g-gh-claim")
+        issue = {"labels": [{"name": "devReady"}, {"name": "ps:ready"}, {"name": "bug"}]}
         with (
             patch("foreman.tools.broadcast", new_callable=AsyncMock),
             patch("foreman.tools._guild_github_token", return_value=("tok", "octouser")),
-            patch("foreman.tools._gh_api_post", return_value={}),
+            patch("foreman.tools._gh_api", return_value=issue),
+            patch("foreman.tools._gh_api_post", return_value={}) as post,
         ):
             results = await exec_tools(
                 "g-gh-claim",
@@ -2981,6 +2984,18 @@ class TestExecToolsResultHandling:
             )
         assert "99" in results[0]["content"]
         assert "octouser" in results[0]["content"]
+        calls = [
+            (c.args[0], c.args[2], c.kwargs.get("method", "POST")) for c in post.call_args_list
+        ]
+        assert ("/repos/org/repo/issues/99/assignees", {"assignees": ["octouser"]}, "POST") in calls
+        deleted = {path for path, _, method in calls if method == "DELETE"}
+        assert deleted == {
+            "/repos/org/repo/issues/99/labels/devReady",
+            "/repos/org/repo/issues/99/labels/ps%3Aready",
+        }
+        assert ("/repos/org/repo/issues/99/labels", {"labels": ["ps:working"]}, "POST") in calls
+        created = {body["name"] for path, body, _ in calls if path == "/repos/org/repo/labels"}
+        assert "ps:ready" in created and "ps:reviewComplete" in created
 
     async def test_create_github_issue_returns_number_and_url(self, db_session):
         insert_guild(db_session, "g-gh-createissue")
@@ -3153,6 +3168,8 @@ class TestExecToolsResultHandling:
                     "labels": [{"name": lbl} for lbl in labels],
                 }
 
+            if "ps%3Aready" in url:
+                return {"items": [issue(6, ["ps:ready"])]}
             if "devReady" in url:
                 return {"items": [issue(3, ["devReady"]), issue(5, ["devReady"])]}
             if "dev-ready" in url:
@@ -3162,12 +3179,13 @@ class TestExecToolsResultHandling:
         with (
             patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
             patch("foreman.tools._gh_api", side_effect=fake_gh_api),
+            patch("foreman.tools._gh_api_post", return_value={}),
         ):
             lines = await _fetch_devready_issues("g-devready", {("org/repo", 5)})
 
         joined = "\n".join(lines)
-        assert len(lines) == 2  # 3 (deduped across labels) and 4; 5 filtered as linked
-        assert "org/repo#3" in joined and "org/repo#4" in joined
+        assert len(lines) == 3  # 3 (deduped across labels), 4, 6 (ps:ready); 5 filtered
+        assert "org/repo#3" in joined and "org/repo#4" in joined and "org/repo#6" in joined
         assert "#5" not in joined
 
     async def test_unknown_tool_returns_helpful_error(self, db_session):

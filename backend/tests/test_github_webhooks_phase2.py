@@ -1262,15 +1262,16 @@ class TestDevReadyIssueTrigger:
         assert _devready_issue_trigger("issues", "labeled", payload) == "devReady"
 
     def test_labeled_non_devready_does_not_trigger(self):
-        payload = {"issue": {"number": 1}, "label": {"name": "bug"}}
-        assert _devready_issue_trigger("issues", "labeled", payload) is None
+        for name in ("bug", "ps:working", "ps:needsTriage", "readyish"):
+            payload = {"issue": {"number": 1}, "label": {"name": name}}
+            assert _devready_issue_trigger("issues", "labeled", payload) is None
 
     def test_labeled_case_insensitive(self):
         payload = {"issue": {"number": 1}, "label": {"name": "DEV-READY"}}
         assert _devready_issue_trigger("issues", "labeled", payload) == "DEV-READY"
 
     def test_labeled_all_aliases(self):
-        for alias in ("devReady", "dev-ready", "ready-for-dev", "ready"):
+        for alias in ("ps:ready", "PS:READY", "devReady", "dev-ready", "ready-for-dev", "ready"):
             payload = {"issue": {"number": 1}, "label": {"name": alias}}
             assert _devready_issue_trigger("issues", "labeled", payload) == alias
 
@@ -1321,7 +1322,7 @@ class TestBuildSummaryDevReadyIssue:
         assert "Label applied: devReady" in s
         assert "Add dark mode" in s
         assert "claim_github_issue" in s
-        assert "devReady pickup flow" in s
+        assert "ps:ready pickup flow" in s
 
     def test_opened_with_label_summary(self):
         payload = {
@@ -1485,7 +1486,7 @@ def test_prompt_describes_devready_issue_webhook_behavior():
     assert "issues/opened" in FOREMAN_SYSTEM
     assert "issues/reopened" in FOREMAN_SYSTEM
     assert "claim_github_issue" in FOREMAN_SYSTEM
-    assert "devReady pickup flow" in FOREMAN_SYSTEM
+    assert "ps:ready pickup flow" in FOREMAN_SYSTEM
 
 
 # ---------------------------------------------------------------------------

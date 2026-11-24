@@ -437,7 +437,9 @@ FOREMAN_TOOLS = [
         "name": "claim_github_issue",
         "description": (
             "Assign a GitHub issue to the authenticated user (claim it for this guild's operator). "
-            "Call this when picking up an issue to work on, before assigning a worker task."
+            "Call this when picking up an issue to work on, before assigning a worker task. "
+            "Also moves the issue's lifecycle label: removes ps:ready (and legacy devReady "
+            "aliases) and adds ps:working."
         ),
         "input_schema": {
             "type": "object",
@@ -673,7 +675,7 @@ FOREMAN_TOOLS = [
             "Posts a status summary comment on the epic and adds a 'pm-reported' label "
             "to prevent re-running. When significant gaps are detected, suggests "
             "triggering a Level 2 worker task (deep_epic_analysis) for code-level review. "
-            "Use this when an epic with 'devReady' label has all sub-issues completed, "
+            "Use this when an epic with the 'ps:ready' label has all sub-issues completed, "
             "or when asked for a quick status check on an epic."
         ),
         "input_schema": {

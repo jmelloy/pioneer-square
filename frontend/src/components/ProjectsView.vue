@@ -120,9 +120,6 @@
           rel="noopener noreferrer"
           >↗ Open in GitHub</a
         >
-        <button class="pixel-btn" :disabled="!ghStore.isConfigured" @click="openSettings">
-          ⚙ Manage in settings
-        </button>
       </header>
       <div v-if="!ghStore.isConfigured" class="workspace-empty">
         Connect GitHub in your preferences to browse project issues.
