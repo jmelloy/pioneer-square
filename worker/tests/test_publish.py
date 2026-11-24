@@ -577,3 +577,22 @@ async def test_unsigned_fallback_authors_as_user_and_commits_as_bot(
     assert git(root, "log", "-1", "--format=%an <%ae>|%cn <%ce>") == (
         "Ada <ada@example.com>|bot <bot@example.com>"
     )
+
+
+async def test_publishes_to_checked_out_branch_not_only_task_branch(publisher, monkeypatch):
+    root, server, context = publisher
+    server.credentials_status = 503
+    git(root, "checkout", "-b", "feature/other")
+    (root / "original.txt").write_text("other branch")
+    real_git = publish._git
+    pushes = []
+
+    async def git_with_push(args, **kwargs):
+        if args[0] == "push":
+            pushes.append(args[-1])
+            return b""
+        return await real_git(args, **kwargs)
+
+    monkeypatch.setattr(publish, "_git", git_with_push)
+    assert await publish.publish_checkpoint(root, context, "other") == "pushed"
+    assert pushes == ["HEAD:refs/heads/feature/other"]
