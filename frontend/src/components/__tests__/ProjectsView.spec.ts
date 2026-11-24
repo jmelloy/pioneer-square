@@ -4,7 +4,6 @@ import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import ProjectsView from '../ProjectsView.vue'
 import { useGitHubStore } from '../../stores/github'
-import { useUiStore } from '../../stores/ui'
 import { useGuildStore } from '../../stores/guild'
 import type { GitHubIssue } from '../../types'
 
@@ -227,11 +226,8 @@ describe('ProjectsView', () => {
       return fetchMock
     }
 
-    it('opens the guild settings Projects tab instead of an inline editor', async () => {
-      const wrapper = render()
-      await wrapper.find('.projects-heading button:last-child').trigger('click')
-      expect(useUiStore().settingsRequest).toBe('projects')
-      expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    it('has no Manage in settings button in the heading', () => {
+      expect(render().find('.projects-heading').text()).not.toContain('Manage in settings')
     })
 
     it('imports a legacy browser list only after confirmation, and only if never saved', async () => {
