@@ -2,18 +2,6 @@
   <div class="ifp">
     <div class="ifp-head">
       <span class="ifp-title">⚙ Foreman</span>
-      <div class="ifp-modes" role="group" aria-label="Foreman action">
-        <button
-          v-for="m in MODES"
-          :key="m.key"
-          class="ifp-mode"
-          :class="{ active: mode === m.key }"
-          :aria-pressed="mode === m.key"
-          @click="mode = m.key"
-        >
-          {{ m.label }}
-        </button>
-      </div>
     </div>
 
     <ul v-if="linked.length" class="ifp-convs">
@@ -42,11 +30,11 @@
         v-model="text"
         class="ifp-input"
         rows="2"
-        :placeholder="placeholder"
+        placeholder="Ask the foreman…"
         @keydown.enter.exact.prevent="send"
       ></textarea>
       <button class="pixel-btn ifp-send" type="submit" :disabled="!text.trim() || sending">
-        {{ sending ? '…' : 'Send' }}
+        {{ sending ? '…' : 'Ask Foreman' }}
       </button>
     </form>
     <div v-if="error" class="ifp-error">{{ error }}</div>
@@ -62,12 +50,7 @@ import type { ChatMessage, Conversation, Task } from '../types'
 
 const props = defineProps<{ owner: string; repo: string; issueNumber: number; tasks: Task[] }>()
 
-type Mode = 'start' | 'update' | 'ask'
-const MODES: { key: Mode; label: string }[] = [
-  { key: 'start', label: 'Start Conversation' },
-  { key: 'update', label: 'Post Update' },
-  { key: 'ask', label: 'Ask Foreman' },
-]
+const DEFAULT_TEXT = 'Ask Foreman'
 
 const guildStore = useGuildStore()
 const conversationsStore = useConversationsStore()
@@ -77,22 +60,12 @@ const uiStore = useUiStore()
 // here carries it, which is what links a conversation to the issue (no schema change).
 const issueRef = computed(() => `[${props.owner}/${props.repo}#${props.issueNumber}]`)
 
-const mode = ref<Mode>('ask')
-const text = ref('')
+const text = ref(DEFAULT_TEXT)
 const sending = ref(false)
 const error = ref('')
 const searched = ref<Conversation[]>([])
 const targetId = ref<number | null>(null)
 const history = ref<ChatMessage[]>([])
-
-const placeholder = computed(
-  () =>
-    ({
-      start: `New conversation about ${issueRef.value}…`,
-      update: `Status update for ${issueRef.value}…`,
-      ask: `Ask the foreman about ${issueRef.value}…`,
-    })[mode.value],
-)
 
 // Conversations tied to this issue: ones whose messages mention the issue ref
 // (server search), ones its tasks belong to, and live-created ones named with the ref.
@@ -169,21 +142,17 @@ async function send() {
   const body = text.value.trim()
   const guildId = guildStore.currentGuild?.id
   if (!body || !guildId || sending.value) return
-  const content =
-    mode.value === 'update'
-      ? `${issueRef.value} Status update — pass this on to any active task for this issue; no reply needed otherwise:\n${body}`
-      : `${issueRef.value} ${body}`
+  const content = `${issueRef.value} ${body}`
   error.value = ''
   sending.value = true
   try {
-    if (mode.value === 'start' || !target.value) {
+    if (!target.value) {
       // A top-level WS chat always starts a fresh conversation (backend ws_handlers.handle_chat),
       // named from this content, so it shows up in `linked` via the ref in its name.
       targetId.value = null
       if (!guildStore.sendMessage({ type: 'chat', from: 'user', to: 'foreman', content })) {
         throw new Error('Not connected — message not sent.')
       }
-      mode.value = 'ask' // follow-ups land in the conversation just started
     } else {
       await conversationsStore.postConversationMessage(guildId, target.value.id, content)
     }
@@ -217,23 +186,6 @@ async function send() {
   font-size: 9px;
   color: var(--color-brass-light);
   letter-spacing: 1px;
-}
-.ifp-modes {
-  display: flex;
-  gap: 4px;
-  margin-left: auto;
-}
-.ifp-mode {
-  background: transparent;
-  border: 1px solid var(--color-brass-dark);
-  color: var(--color-text-dim);
-  font-size: 11px;
-  padding: 2px 8px;
-  cursor: pointer;
-}
-.ifp-mode.active {
-  border-color: var(--color-brass);
-  color: var(--color-brass-light);
 }
 .ifp-convs {
   list-style: none;
