@@ -119,6 +119,76 @@ describe('useGitHubStore', () => {
     expect(store.error).toContain('denied access to your repositories')
   })
 
+  describe('fetchAvailableProjects', () => {
+    function mockGh(handler: (url: string, init?: RequestInit) => Response | undefined) {
+      const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+        const url = String(input)
+        if (url.endsWith('/user')) return Response.json({ login: 'me' })
+        return handler(url, init) ?? Response.json([])
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      const store = useGitHubStore()
+      store.token = 't'
+      return store
+    }
+
+    it('merges repo projects with the parent org projects', async () => {
+      const store = mockGh((url) => {
+        if (url.includes('/orgs/team/projects'))
+          return Response.json([{ id: 1, name: 'Org board', html_url: 'https://x/1' }])
+        if (url.includes('/repos/team/a/projects'))
+          return Response.json([{ id: 2, name: 'Repo board', html_url: 'https://x/2' }])
+        if (url.includes('/repos/team/b/projects'))
+          return Response.json([{ id: 2, name: 'Repo board', html_url: 'https://x/2' }])
+      })
+      const out = await store.fetchAvailableProjects(['team/a', 'team/b'])
+      expect(out.map((p) => [p.name, p.kind]).sort()).toEqual([
+        ['Org board', 'org'],
+        ['Repo board', 'repo'],
+      ])
+    })
+
+    it('tolerates an owner with no org projects (404)', async () => {
+      const store = mockGh((url) => {
+        if (url.includes('/orgs/')) return Response.json({ message: 'Not Found' }, { status: 404 })
+        if (url.includes('/repos/team/a/projects'))
+          return Response.json([{ id: 2, name: 'Repo board', html_url: 'https://x/2' }])
+      })
+      const out = await store.fetchAvailableProjects(['team/a'])
+      expect(out.map((p) => p.name)).toEqual(['Repo board'])
+    })
+
+    it('follows pagination for org projects and Projects v2', async () => {
+      const node = (n: number) => ({ id: `v2-${n}`, title: `P${n}`, url: `u${n}`, closed: false })
+      const store = mockGh((url, init) => {
+        if (url.endsWith('/graphql')) {
+          const { variables, query } = JSON.parse(init!.body as string)
+          if (variables.login !== 'team' || !query.includes('organization('))
+            return Response.json({ data: {} })
+          const second = variables.after === 'c1'
+          return Response.json({
+            data: {
+              organization: {
+                projectsV2: {
+                  nodes: [node(second ? 2 : 1)],
+                  pageInfo: { hasNextPage: !second, endCursor: 'c1' },
+                },
+              },
+            },
+          })
+        }
+        if (url.includes('/orgs/team/projects?per_page=100'))
+          return new Response(JSON.stringify([{ id: 1, name: 'O1', html_url: 'a' }]), {
+            headers: { Link: '<https://api.github.com/orgs/team/projects?page=2>; rel="next"' },
+          })
+        if (url.includes('/orgs/team/projects?page=2'))
+          return Response.json([{ id: 2, name: 'O2', html_url: 'b' }])
+      })
+      const names = (await store.fetchAvailableProjects(['team/a'])).map((p) => p.name).sort()
+      expect(names).toEqual(['O1', 'O2', 'P1', 'P2'])
+    })
+  })
+
   it('scopes the browsing list to the current guild', () => {
     const store = useGitHubStore()
     const guildStore = useGuildStore()
