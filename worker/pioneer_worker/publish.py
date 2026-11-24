@@ -10,7 +10,7 @@ import logging
 import os
 import re
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import quote
 
@@ -194,6 +194,10 @@ async def publish_checkpoint(
     """
     cwd = Path(worktree)
     cwd = Path((await _git(["rev-parse", "--show-toplevel"], cwd=cwd)).decode().strip())
+    # Publish to whatever branch is checked out; detached HEAD uses the task branch.
+    current = (await _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd)).decode().strip()
+    if current != "HEAD":
+        context = replace(context, branch=current)
     git_dir = Path((await _git(["rev-parse", "--absolute-git-dir"], cwd=cwd)).decode().strip())
     with (git_dir / "pioneer-publish.lock").open("a") as lock:
         try:
@@ -217,12 +221,12 @@ async def _publish_unsigned(
     """Use existing Git transport credentials when optional App signing is unavailable."""
     branch = (await _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd)).decode().strip()
     if branch not in ("HEAD", context.branch):
-        raise PublishError("Worktree changed branches; refusing unsigned publication")
+        raise PublishError("Worktree changed branches during publication; local work is preserved")
     default_ref = (
         (await _git(["symbolic-ref", "refs/remotes/origin/HEAD"], cwd=cwd)).decode().strip()
     )
     if default_ref == f"refs/remotes/origin/{context.branch}":
-        raise PublishError("Task publication cannot target the repository's default branch")
+        raise PublishError("pioneer publish cannot target the repository's default branch")
     if await _git(["status", "--porcelain"], cwd=cwd):
         await _git(["add", "-A"], cwd=cwd)
         name = (
@@ -286,7 +290,7 @@ async def _publish(cwd: Path, context: PublishContext, message: str) -> str:
     await _git(["check-ref-format", "--branch", context.branch], cwd=cwd)
     branch = (await _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd)).decode().strip()
     if branch not in ("HEAD", context.branch):
-        raise PublishError("Worktree branch does not match this task's publication branch")
+        raise PublishError("Worktree changed branches during publication; local work is preserved")
     source = (await _git(["rev-parse", "HEAD"], cwd=cwd)).decode().strip()
     repo = await _repository(cwd)
     async with httpx.AsyncClient(timeout=60) as client:
@@ -314,11 +318,11 @@ async def _publish(cwd: Path, context: PublishContext, message: str) -> str:
 
         metadata = await api("GET", f"/repos/{repo}")
         if context.branch == metadata.get("default_branch"):
-            raise PublishError("Task publication cannot target the repository's default branch")
+            raise PublishError("pioneer publish cannot target the repository's default branch")
         ref_path = f"/repos/{repo}/git/ref/heads/{quote(context.branch, safe='/')}"
         ref = await client.get("https://api.github.com" + ref_path, headers=headers)
         if ref.status_code not in (200, 404):
-            raise PublishError(f"Cannot read task branch (HTTP {ref.status_code})")
+            raise PublishError(f"Cannot read branch {context.branch} (HTTP {ref.status_code})")
         remote = ref.json()["object"]["sha"] if ref.status_code == 200 else None
         if remote:
             await _git(
@@ -402,7 +406,9 @@ async def _publish(cwd: Path, context: PublishContext, message: str) -> str:
                 return "pushed"
         common = (await _git(["merge-base", source, parent], cwd=cwd)).decode().strip()
         if common != parent:
-            raise PublishError("Remote task branch diverged; reconcile it before publishing")
+            raise PublishError(
+                f"Remote branch {context.branch} diverged; reconcile it before publishing"
+            )
         if tree == parent_tree:
             return "nothing"
 
