@@ -49,6 +49,7 @@ from foreman.prompt import (
 )
 from foreman.proxy import call_foreman_api_proxy, has_foreman_proxy
 from foreman.run import ForemanRun, RealToolExecutor, RunConfig
+from github_labels import READY_LABELS, ensure_ps_labels
 from models import (
     Agent,
     ApiRequestLog,
@@ -737,12 +738,8 @@ async def _fetch_pr_status_lines(guild_id: str, pr_tasks: list[dict]) -> list[st
     return lines
 
 
-# devReady label variants, checked case-insensitively (mirrors prompt.py step 3).
-_DEVREADY_LABELS = ("devReady", "dev-ready", "ready-for-dev", "ready")
-
-
 async def _fetch_devready_issues(guild_id: str, linked_issues: set[tuple[str, int]]) -> list[str]:
-    """Pre-fetch unassigned devReady issues on the primary repo for pickup.
+    """Pre-fetch unassigned ps:ready (or legacy devReady) issues on the primary repo.
 
     Runs every periodic-check so the foreman acts on injected data instead of
     calling search_github_issues itself. Best effort: a search failure (rate
@@ -750,7 +747,7 @@ async def _fetch_devready_issues(guild_id: str, linked_issues: set[tuple[str, in
     issues (an existing non-terminal task references them) are filtered out here
     so the foreman only sees genuinely new work.
     """
-    from foreman.tools import _gh_api, _guild_github_token, _to_thread
+    from foreman.tools import _gh_api, _gh_api_post, _guild_github_token, _to_thread
 
     creds = await _guild_github_token(guild_id)
     if not creds:
@@ -766,9 +763,16 @@ async def _fetch_devready_issues(guild_id: str, linked_issues: set[tuple[str, in
     if not primary_repo:
         return []
 
+    try:
+        await _to_thread(ensure_ps_labels, primary_repo, token, _gh_api_post)
+    except Exception:
+        logger.warning(
+            "guild=%s ps: label setup failed on %s", guild_id, primary_repo, exc_info=True
+        )
+
     # Merge results across label variants, deduping by issue number.
     seen: dict[int, dict] = {}
-    for label in _DEVREADY_LABELS:
+    for label in READY_LABELS:
         query = urllib.parse.quote(f'label:"{label}" no:assignee')
         url = (
             f"/search/issues?q={query}+repo:{primary_repo}+state:open"
@@ -1118,12 +1122,12 @@ async def _poll_loop_once(guild_id: str, interval: float) -> float:
         msg = "[periodic-check] Automated status poll — no non-terminal tasks."
 
     # Pre-fetched devReady issues ready for pickup (see prompt "Periodic
-    # devReady issue pickup"). Injecting them here saves the foreman a
+    # ps:ready issue pickup"). Injecting them here saves the foreman a
     # search_github_issues round-trip and guarantees the sweep runs.
     devready_lines = await _fetch_devready_issues(guild_id, linked_issues)
     if devready_lines:
         msg += (
-            "\n\nUnassigned devReady issues ready for pickup (fetched this "
+            "\n\nUnassigned ps:ready issues ready for pickup (fetched this "
             "cycle, already deduped against active tasks):\n"
             + "\n".join(devready_lines)
             + "\nFor each, call claim_github_issue then create_task + assign_task "
