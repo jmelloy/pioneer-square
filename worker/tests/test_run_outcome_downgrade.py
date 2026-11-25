@@ -10,6 +10,7 @@ mocked push_branch with a bool, which is none of its three real return values
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -29,7 +30,7 @@ def _make_cfg(**kwargs) -> Config:
     )
 
 
-async def _run_with_push(tmp_path, push_result: str, *, dirty: bool = False) -> dict:
+async def _run_with_push(tmp_path, push_result: str, *, dirty: bool = False, runner=None) -> dict:
     """Run one successful claude task whose push returns *push_result*.
 
     Returns the kwargs of the final _task_update call — the outcome the
@@ -50,7 +51,7 @@ async def _run_with_push(tmp_path, push_result: str, *, dirty: bool = False) -> 
         patch("pioneer_worker.worker.publish.check_access", new=AsyncMock()),
         patch(
             "pioneer_worker.worker.claude_runner.run_claude_auto",
-            new=AsyncMock(return_value=(True, "success", "all done", "sess-1")),
+            new=runner or AsyncMock(return_value=(True, "success", "all done", "sess-1")),
         ),
         patch(
             "pioneer_worker.worker.github_pr.push_branch",
@@ -104,3 +105,30 @@ async def test_pushed_branch_keeps_agent_success(tmp_path):
     assert kwargs["success"] is True
     assert kwargs["stopReason"] is StopReason.SUCCESS
     assert kwargs["lastText"] == "all done"
+
+
+@pytest.mark.parametrize("raises", [False, True])
+async def test_artifact_watcher_lives_during_run_and_stops_on_exit(tmp_path, raises):
+    watching = asyncio.Event()
+    stopped = asyncio.Event()
+
+    async def watch(self, stop):
+        watching.set()
+        await stop.wait()
+        stopped.set()
+
+    async def run(*args, **kwargs):
+        await watching.wait()
+        assert not stopped.is_set()
+        if raises:
+            raise RuntimeError("runner failed")
+        return True, "success", "all done", "sess-1"
+
+    with patch("pioneer_worker.worker.artifact_upload.ArtifactSync.watch", new=watch):
+        if raises:
+            with pytest.raises(RuntimeError, match="runner failed"):
+                await _run_with_push(tmp_path, "pushed", runner=AsyncMock(side_effect=run))
+        else:
+            result = await _run_with_push(tmp_path, "pushed", runner=AsyncMock(side_effect=run))
+            assert result["lastText"] == "all done"
+    assert stopped.is_set()
