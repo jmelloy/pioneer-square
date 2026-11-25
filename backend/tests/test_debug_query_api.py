@@ -167,15 +167,27 @@ def test_debug_raw_query_rejects_write_operations(client, monkeypatch, sql):
     assert resp.status_code == 400
 
 
-def test_debug_raw_query_rejects_disallowed_tables(client, monkeypatch):
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT count(*) AS total FROM artifacts",
+        "SELECT count(*) AS total FROM github_tokens",
+        "SELECT count(*) AS total FROM user_sessions",
+        "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public'",
+        "SELECT * FROM (SELECT id FROM artifacts) AS uploaded",
+        "SELECT a.id FROM artifacts a JOIN tasks t ON a.task_id = t.id",
+    ],
+)
+def test_debug_raw_query_allows_any_table(client, monkeypatch, sql):
     _, _ = client
     dc = _debug_app_client(monkeypatch)
     resp = dc.post(
         "/debug/query",
-        json={"sql": "SELECT * FROM github_tokens"},
+        json={"sql": sql},
         headers={"Authorization": f"Bearer {_TOKEN}"},
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 200, resp.text
+    assert isinstance(resp.json(), list)
 
 
 def test_debug_raw_query_allows_operational_tables(client, monkeypatch):
@@ -249,10 +261,8 @@ def test_debug_raw_query_allows_iso_timestamp_literal(client, monkeypatch):
 # Statement timeout
 #
 # Triggering a real 30s Postgres statement-timeout cancellation from an
-# integration test would be slow and flaky (the table allowlist rules out the
-# obvious ways to force a slow query — e.g. `FROM pg_sleep(...)` is a
-# non-allowlisted table ref). Instead, exercise the error-mapping branch directly:
-# a fake session whose second `exec()` raises the same asyncpg
+# integration test would be slow. Instead, exercise the error-mapping branch
+# directly: a fake session whose query `exec()` raises the same asyncpg
 # QueryCanceledError shape Postgres raises on a real timeout.
 # ---------------------------------------------------------------------------
 
@@ -317,6 +327,28 @@ def test_debug_raw_query_rejects_filesystem_functions(client, monkeypatch, sql):
         headers={"Authorization": f"Bearer {_TOKEN}"},
     )
     assert resp.status_code == 400
+
+
+def test_debug_raw_query_rejects_sequence_writes_in_select(client, monkeypatch):
+    dc = _debug_app_client(monkeypatch)
+    resp = dc.post(
+        "/debug/query",
+        json={"sql": "SELECT nextval(pg_get_serial_sequence('guilds', 'id'))"},
+        headers={"Authorization": f"Bearer {_TOKEN}"},
+    )
+    assert resp.status_code == 400
+    assert "read-only" in resp.json()["detail"]
+
+
+def test_debug_raw_query_caps_results(client, monkeypatch):
+    dc = _debug_app_client(monkeypatch)
+    resp = dc.post(
+        "/debug/query",
+        json={"sql": "SELECT generate_series(1, 600) AS n"},
+        headers={"Authorization": f"Bearer {_TOKEN}"},
+    )
+    assert resp.status_code == 200
+    assert len(resp.json()) == 500
 
 
 class _RecordingSession:

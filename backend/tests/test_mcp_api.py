@@ -108,15 +108,19 @@ def test_debug_query_works_and_is_read_only(client, caplog):
     )
     assert tid in ok.json()["result"]["content"][0]["text"]
     assert "debug call" in caplog.text
-    bad = _rpc(
+    sessions = _rpc(
         c,
         "tools/call",
-        {"name": "debug_query", "arguments": {"sql": "SELECT * FROM user_sessions"}},
+        {
+            "name": "debug_query",
+            "arguments": {"sql": "SELECT count(*) AS total FROM user_sessions"},
+        },
         token=token,
         debug=_DEBUG,
         guild=gid,
     )
-    assert bad.json()["result"]["isError"] is True
+    assert sessions.json()["result"].get("isError") is not True
+    assert '"total"' in sessions.json()["result"]["content"][0]["text"]
     dml = _rpc(
         c,
         "tools/call",
