@@ -11,13 +11,17 @@ import uuid
 from datetime import UTC, datetime
 
 import artifact_service
+import discord_notifier
 from auth_deps import get_guild_pk, require_worker_or_member_path
+from conversation_activity import publish_activity
 from database import get_db_dep
+from events import broadcast_msg
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
-from models import Artifact, Task, Worker
+from models import Artifact, Task, TaskLog, Worker, task_conversation_id
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from ws_types import TerminalOutputMsg
 
 router = APIRouter()
 
@@ -107,8 +111,41 @@ async def upload_artifact(
         updated_at=now,
     )
     db.add(row)
+    payload = _payload(row, file.filename)
+    line = f"Artifact: {payload['markdown']}"
+    if task_id:
+        db.add(TaskLog(task_id=task_id, timestamp=now, line=line, worker_id=worker_id))
     await db.commit()
-    return _payload(row, file.filename)
+    if task_id:
+        await broadcast_msg(
+            guild_id,
+            TerminalOutputMsg(
+                taskId=task_id, workerId=worker_id, line=line, timestamp=now.isoformat()
+            ),
+        )
+        conversation_id = (
+            await db.exec(
+                select(task_conversation_id()).where(
+                    col(Task.id) == task_id, col(Task.guild_id) == guild_pk
+                )
+            )
+        ).one_or_none()
+        await publish_activity(
+            db,
+            guild_id=guild_id,
+            guild_pk=guild_pk,
+            conversation_id=conversation_id,
+            task_id=task_id,
+            sender=worker_id or principal,
+            content=line,
+            source="worker" if worker_id else "api",
+            created_at=now,
+            mirror=False,
+        )
+        await discord_notifier.notify_task_stream(
+            guild_id, task_id, line, None, conversation_id=conversation_id
+        )
+    return payload
 
 
 @router.get("/guilds/{guild_id}/artifacts/{artifact_id}")

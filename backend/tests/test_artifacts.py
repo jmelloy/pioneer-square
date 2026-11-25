@@ -10,7 +10,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(__file__))
 
 import artifact_service
-from helpers import insert_guild, insert_member, make_auth_token
+from helpers import insert_conversation, insert_guild, insert_member, insert_task, make_auth_token
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 32
 
@@ -119,6 +119,62 @@ def test_upload_route(client, monkeypatch):
         c.post("/guilds/art1/artifacts", files={"file": ("s.png", PNG, "image/png")}).status_code
         == 401
     )
+
+
+def test_task_upload_persists_and_broadcasts_link(client, monkeypatch):
+    from routes import artifacts
+
+    c, db = client
+    insert_guild(db, "art-task")
+    insert_member(db, "art-task", "m-art-task", "member")
+    conversation_id = insert_conversation(db, "art-task")
+    insert_task(db, "art-task", "t-art-task", conversation_id=conversation_id)
+    h = {"Authorization": f"Bearer {make_auth_token(db, user_id='m-art-task')}"}
+    broadcasts = []
+
+    async def fake_store(data, ctype, guild, task_id):
+        return artifact_service.StoredObject(
+            "report-id", "report.html", "u", ctype, len(data), "html"
+        )
+
+    async def broadcast(guild, message):
+        broadcasts.append((guild, message))
+
+    monkeypatch.setattr(artifact_service, "store", fake_store)
+    monkeypatch.setattr(artifacts, "broadcast_msg", broadcast)
+    r = c.post(
+        "/guilds/art-task/artifacts",
+        files={"file": ("report.html", b"<h1>report</h1>", "text/html")},
+        data={"task_id": "t-art-task"},
+        headers=h,
+    )
+    assert r.status_code == 200, r.text
+    log = c.get("/api/task/t-art-task/log", headers=h)
+    assert log.status_code == 200, log.text
+    assert [entry["line"] for entry in log.json()["logs"]] == [
+        "Artifact: [report.html](artifact://report-id?type=html)"
+    ]
+    assert len(broadcasts) == 1
+    guild, message = broadcasts[0]
+    assert guild == "art-task"
+    assert message.type == "terminal-output" and message.taskId == "t-art-task"
+    assert message.line == log.json()["logs"][0]["line"]
+    assert message.timestamp
+    messages = c.get(f"/api/guilds/art-task/conversations/{conversation_id}/messages", headers=h)
+    assert messages.status_code == 200, messages.text
+    assert [m["content"] for m in messages.json()] == [message.line]
+    assert messages.json()[0]["taskId"] == "t-art-task"
+
+    insert_guild(db, "other-art")
+    insert_task(db, "other-art", "t-other-art")
+    rejected = c.post(
+        "/guilds/art-task/artifacts",
+        files={"file": ("report.html", b"<h1>report</h1>", "text/html")},
+        data={"task_id": "t-other-art"},
+        headers=h,
+    )
+    assert rejected.status_code == 404
+    assert len(broadcasts) == 1
 
 
 def test_markdown_reference_uses_artifact_scheme():

@@ -2185,22 +2185,13 @@ class Worker:
                 _api_call_n += 1
             usage_records.append(rec)
 
-        # Upload artifacts as the agent saves them, posting each as a log line so it
-        # shows inline in the task view (#1519) instead of only in the final summary.
-        uploaded_artifacts: list[dict] = []
-        artifacts_stop = asyncio.Event()
-        artifacts_watch = asyncio.create_task(
-            artifact_upload.watch_task_artifacts(
-                self.cfg.http_url,
-                self.cfg.guild_id,
-                self.cfg.auth_token,
-                task_id,
-                emit,
-                uploaded_artifacts,
-                artifacts_stop,
-            )
+        artifact_stop = asyncio.Event()
+        artifact_watch = asyncio.create_task(
+            artifact_upload.ArtifactSync(
+                self.cfg.http_url, self.cfg.guild_id, self.cfg.auth_token, task_id
+            ).watch(artifact_stop),
+            name=f"artifacts:{task_id}",
         )
-
         try:
             # ── Main execution with redirect loop ──────────────────────────
             if is_followup:
@@ -2535,10 +2526,8 @@ class Worker:
                 await self._ensure_pr_webhook(pr_url, emit)
 
             logger.info("Task %s: pr_url=%s", task_id, pr_url)
-            artifacts_stop.set()
-            await artifacts_watch  # final sweep picks up anything saved since the last poll
-            if uploaded_artifacts:
-                last_msg = artifact_upload.append_markdown(last_msg or "", uploaded_artifacts)
+            artifact_stop.set()
+            await artifact_watch
             msg = {
                 "workerId": self.cfg.worker_id,
                 "agentId": agent.agent_id,
@@ -2590,10 +2579,11 @@ class Worker:
             await self._set_state("idle", agent)
 
         finally:
-            # Early exits (cancel, interactive close, errors) still get a final sweep.
-            artifacts_stop.set()
-            await artifacts_watch
-            self._redirect_queues.pop(task_id, None)
-            # Refresh the worktree-registry timestamp so the sweeper holds
-            # off on this task for another full TTL window.
-            self._touch_task_worktrees(task_id)
+            artifact_stop.set()
+            try:
+                await artifact_watch
+            finally:
+                self._redirect_queues.pop(task_id, None)
+                # Refresh the worktree-registry timestamp so the sweeper holds
+                # off on this task for another full TTL window.
+                self._touch_task_worktrees(task_id)
