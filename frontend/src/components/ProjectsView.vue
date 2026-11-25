@@ -18,7 +18,7 @@
           @click="selectRepo('')"
         >
           <span aria-hidden="true">◈</span><span>All projects</span
-          ><span class="count">{{ scopedIssues.length }}</span>
+          ><span class="count">{{ activeIssues.length }}</span>
         </button>
         <button
           v-for="repo in filteredRepos"
@@ -29,7 +29,7 @@
         >
           <span class="project-gem" aria-hidden="true">◆</span
           ><span :title="repo">{{ repo.split('/').pop() }}</span
-          ><span class="count">{{ scopedIssues.filter((i) => i.repo === repo).length }}</span>
+          ><span class="count">{{ activeIssues.filter((i) => i.repo === repo).length }}</span>
         </button>
         <button
           v-for="project in boardProjects"
@@ -41,7 +41,9 @@
         >
           <span aria-hidden="true">▦</span><span>{{ project.name }}</span
           ><span class="count">{{
-            selectedBoard?.id === project.id ? boardIssues.length : ''
+            selectedBoard?.id === project.id
+              ? boardIssues.filter((issue) => issue.state === 'open').length
+              : ''
           }}</span>
         </button>
         <!-- Classic projects have no item API left; they still link out. -->
@@ -310,6 +312,7 @@ const filteredRepos = computed(() =>
 const scopedIssues = computed(() =>
   ghStore.issues.filter((issue) => repoNames.value.includes(issue.repo)),
 )
+const activeIssues = computed(() => scopedIssues.value.filter((issue) => issue.state === 'open'))
 const projectIssues = computed(() =>
   selectedBoard.value
     ? boardIssues.value

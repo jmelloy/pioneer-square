@@ -135,11 +135,17 @@ describe('useGitHubStore', () => {
     it('merges repo projects with the parent org projects', async () => {
       const store = mockGh((url) => {
         if (url.includes('/orgs/team/projects'))
-          return Response.json([{ id: 1, name: 'Org board', html_url: 'https://x/1' }])
+          return Response.json([
+            { id: 1, name: 'Org board', html_url: 'https://x/1', state: 'open' },
+          ])
         if (url.includes('/repos/team/a/projects'))
-          return Response.json([{ id: 2, name: 'Repo board', html_url: 'https://x/2' }])
+          return Response.json([
+            { id: 2, name: 'Repo board', html_url: 'https://x/2', state: 'open' },
+          ])
         if (url.includes('/repos/team/b/projects'))
-          return Response.json([{ id: 2, name: 'Repo board', html_url: 'https://x/2' }])
+          return Response.json([
+            { id: 2, name: 'Repo board', html_url: 'https://x/2', state: 'open' },
+          ])
       })
       const out = await store.fetchAvailableProjects(['team/a', 'team/b'])
       expect(out.map((p) => [p.name, p.kind]).sort()).toEqual([
@@ -148,11 +154,43 @@ describe('useGitHubStore', () => {
       ])
     })
 
+    it('excludes closed classic and Projects v2 projects', async () => {
+      const store = mockGh((url, init) => {
+        if (url.includes('/repos/team/a/projects'))
+          return Response.json([
+            { id: 1, name: 'Active', html_url: 'a', state: 'open' },
+            { id: 2, name: 'Completed', html_url: 'b', state: 'closed' },
+          ])
+        if (url.endsWith('/graphql')) {
+          const { variables } = JSON.parse(init!.body as string)
+          if (variables.login !== 'me') return Response.json({ data: {} })
+          return Response.json({
+            data: {
+              user: {
+                projectsV2: {
+                  nodes: [
+                    { id: 'v1', title: 'In progress', url: 'c', closed: false },
+                    { id: 'v2', title: 'Archived', url: 'd', closed: true },
+                  ],
+                },
+              },
+            },
+          })
+        }
+      })
+      expect((await store.fetchAvailableProjects(['team/a'])).map((p) => p.name).sort()).toEqual([
+        'Active',
+        'In progress',
+      ])
+    })
+
     it('tolerates an owner with no org projects (404)', async () => {
       const store = mockGh((url) => {
         if (url.includes('/orgs/')) return Response.json({ message: 'Not Found' }, { status: 404 })
         if (url.includes('/repos/team/a/projects'))
-          return Response.json([{ id: 2, name: 'Repo board', html_url: 'https://x/2' }])
+          return Response.json([
+            { id: 2, name: 'Repo board', html_url: 'https://x/2', state: 'open' },
+          ])
       })
       const out = await store.fetchAvailableProjects(['team/a'])
       expect(out.map((p) => p.name)).toEqual(['Repo board'])
@@ -178,11 +216,14 @@ describe('useGitHubStore', () => {
           })
         }
         if (url.includes('/orgs/team/projects?per_page=100'))
-          return new Response(JSON.stringify([{ id: 1, name: 'O1', html_url: 'a' }]), {
-            headers: { Link: '<https://api.github.com/orgs/team/projects?page=2>; rel="next"' },
-          })
+          return new Response(
+            JSON.stringify([{ id: 1, name: 'O1', html_url: 'a', state: 'open' }]),
+            {
+              headers: { Link: '<https://api.github.com/orgs/team/projects?page=2>; rel="next"' },
+            },
+          )
         if (url.includes('/orgs/team/projects?page=2'))
-          return Response.json([{ id: 2, name: 'O2', html_url: 'b' }])
+          return Response.json([{ id: 2, name: 'O2', html_url: 'b', state: 'open' }])
       })
       const names = (await store.fetchAvailableProjects(['team/a'])).map((p) => p.name).sort()
       expect(names).toEqual(['O1', 'O2', 'P1', 'P2'])

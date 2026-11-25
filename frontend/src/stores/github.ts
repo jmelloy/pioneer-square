@@ -165,7 +165,7 @@ export const useGitHubStore = defineStore('github', () => {
     const classic = async (url: string, owner: string, kind: GitHubProject['kind']) => {
       try {
         const data = await fetchAllPages(url, 'GitHub projects')
-        for (const p of data)
+        for (const p of data.filter((project) => project.state === 'open'))
           add({
             id: `classic-${p.id}`,
             name: String(p.name),
