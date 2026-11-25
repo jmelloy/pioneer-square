@@ -105,7 +105,10 @@ class TaskWorktree:
         return os.path.join(self.base_dir, task_id)
 
     def wt_path(self, task_id: str, repo_full: str) -> str:
-        return os.path.join(self.task_dir(task_id), _repo_name(repo_full))
+        legacy = os.path.join(self.task_dir(task_id), _repo_name(repo_full))
+        if os.path.isdir(legacy):
+            return legacy
+        return f"{legacy}-{task_id}"
 
     def __contains__(self, task_id: str) -> bool:
         return task_id in self._registry
@@ -322,6 +325,57 @@ class TaskWorktree:
         ts = self._clock()
         self._registry[task_id] = [(rp, wt, ts) for rp, wt, _old in existing]
 
+    async def finalize(self, task_id: str, *, branch: str, token: str | None = None) -> bool:
+        """Remove only clean, published worktrees; keep recovery state on errors."""
+        entries = self._registry.get(task_id)
+        if not entries or not branch:
+            return False
+        try:
+            # Check every repo before removing any of a multi-repo task's worktrees.
+            for _repo_path, wt_path, _ts in entries:
+                rc, status, err = await git_ops.run_git(["status", "--porcelain"], cwd=wt_path)
+                if rc != 0:
+                    raise RuntimeError(err or "git status failed")
+                if status.strip():
+                    logger.info("Task %s: retaining dirty worktree %s", task_id, wt_path)
+                    return False
+                # Publishing uses HEAD:<branch>, including detached checkouts, without
+                # setting @{u}. Ask origin directly rather than trusting cached refs.
+                rc, remote, err = await git_ops.run_git(
+                    ["ls-remote", "--exit-code", "--heads", "origin", f"refs/heads/{branch}"],
+                    cwd=wt_path,
+                    token=token,
+                )
+                if rc != 0 or not remote.strip():
+                    raise RuntimeError(err or "remote branch unavailable")
+                remote_head = remote.split()[0]
+                rc, unpushed, err = await git_ops.run_git(
+                    ["log", "--oneline", f"{remote_head}..HEAD"], cwd=wt_path
+                )
+                if rc != 0:
+                    raise RuntimeError(err or "could not verify published commits")
+                if unpushed.strip():
+                    logger.info("Task %s: retaining unpublished worktree %s", task_id, wt_path)
+                    return False
+            for repo_path, wt_path, _ts in entries:
+                # Never force removal: Git must refuse dirty or locked worktrees.
+                rc, _, err = await git_ops.run_git(["worktree", "remove", wt_path], cwd=repo_path)
+                if rc != 0:
+                    raise RuntimeError(err or f"could not remove {wt_path}")
+            self._registry.pop(task_id, None)
+            # Task-level artifacts may still occupy the parent directory.
+            try:
+                os.rmdir(self.task_dir(task_id))
+            except OSError:
+                pass
+            logger.info("Task %s: removed clean, published worktrees", task_id)
+            return True
+        except Exception:
+            logger.warning(
+                "Task %s: worktree cleanup failed; retaining recovery state", task_id, exc_info=True
+            )
+            return False
+
     async def release(self, task_id: str) -> None:
         """Remove all worktrees for a task immediately and forget them."""
         entries = self._registry.pop(task_id, None)
@@ -387,7 +441,7 @@ class TaskWorktree:
                 repos_for_task = [
                     (repo_path, wt)
                     for repo_full, repo_path in known_repos
-                    if os.path.isdir(wt := os.path.join(full, _repo_name(repo_full)))
+                    if os.path.isdir(wt := self.wt_path(entry, repo_full))
                 ]
                 if repos_for_task:
                     self._registry[entry] = [(rp, wt, ts) for rp, wt in repos_for_task]
@@ -395,7 +449,7 @@ class TaskWorktree:
 
             logger.info("Startup sweep: removing stale task dir %s (age=%.0fs)", full, age)
             for repo_full, repo_path in known_repos:
-                wt = os.path.join(full, _repo_name(repo_full))
+                wt = self.wt_path(entry, repo_full)
                 if os.path.isdir(wt):
                     try:
                         await git_ops.remove_worktree(repo_path, wt)

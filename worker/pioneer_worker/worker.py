@@ -1428,17 +1428,28 @@ class Worker:
                     await self.task_queue.put(task)
 
                 elif mtype == "task-finalize":
-                    # The worker no longer parks waiting for finalize; foreman
-                    # drives lifecycle now. Retain worktrees for recovery until
-                    # the TTL sweeper runs; they may contain unpublished work.
                     if msg.get("workerId") != self.cfg.worker_id:
                         continue
                     task_id = msg.get("taskId")
                     if not task_id:
                         continue
+                    removed = False
+                    # A webhook can finalize a task while its runner still owns the checkout.
+                    active = any(s.current_task_id == task_id for s in self.agents)
+                    if msg.get("outcome") == "done" and not active and self.task_queue.empty():
+                        try:
+                            token = await self._task_github_token(task_id)
+                            removed = await self.worktrees.finalize(
+                                task_id, branch=msg.get("branch") or "", token=token
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Task %s: finalize cleanup failed", task_id, exc_info=True
+                            )
+                    action = "removed" if removed else "retained"
                     with contextlib.suppress(Exception):
-                        await self._emit(f"Finalize signal for {task_id} — worktree retained")
-                    logger.info("Finalize signal for task %s — worktree retained", task_id)
+                        await self._emit(f"Finalize signal for {task_id} — worktree {action}")
+                    logger.info("Finalize signal for task %s — worktree %s", task_id, action)
                     self._clear_cancelled(task_id)
 
                 elif mtype == "task-cancel":
