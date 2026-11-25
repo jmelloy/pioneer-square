@@ -70,13 +70,14 @@ describe('IssueForemanPane', () => {
     expect(post).toHaveBeenCalledWith('g1', 9, '[o/r#15] status?')
   })
 
-  it('start conversation sends a top-level WS chat tagged with the issue', async () => {
+  it('new conversation sends a top-level WS chat tagged with the issue', async () => {
     vi.spyOn(convs, 'searchConversations').mockResolvedValue([])
     const sendWs = vi.spyOn(guild, 'sendMessage').mockReturnValue(true)
     const w = render()
     await flushPromises()
 
-    await w.findAll('.ifp-mode')[0]!.trigger('click')
+    expect((w.find('textarea').element as HTMLTextAreaElement).value).toBe('Ask Foreman')
+    expect(w.find('.ifp-send').text()).toBe('Ask Foreman')
     await w.find('textarea').setValue('kick off')
     await w.find('form').trigger('submit')
     expect(sendWs).toHaveBeenCalledWith({
