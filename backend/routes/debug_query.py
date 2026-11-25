@@ -1,8 +1,7 @@
 """Read-only raw-SQL debug endpoint, gated by the ``DEBUG_TOKEN`` env var.
 
-Lets an operator run an ad-hoc read-only SELECT against an allow-listed set
-of operational tables, for deep debugging without shelling into the
-database directly.
+Lets an operator run an ad-hoc read-only SELECT against any database table,
+for deep debugging without shelling into the database directly.
 
 Only mounted when ``DEBUG_TOKEN`` is set (see the conditional
 ``app.include_router`` in ``main.py``) — if the env var is absent, this
@@ -11,7 +10,8 @@ which checks the ``Authorization: Bearer`` or ``X-Debug-Token`` header
 against that same env var.
 
 Not guild-scoped: the debug token is an operator-wide credential, so callers
-may query across guilds.
+may query across guilds and read all tables, including credential-bearing tables.
+Treat possession of the debug token as full database read access.
 
 Defense in depth (there is no dedicated read-only DB role, so these are the
 whole safety story):
@@ -21,8 +21,6 @@ whole safety story):
     DML or creative casing the way a keyword blocklist can.
   * Single ``SELECT`` statement, no comments, no stacked statements, wrapped in
     ``SELECT * FROM (<q>) LIMIT n`` — keeps the input to one bounded read.
-  * ``_ALLOWED_TABLES`` — the only thing keeping credential-bearing tables
-    (github_tokens, user_sessions, …) out of reach.
   * ``_FORBIDDEN_FUNCTIONS`` — the read-only transaction does NOT stop pure-read
     disclosure functions (pg_read_file, pg_ls_dir, dblink, lo_get), so those
     stay explicitly blocked.
@@ -50,29 +48,6 @@ _MAX_LIMIT = 500
 # sessions.
 _STATEMENT_TIMEOUT_MS = 30_000
 
-# Tables safe to expose to a raw SELECT: operational/state tables only — no
-# credential-bearing tables (github_tokens, user_sessions, guild_keys,
-# discord_pending_connects, discord_account_links, push_tokens).
-_ALLOWED_TABLES = frozenset(
-    {
-        "tasks",
-        "task_logs",
-        "task_events",
-        "workers",
-        "agents",
-        "github_events",
-        "llm_usage",
-        "foreman_turns",
-        "conversations",
-        "conversation_tasks",
-        "messages",
-        "github_issues",
-        "github_pull_requests",
-        "discord_thread_bindings",
-        "discord_channel_guilds",
-    }
-)
-
 # Pure-read functions that would leak the server's filesystem or open network
 # connections. The READ ONLY transaction can't stop these (they don't write),
 # so they stay explicitly blocked. Writes and write-side functions need no entry
@@ -82,7 +57,6 @@ _FORBIDDEN_FUNCTIONS = re.compile(
     r"LO_IMPORT|LO_EXPORT|LO_GET|LO_PUT|DBLINK)\b",
     re.IGNORECASE,
 )
-_TABLE_REF_RE = re.compile(r"\b(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*)", re.IGNORECASE)
 _SELECT_RE = re.compile(r"^\s*SELECT\b", re.IGNORECASE)
 
 
@@ -93,10 +67,9 @@ class DebugRawQueryRequest(BaseModel):
 def _validate_readonly_query(sql: str) -> str:
     """Return the validated, semicolon-stripped query, or raise HTTPException(400).
 
-    Requires a single ``SELECT ...`` statement, no comments, no filesystem/network
-    disclosure functions, and no reference to any table outside ``_ALLOWED_TABLES``
-    anywhere in the statement (including in subqueries). Writes are not checked
-    here — the ``SET TRANSACTION READ ONLY`` in the handler rejects them at the DB.
+    Requires a single ``SELECT ...`` statement, no comments, and no filesystem/network
+    disclosure functions. All tables are readable. Writes are not checked here — the
+    ``SET TRANSACTION READ ONLY`` in the handler rejects them at the DB.
     Colons are allowed — they're needed for ``::type`` casts and ISO timestamp
     literals — but a bare ``:name`` token that ``text()`` mistakes for a bind
     parameter will surface as a clear 400 from the execute call, not a silent misfire.
@@ -114,12 +87,6 @@ def _validate_readonly_query(sql: str) -> str:
         raise HTTPException(status_code=400, detail="sql must be a SELECT statement")
     if _FORBIDDEN_FUNCTIONS.search(body):
         raise HTTPException(status_code=400, detail="Filesystem/network functions are not allowed")
-    tables = {m.group(1).lower() for m in _TABLE_REF_RE.finditer(body)}
-    if tables - _ALLOWED_TABLES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Only these tables may be queried: {', '.join(sorted(_ALLOWED_TABLES))}",
-        )
     return body
 
 
@@ -156,7 +123,7 @@ async def debug_raw_query(
     data: DebugRawQueryRequest,
     db: AsyncSession = Depends(get_db_dep),
 ):
-    """Raw read-only SQL lookup across the allow-listed operational tables.
+    """Raw read-only SQL lookup across all database tables.
 
     Not guild-scoped — the debug token is an operator-wide credential.
     """

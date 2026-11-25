@@ -16,8 +16,11 @@ debug token alone is never enough (401). If `DEBUG_TOKEN` is unset, debug tools 
 
 ## Debug tools
 
-- `debug_query {sql}` — read-only SELECT, same guards as `/debug/query` (single statement,
-  allow-listed operational tables, `SET TRANSACTION READ ONLY`, 30s timeout, 500-row cap).
+- `debug_query {sql}` — read-only SELECT against any database table, with the same guards as
+  `/debug/query` (single statement, `SET TRANSACTION READ ONLY`, blocked filesystem/network
+  functions, 30s timeout, 500-row cap). There is no table allowlist: debug access includes
+  credential-bearing tables such as `github_tokens`, `user_sessions`, and `guild_keys`.
+  Treat the debug token as full database read access.
 - `cloudflare_logs {script?, search?, minutes?, limit?}` — queries the Cloudflare Workers
   observability API. Needs `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`. The request shape
   has not been exercised against the live API; verify before relying on it.

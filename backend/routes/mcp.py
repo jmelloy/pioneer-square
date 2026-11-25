@@ -81,7 +81,7 @@ NORMAL_TOOLS: list[dict[str, Any]] = [
 DEBUG_TOOLS: list[dict[str, Any]] = [
     {
         "name": "debug_query",
-        "description": "Run a read-only SELECT against allow-listed operational tables.",
+        "description": "Run a read-only SELECT against any database table, including credentials.",
         "inputSchema": {
             "type": "object",
             "properties": {"sql": {"type": "string"}},
