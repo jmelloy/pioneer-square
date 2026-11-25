@@ -66,6 +66,21 @@ describe('ProjectsView', () => {
     expect(useGitHubStore().fetchIssues).toHaveBeenCalledWith(['team/factory', 'team/engine'])
   })
 
+  it('counts only open issues in project badges regardless of list filters', async () => {
+    const wrapper = render()
+    const counts = () => wrapper.findAll('.project-list .count').map((badge) => badge.text())
+    expect(counts()).toEqual(['2', '2', '0'])
+    await wrapper.findAll('.issue-status-filters button')[0]!.trigger('click')
+    expect(wrapper.findAll('tbody tr')).toHaveLength(3)
+    expect(counts()).toEqual(['2', '2', '0'])
+    await wrapper.findAll('.project-list .project-choice')[2]!.trigger('click')
+    await wrapper.findAll('.issue-status-filters button')[2]!.trigger('click')
+    expect(wrapper.findAll('tbody tr')).toHaveLength(1)
+    expect(counts()).toEqual(['2', '2', '0'])
+    await wrapper.find('[aria-label="Search issues"]').setValue('missing')
+    expect(counts()).toEqual(['2', '2', '0'])
+  })
+
   it('filters by project, state, and search and clears stale selection', async () => {
     const wrapper = render()
     await wrapper.findAll('.issue-status-filters button')[0]!.trigger('click')
@@ -275,7 +290,10 @@ describe('ProjectsView', () => {
       ]
       const fetchBoard = vi
         .spyOn(store, 'fetchProjectIssues')
-        .mockResolvedValue([{ ...issue(9, 'team/engine'), status: 'In Progress' }])
+        .mockResolvedValue([
+          { ...issue(9, 'team/engine'), status: 'In Progress' },
+          issue(10, 'team/engine', 'closed'),
+        ])
       const wrapper = render()
       expect(wrapper.find('a.project-choice').exists()).toBe(false) // v2 no longer links out
       const board = wrapper
@@ -283,6 +301,11 @@ describe('ProjectsView', () => {
         .find((b) => b.text().includes('Board'))!
       await board.trigger('click')
       await flushPromises()
+      expect(board.find('.count').text()).toBe('1')
+      await wrapper.findAll('.issue-status-filters button')[0]!.trigger('click')
+      expect(wrapper.findAll('tbody tr')).toHaveLength(2)
+      expect(board.find('.count').text()).toBe('1')
+      await wrapper.findAll('.issue-status-filters button')[1]!.trigger('click')
       expect(fetchBoard).toHaveBeenCalledWith('PVT_1', false)
       expect(router.currentRoute.value.query.board).toBe('PVT_1')
       expect(wrapper.findAll('tbody tr').map((r) => r.find('td').text())).toEqual(['9'])

@@ -63,7 +63,7 @@ describe('GuildProjectsSettings', () => {
       if (url.endsWith('/user')) return Response.json({ login: 'me' })
       if (url.endsWith('/graphql')) return Response.json({ data: {} })
       if (url.includes('/orgs/team/projects'))
-        return Response.json([{ id: 7, name: 'Roadmap', html_url: 'https://x/7' }])
+        return Response.json([{ id: 7, name: 'Roadmap', html_url: 'https://x/7', state: 'open' }])
       if (init?.method === 'PUT')
         return Response.json({ browse_projects: JSON.parse(init.body as string).projects })
       return Response.json([])
