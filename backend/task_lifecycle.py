@@ -170,7 +170,10 @@ async def finalize_task(
 
     await db.commit()
 
-    await broadcast_msg(guild_id, TaskFinalizeMsg(workerId=worker_id, taskId=task_id))
+    await broadcast_msg(
+        guild_id,
+        TaskFinalizeMsg(workerId=worker_id, taskId=task_id, outcome=outcome, branch=task.branch),
+    )
     await broadcast_msg(
         guild_id,
         TaskUpdateMsg(

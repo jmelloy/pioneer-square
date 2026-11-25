@@ -197,6 +197,25 @@ async def test_worker_update_applies_archival_policy(
 
 
 class TestFinalizeTask:
+    @pytest.mark.parametrize("outcome", ["done", "failed"])
+    async def test_broadcast_includes_cleanup_outcome_and_branch(
+        self, db_url, monkeypatch, outcome
+    ):
+        from unittest.mock import AsyncMock
+
+        import task_lifecycle
+
+        _seed(db_url, "g-tl-message", "t-message", branch="feature/task")
+        broadcast = AsyncMock()
+        monkeypatch.setattr(task_lifecycle, "broadcast_msg", broadcast)
+        await _finalize(db_url, "g-tl-message", "t-message", outcome=outcome)
+        message = broadcast.call_args_list[0].args[1]
+        assert message.type == "task-finalize"
+        assert message.workerId == "w-1"
+        assert message.taskId == "t-message"
+        assert message.outcome == outcome
+        assert message.branch == "feature/task"
+
     async def test_missing_task_is_not_found(self, db_url):
         insert_guild(db_url, "g-tl-missing")
         res = await _finalize(db_url, "g-tl-missing", "t-nope")

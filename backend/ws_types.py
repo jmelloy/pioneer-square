@@ -258,6 +258,8 @@ class TaskFinalizeMsg(_WS):
     type: Literal["task-finalize"] = "task-finalize"
     workerId: str | None = None
     taskId: str
+    outcome: str | None = None
+    branch: str | None = None
 
 
 class TaskCancelMsg(_WS):

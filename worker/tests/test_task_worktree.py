@@ -712,4 +712,159 @@ async def test_reclaim_startup_on_missing_base_dir_is_a_noop(tmp_path):
 
 def test_wt_path_excludes_worker_id(tmp_path):
     wt = _tw(tmp_path)
-    assert wt.wt_path("t-abc", "o/repo") == str(tmp_path / "work" / "t-abc" / "repo")
+    assert wt.wt_path("t-abc", "o/repo") == str(tmp_path / "work" / "t-abc" / "repo-t-abc")
+
+
+async def test_legacy_worktree_is_reused_and_reclaimed(tmp_path, repo_path):
+    tw = _tw(tmp_path)
+    legacy = Path(tw.task_dir("t-legacy")) / "widgets"
+    legacy.parent.mkdir(parents=True)
+    _git(["worktree", "add", "-b", "legacy", str(legacy)], cwd=str(repo_path))
+    result = await tw.acquire(
+        "t-legacy", [("acme/widgets", str(repo_path))], mode="fresh", branch="legacy"
+    )
+    assert result.primary == str(legacy)
+    fresh = _tw(tmp_path)
+    await fresh.reclaim_startup([("acme/widgets", str(repo_path))])
+    assert "t-legacy" in fresh
+    assert fresh.wt_path("t-legacy", "acme/widgets") == str(legacy)
+
+
+@pytest.mark.parametrize("detached", [False, True])
+async def test_finalize_removes_published_worktree(tmp_path, repo_path, detached):
+    tw = _tw(tmp_path)
+    result = await tw.acquire(
+        "t-done", [("acme/widgets", str(repo_path))], mode="fresh", branch="feature/done"
+    )
+    wt = _primary(result)
+    (Path(wt) / "done.txt").write_text("finished")
+    _git(["add", "."], cwd=wt)
+    _git(["commit", "-m", "finished"], cwd=wt)
+    # The real publisher pushes HEAD without configuring an upstream.
+    _git(["push", "origin", "HEAD:refs/heads/feature/done"], cwd=wt)
+    if detached:
+        _git(["checkout", "--detach"], cwd=wt)
+    assert await tw.finalize("t-done", branch="feature/done")
+    assert not Path(wt).exists()
+    assert not Path(tw.task_dir("t-done")).exists()
+    assert "t-done" not in tw
+
+
+@pytest.mark.parametrize(
+    "change", ["untracked", "unstaged", "staged", "unpushed", "missing", "rewound"]
+)
+async def test_finalize_retains_unsafe_worktree(tmp_path, repo_path, origin, change):
+    tw = _tw(tmp_path)
+    result = await tw.acquire(
+        "t-keep", [("acme/widgets", str(repo_path))], mode="fresh", branch="feature/keep"
+    )
+    wt = _primary(result)
+    if change != "missing":
+        _git(["push", "origin", "HEAD:refs/heads/feature/keep"], cwd=wt)
+    if change == "untracked":
+        (Path(wt) / "new.txt").write_text("debug")
+    elif change in {"unstaged", "staged", "unpushed", "rewound"}:
+        (Path(wt) / "README.md").write_text("debug")
+        if change != "unstaged":
+            _git(["add", "."], cwd=wt)
+        if change in {"unpushed", "rewound"}:
+            _git(["commit", "-m", "debug"], cwd=wt)
+        if change == "rewound":
+            _git(["push", "origin", "HEAD:refs/heads/feature/keep"], cwd=wt)
+            # Local tracking refs still say published, but the remote no longer does.
+            _git(["branch", "-f", "feature/keep", "main"], cwd=str(origin))
+    assert not await tw.finalize("t-keep", branch="feature/keep")
+    assert Path(wt).exists()
+    assert "t-keep" in tw
+
+
+async def test_finalize_checks_all_repos_before_removing_any(tmp_path, repo_path):
+    tw = _tw(tmp_path)
+    result = await tw.acquire(
+        "t-multi",
+        [("acme/widgets", str(repo_path)), ("acme/support", str(repo_path))],
+        mode="fresh",
+        branch="feature/multi",
+    )
+    assert len(result.entries) == 2
+    _git(["push", "origin", "HEAD:refs/heads/feature/multi"], cwd=_primary(result))
+    (Path(result.entries[1].wt_path) / "debug.txt").write_text("keep me")
+    assert not await tw.finalize("t-multi", branch="feature/multi")
+    assert all(Path(entry.wt_path).exists() for entry in result.entries)
+    assert "t-multi" in tw
+
+
+@pytest.mark.parametrize("command", ["status", "ls-remote", "log", "worktree"])
+@pytest.mark.parametrize("raises", [False, True])
+async def test_finalize_preserves_worktree_on_git_error(
+    tmp_path, repo_path, monkeypatch, command, raises
+):
+    from pioneer_worker import git_ops
+
+    tw = _tw(tmp_path)
+    result = await tw.acquire(
+        "t-error", [("acme/widgets", str(repo_path))], mode="fresh", branch="feature/error"
+    )
+    wt = _primary(result)
+    _git(["push", "origin", "HEAD:refs/heads/feature/error"], cwd=wt)
+    real_run_git = git_ops.run_git
+
+    async def failing_git(args, **kwargs):
+        if args[0] == command:
+            if raises:
+                raise OSError("git unavailable")
+            return 1, "", "git failed"
+        return await real_run_git(args, **kwargs)
+
+    monkeypatch.setattr(git_ops, "run_git", failing_git)
+    assert not await tw.finalize("t-error", branch="feature/error")
+    assert Path(wt).exists()
+    assert "t-error" in tw
+
+
+@pytest.mark.parametrize(
+    ("outcome", "busy", "removed"),
+    [("done", False, True), ("failed", False, False), (None, False, False), ("done", True, False)],
+)
+async def test_worker_finalize_cleans_only_idle_success(
+    tmp_path, repo_path, outcome, busy, removed
+):
+    from unittest.mock import AsyncMock
+
+    from pioneer_worker.config import Config
+    from pioneer_worker.worker import Worker
+
+    worker = Worker(
+        Config(
+            backend_url="ws://localhost:8000",
+            guild_id="test-guild",
+            worker_id="w-test",
+            work_dir=str(tmp_path / "worker"),
+            repos=["acme/widgets"],
+            max_agents=1,
+        )
+    )
+    worker._send = AsyncMock()
+    worker._task_github_token = AsyncMock(return_value=None)
+    result = await worker.worktrees.acquire(
+        "t-final", [("acme/widgets", str(repo_path))], mode="fresh", branch="feature/final"
+    )
+    wt = _primary(result)
+    _git(["push", "origin", "HEAD:refs/heads/feature/final"], cwd=wt)
+    if busy:
+        worker.agents[0].current_task_id = "t-final"
+
+    async def messages():
+        yield {
+            "type": "task-finalize",
+            "workerId": "w-test",
+            "taskId": "t-final",
+            "outcome": outcome,
+            "branch": "feature/final",
+        }
+
+    worker._joined = True
+    worker.ws.messages = messages
+    await worker._listen()
+    assert Path(wt).exists() is not removed
+    assert ("t-final" in worker.worktrees) is not removed
