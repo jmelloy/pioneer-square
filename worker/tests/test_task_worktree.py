@@ -778,6 +778,22 @@ async def test_finalize_retains_unsafe_worktree(tmp_path, repo_path, origin, cha
     assert "t-keep" in tw
 
 
+async def test_finalize_checks_all_repos_before_removing_any(tmp_path, repo_path):
+    tw = _tw(tmp_path)
+    result = await tw.acquire(
+        "t-multi",
+        [("acme/widgets", str(repo_path)), ("acme/support", str(repo_path))],
+        mode="fresh",
+        branch="feature/multi",
+    )
+    assert len(result.entries) == 2
+    _git(["push", "origin", "HEAD:refs/heads/feature/multi"], cwd=_primary(result))
+    (Path(result.entries[1].wt_path) / "debug.txt").write_text("keep me")
+    assert not await tw.finalize("t-multi", branch="feature/multi")
+    assert all(Path(entry.wt_path).exists() for entry in result.entries)
+    assert "t-multi" in tw
+
+
 @pytest.mark.parametrize("command", ["status", "ls-remote", "log", "worktree"])
 @pytest.mark.parametrize("raises", [False, True])
 async def test_finalize_preserves_worktree_on_git_error(
