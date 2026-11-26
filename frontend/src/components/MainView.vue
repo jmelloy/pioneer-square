@@ -228,7 +228,7 @@ function onIssueTabClick(event: MouseEvent, key: string) {
   border-right: 1px solid var(--color-bg-tertiary);
   color: var(--color-text-dim);
   cursor: pointer;
-  font-family: var(--font-pixel);
+  font-family: var(--font-mono);
   font-size: 12px;
   white-space: nowrap;
   transition: all 0.15s;
@@ -251,7 +251,7 @@ function onIssueTabClick(event: MouseEvent, key: string) {
   font-size: 14px;
 }
 .tab-label {
-  font: 600 var(--text-small) / var(--leading-heading) var(--font-pixel);
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
 }
 
 .state-dot {
