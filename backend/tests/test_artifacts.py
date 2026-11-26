@@ -10,7 +10,16 @@ import pytest
 sys.path.insert(0, os.path.dirname(__file__))
 
 import artifact_service
-from helpers import insert_conversation, insert_guild, insert_member, insert_task, make_auth_token
+from helpers import (
+    _sync_session,
+    insert_conversation,
+    insert_guild,
+    insert_member,
+    insert_task,
+    insert_worker,
+    make_auth_token,
+)
+from models import Worker
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 32
 
@@ -204,6 +213,57 @@ def test_task_upload_persists_and_broadcasts_link(client, monkeypatch):
     )
     assert rejected.status_code == 404
     assert len(broadcasts) == 1
+
+
+@pytest.mark.parametrize("with_task", [False, True])
+def test_worker_artifact_api_returns_public_url(client, monkeypatch, with_task):
+    c, db = client
+    guild_id = f"art-worker-{with_task}"
+    worker_id = f"w-{guild_id}"
+    artifact_id = f"report-{guild_id}"
+    task_id = f"t-{guild_id}" if with_task else None
+    insert_guild(db, guild_id)
+    insert_worker(db, guild_id, worker_id)
+    with _sync_session(db) as session:
+        worker = session.get(Worker, worker_id)
+        worker.auth_token = f"token-{worker_id}"
+        session.commit()
+    if task_id:
+        insert_task(db, guild_id, task_id)
+    headers = {"Authorization": f"Bearer token-{worker_id}"}
+    monkeypatch.setenv("FRONTEND_URL", "https://pioneer.example/")
+
+    async def fake_store(data, ctype, guild, task):
+        assert guild == guild_id and task == task_id
+        return artifact_service.StoredObject(
+            artifact_id, f"{artifact_id}.txt", "legacy-storage-url", ctype, len(data), "text"
+        )
+
+    monkeypatch.setattr(artifact_service, "store", fake_store)
+    # Same multipart request used by pioneer_worker.artifact_upload.ArtifactSync.
+    uploaded = c.post(
+        f"/guilds/{guild_id}/artifacts",
+        headers=headers,
+        files={"file": ("report.txt", b"worker report", "text/plain")},
+        data={"task_id": task_id} if task_id else {},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    public_url = f"https://pioneer.example/api/artifacts/{artifact_id}/public"
+    assert uploaded.json()["public_url"] == public_url
+    assert uploaded.json()["uploadedByWorkerId"] == worker_id
+    assert uploaded.json()["taskId"] == task_id
+    metadata = c.get(f"/guilds/{guild_id}/artifacts/{artifact_id}", headers=headers)
+    assert metadata.status_code == 200, metadata.text
+    assert metadata.json()["public_url"] == public_url
+
+    class Body:
+        def iter_chunks(self, size):
+            yield b"worker report"
+
+    monkeypatch.setattr(artifact_service, "open_object", lambda key: Body())
+    downloaded = c.get(public_url)
+    assert downloaded.status_code == 200, downloaded.text
+    assert downloaded.content == b"worker report"
 
 
 def test_markdown_reference_uses_artifact_scheme():
