@@ -80,8 +80,10 @@ def test_html_upload_is_typed_and_sandboxed(client, monkeypatch):
     assert pub.headers["content-security-policy"] == "sandbox allow-scripts"
 
 
-@pytest.mark.parametrize("public_origin", [None, "https://pioneer.example/"])
-def test_upload_route(client, monkeypatch, public_origin):
+@pytest.mark.parametrize(
+    "public_origin,artifact_id", [(None, "id-1"), ("https://pioneer.example/", "id-2")]
+)
+def test_upload_route(client, monkeypatch, public_origin, artifact_id):
     if public_origin:
         monkeypatch.setenv("FRONTEND_URL", public_origin)
     else:
@@ -95,18 +97,18 @@ def test_upload_route(client, monkeypatch, public_origin):
     async def fake_store(data, ctype, guild, task_id):
         c_ = artifact_service.validate(data, ctype, 1000)
         return artifact_service.StoredObject(
-            "id-1", f"a/{guild}/id-1.png", "https://x/y.png", c_, len(data)
+            artifact_id, f"a/{guild}/{artifact_id}.png", "https://x/y.png", c_, len(data)
         )
 
     monkeypatch.setattr(artifact_service, "store", fake_store)
     r = c.post("/guilds/art1/artifacts", files={"file": ("s.png", PNG, "image/png")}, headers=h)
     assert r.status_code == 200, r.text
     # Payload always carries the permanent proxy URL, never the S3 one.
-    assert r.json()["url"] == "/api/artifacts/id-1/public"
+    assert r.json()["url"] == f"/api/artifacts/{artifact_id}/public"
     base = (public_origin or str(c.base_url)).rstrip("/")
-    public_url = base + "/api/artifacts/id-1/public"
+    public_url = base + f"/api/artifacts/{artifact_id}/public"
     assert r.json()["public_url"] == public_url
-    metadata = c.get("/guilds/art1/artifacts/id-1", headers=h)
+    metadata = c.get(f"/guilds/art1/artifacts/{artifact_id}", headers=h)
     assert metadata.status_code == 200, metadata.text
     assert metadata.json()["public_url"] == public_url
 
@@ -118,11 +120,12 @@ def test_upload_route(client, monkeypatch, public_origin):
     monkeypatch.setattr(artifact_service, "open_object", lambda key: seen.append(key) or Body())
     pub = c.get(public_url)  # no auth: the UUID is the capability
     assert pub.status_code == 200, pub.text
-    assert pub.content == PNG and seen == ["a/art1/id-1.png"]
+    assert pub.content == PNG and seen == [f"a/art1/{artifact_id}.png"]
     assert pub.headers["content-type"] == "image/png"
     assert "immutable" in pub.headers["cache-control"]
     assert "content-security-policy" not in pub.headers
-    assert r.json()["type"] == "image" and r.json()["markdown"] == "[s.png](artifact://id-1)"
+    assert r.json()["type"] == "image"
+    assert r.json()["markdown"] == f"[s.png](artifact://{artifact_id})"
     assert c.get("/api/artifacts/nope/public").status_code == 404
     bad = c.post("/guilds/art1/artifacts", files={"file": ("s.png", b"zz", "image/png")}, headers=h)
     assert bad.status_code == 415
