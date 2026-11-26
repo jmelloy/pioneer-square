@@ -11,10 +11,12 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   }
 })
 
-// `[text](artifact://<id>)`, `![text](artifact://<id>)`, or a bare `artifact://<id>`; non-image
-// artifacts carry `?type=<html|text|pdf>` (see backend `routes/artifacts.artifact_uri`).
-const ARTIFACT_RE =
-  /!?\[([^\]\n]*)\]\(artifact:\/\/([A-Za-z0-9-]+)\/?(?:\?type=(\w+))?\)|(^|\s)artifact:\/\/([A-Za-z0-9-]+)\/?(?:\?type=(\w+))?(?=$|[\s).,;!?])/g
+// Accept public URLs and legacy artifact:// refs so stored messages still render.
+const ARTIFACT_URL = String.raw`(?:artifact:\/\/[A-Za-z0-9-]+\/?|(?:https?:\/\/[^/\s()]+)?\/api\/artifacts\/[A-Za-z0-9-]+\/public)`
+const ARTIFACT_RE = new RegExp(
+  String.raw`!?\[([^\]\n]*)\]\((${ARTIFACT_URL})(?:\?type=(\w+))?\)|(^|\s)(${ARTIFACT_URL})(?:\?type=(\w+))?(?=$|[\s).,;!?])`,
+  'g',
+)
 
 /** Permanent public artifact URL; mirrors backend `artifact_service.public_url()`. */
 export function artifactUrl(id: string): string {
@@ -29,13 +31,16 @@ function inlineArtifacts(text: string): string {
     (
       _m,
       label?: string,
-      id?: string,
+      ref?: string,
       type?: string,
       pre?: string,
-      bareId?: string,
+      bareRef?: string,
       bareType?: string,
     ) => {
-      const url = artifactUrl((id ?? bareId)!)
+      const reference = (ref ?? bareRef)!
+      const url = reference.startsWith('artifact://')
+        ? artifactUrl(reference.slice('artifact://'.length).replace(/\/$/, ''))
+        : reference
       const kind = type ?? bareType ?? 'image'
       const name = (label ?? '').trim()
       if (kind === 'image') return `${pre ?? ''}[![${name || 'image'}](${url})](${url})`

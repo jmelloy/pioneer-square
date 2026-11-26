@@ -7,7 +7,6 @@ bytes in S3 (see ``artifact_service``) and records an ``artifacts`` row.
 from __future__ import annotations
 
 import asyncio
-import os
 import uuid
 from datetime import UTC, datetime
 
@@ -34,21 +33,16 @@ def _link_text(name: str | None) -> str:
     return base or "artifact"
 
 
-def artifact_uri(a: Artifact) -> str:
-    # Non-image types carry ``?type=`` so renderers know how to display without a lookup.
-    return f"artifact://{a.id}" + ("" if a.type == "image" else f"?type={a.type}")
-
-
 def _payload(a: Artifact, request: Request, name: str | None = None) -> dict:
-    uri = artifact_uri(a)
-    # Workers may reach us over an internal hostname; prefer the configured public origin.
-    base = (os.environ.get("FRONTEND_URL") or str(request.base_url)).rstrip("/")
+    url = artifact_service.absolute_public_url(a.id, str(request.base_url))
+    # Non-image types carry a rendering hint; the public endpoint ignores it.
+    uri = url + ("" if a.type == "image" else f"?type={a.type}")
     return {
         "id": a.id,
         "key": a.key,
         # Stored url may be a legacy presigned link; always hand out the permanent one.
         "url": artifact_service.public_url(a.id),
-        "public_url": base + artifact_service.public_url(a.id),
+        "public_url": url,
         "contentType": a.content_type,
         "type": a.type,
         "sizeBytes": a.size_bytes,
@@ -56,7 +50,7 @@ def _payload(a: Artifact, request: Request, name: str | None = None) -> dict:
         "uploadedByWorkerId": a.uploaded_by_worker_id,
         "createdAt": a.created_at.isoformat(),
         "artifactUri": uri,
-        # Reference in message content; the frontend resolves artifact:// links.
+        # Keep artifactUri for API compatibility, but use a publicly resolvable URL.
         "markdown": f"[{_link_text(name)}]({uri})",
     }
 

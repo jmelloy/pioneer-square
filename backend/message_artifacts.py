@@ -57,7 +57,7 @@ async def externalize_images(
                     updated_at=datetime.now(UTC),
                 )
             )
-            link = f"[image](artifact://{obj.id})"
+            link = f"[image]({artifact_service.absolute_public_url(obj.id)})"
         except (artifact_service.ArtifactError, ValueError, binascii.Error):
             logger.warning("Inline image could not be stored for guild %s", guild_id)
             complete = False

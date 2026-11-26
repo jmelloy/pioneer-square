@@ -1,5 +1,14 @@
-import { describe, it, expect } from 'vitest'
-import { validateFile, filesFromTransfer, contentType, MAX_UPLOAD_BYTES } from '../artifactUpload'
+import { afterEach, describe, it, expect, vi } from 'vitest'
+import {
+  validateFile,
+  filesFromTransfer,
+  contentType,
+  MAX_UPLOAD_BYTES,
+  uploadArtifact,
+} from '../artifactUpload'
+
+vi.mock('../../stores/auth', () => ({ useAuthStore: () => ({ authHeaders: () => ({}) }) }))
+afterEach(() => vi.restoreAllMocks())
 
 const file = (name: string, type: string, size: number) => {
   const f = new File(['x'], name, { type })
@@ -26,6 +35,39 @@ describe('validateFile', () => {
   it('rejects files over 10MB but allows exactly 10MB', () => {
     expect(validateFile(file('a.png', 'image/png', MAX_UPLOAD_BYTES + 1))).toMatch(/larger/)
     expect(validateFile(file('a.png', 'image/png', MAX_UPLOAD_BYTES))).toBeNull()
+  })
+})
+
+describe('uploadArtifact', () => {
+  it.each([
+    ['shot.png', 'image/png', ''],
+    ['report.html', 'text/html', '?type=html'],
+    ['report.pdf', 'application/pdf', '?type=pdf'],
+    ['report.md', '', '?type=text'],
+  ])('falls back to public markdown for %s', async (name, type, hint) => {
+    const url = 'https://public.example/api/artifacts/id-1/public'
+    vi.spyOn(XMLHttpRequest.prototype, 'send').mockImplementation(function () {
+      Object.defineProperties(this, {
+        status: { value: 200 },
+        responseText: { value: JSON.stringify({ id: 'id-1', public_url: url }) },
+      })
+      this.dispatchEvent(new Event('load'))
+    })
+    const result = await uploadArtifact('guild', file(name, type, 1), vi.fn())
+    expect(result.url).toBe(url)
+    expect(result.markdown).toBe(`[${name}](${url}${hint})`)
+  })
+
+  it('uses the browser origin when no public URL is returned', async () => {
+    vi.spyOn(XMLHttpRequest.prototype, 'send').mockImplementation(function () {
+      Object.defineProperties(this, {
+        status: { value: 200 },
+        responseText: { value: JSON.stringify({ id: 'id-1' }) },
+      })
+      this.dispatchEvent(new Event('load'))
+    })
+    const result = await uploadArtifact('guild', file('shot.png', 'image/png', 1), vi.fn())
+    expect(result.markdown).toBe(`[shot.png](${window.location.origin}/api/artifacts/id-1/public)`)
   })
 })
 

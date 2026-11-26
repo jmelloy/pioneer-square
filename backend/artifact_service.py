@@ -141,6 +141,12 @@ def public_url(artifact_id: str) -> str:
     return f"/api/artifacts/{artifact_id}/public"
 
 
+def absolute_public_url(artifact_id: str, fallback_origin: str = "http://localhost:5173") -> str:
+    """Public origin for links shared outside the app, including worker-generated messages."""
+    base = (os.environ.get("FRONTEND_URL") or fallback_origin).rstrip("/")
+    return base + public_url(artifact_id)
+
+
 def open_object(key: str):
     """Return the S3 ``StreamingBody`` for ``key``; raise ``ArtifactError`` if unavailable."""
     cfg = load_config()

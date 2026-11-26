@@ -10,39 +10,45 @@ import { openLightbox } from '../../composables/useLightbox'
 const ID = '123e4567-e89b-12d3-a456-426614174000'
 const URL = `https://ps.example/api/artifacts/${ID}/public`
 
-describe('artifact:// refs', () => {
-  it('render as inline images with the public URL, incl. bare refs', () => {
-    const html = renderMarkdown(`[shot.png](artifact://${ID})\n\nalso artifact://${ID} here`)
-    expect(html).not.toContain('artifact://')
-    expect(html.match(new RegExp(`<img src="${URL}" alt="(shot.png|image)">`, 'g'))).toHaveLength(2)
-    expect(html).toContain(`href="${URL}"`)
-  })
-
-  it('open the lightbox on click', () => {
-    const el = document.createElement('div')
-    el.innerHTML = renderMarkdown(`[shot.png](artifact://${ID})`)
-    enhanceArtifactImages(el)
-    el.querySelector('a')!.click()
-    expect(openLightbox).toHaveBeenCalledWith({ url: URL, name: 'shot.png' })
-  })
-
-  it('render HTML artifacts as a sandboxed-preview link', () => {
-    const el = document.createElement('div')
-    el.innerHTML = renderMarkdown(`[report.html](artifact://${ID}?type=html)`)
-    expect(el.querySelector('img')).toBeNull()
-    enhanceArtifactImages(el)
-    el.querySelector('a')!.click()
-    expect(openLightbox).toHaveBeenCalledWith({
-      url: `${URL}?type=html`,
-      name: 'report.html',
-      kind: 'html',
+describe.each([`artifact://${ID}`, URL, `https://other.example/api/artifacts/${ID}/public`])(
+  'artifact refs: %s',
+  (ref) => {
+    const expectedUrl = ref.startsWith('artifact://') ? URL : ref
+    it('render as inline images with the public URL, incl. bare refs', () => {
+      const html = renderMarkdown(`[shot.png](${ref})\n\nalso ${ref} here`)
+      expect(html).not.toContain('artifact://')
+      expect(
+        html.match(new RegExp(`<img src="${expectedUrl}" alt="(shot.png|image)">`, 'g')),
+      ).toHaveLength(2)
+      expect(html).toContain(`href="${expectedUrl}"`)
     })
-  })
 
-  it('render other types as plain links, incl. bare refs', () => {
-    const html = renderMarkdown(`see artifact://${ID}?type=pdf now`)
-    expect(html).toContain(`href="${URL}"`)
-    expect(html).toContain('📄 pdf')
-    expect(html).not.toContain('<img')
-  })
-})
+    it('open the lightbox on click', () => {
+      const el = document.createElement('div')
+      el.innerHTML = renderMarkdown(`[shot.png](${ref})`)
+      enhanceArtifactImages(el)
+      el.querySelector('a')!.click()
+      expect(openLightbox).toHaveBeenCalledWith({ url: expectedUrl, name: 'shot.png' })
+    })
+
+    it('render HTML artifacts as a sandboxed-preview link', () => {
+      const el = document.createElement('div')
+      el.innerHTML = renderMarkdown(`[report.html](${ref}?type=html)`)
+      expect(el.querySelector('img')).toBeNull()
+      enhanceArtifactImages(el)
+      el.querySelector('a')!.click()
+      expect(openLightbox).toHaveBeenCalledWith({
+        url: `${expectedUrl}?type=html`,
+        name: 'report.html',
+        kind: 'html',
+      })
+    })
+
+    it('render other types as plain links, incl. bare refs', () => {
+      const html = renderMarkdown(`see ${ref}?type=pdf now`)
+      expect(html).toContain(`href="${expectedUrl}"`)
+      expect(html).toContain('📄 pdf')
+      expect(html).not.toContain('<img')
+    })
+  },
+)
