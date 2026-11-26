@@ -58,6 +58,7 @@ def test_validate_accepts_documents():
 
 
 def test_html_upload_is_typed_and_sandboxed(client, monkeypatch):
+    monkeypatch.setenv("FRONTEND_URL", "https://pioneer.example/")
     c, db = client
     insert_guild(db, "art2")
     insert_member(db, "art2", "m-art2", "member")
@@ -75,7 +76,9 @@ def test_html_upload_is_typed_and_sandboxed(client, monkeypatch):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["type"] == "html"
-    assert body["markdown"] == "[r.html](artifact://id-h?type=html)"
+    assert (
+        body["markdown"] == "[r.html](https://pioneer.example/api/artifacts/id-h/public?type=html)"
+    )
     wrong = c.post("/guilds/art2/artifacts", files=files, data={"type": "image"}, headers=h)
     assert wrong.status_code == 415
 
@@ -134,7 +137,9 @@ def test_upload_route(client, monkeypatch, public_origin, artifact_id):
     assert "immutable" in pub.headers["cache-control"]
     assert "content-security-policy" not in pub.headers
     assert r.json()["type"] == "image"
-    assert r.json()["markdown"] == f"[s.png](artifact://{artifact_id})"
+    assert r.json()["markdown"] == f"[s.png]({public_url})"
+    assert r.json()["artifactUri"] == public_url
+    assert metadata.json()["artifactUri"] == public_url
     assert c.get("/api/artifacts/nope/public").status_code == 404
     bad = c.post("/guilds/art1/artifacts", files={"file": ("s.png", b"zz", "image/png")}, headers=h)
     assert bad.status_code == 415
@@ -190,7 +195,7 @@ def test_task_upload_persists_and_broadcasts_link(client, monkeypatch):
     log = c.get("/api/task/t-art-task/log", headers=h)
     assert log.status_code == 200, log.text
     assert [entry["line"] for entry in log.json()["logs"]] == [
-        "Artifact: [report.html](artifact://report-id?type=html)"
+        f"Artifact: [report.html]({public_url}?type=html)"
     ]
     assert len(broadcasts) == 1
     guild, message = broadcasts[0]

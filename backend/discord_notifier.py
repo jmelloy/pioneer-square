@@ -251,9 +251,7 @@ _ARTIFACT_REF = re.compile(
 
 
 def _artifact_url(artifact_id: str) -> str:
-    # ponytail: FRONTEND_URL is the public origin in prod (same-origin) and Vite proxies /api in dev.
-    base = os.environ.get("FRONTEND_URL", "http://localhost:5173").rstrip("/")
-    return f"{base}{artifact_service.public_url(artifact_id)}"
+    return artifact_service.absolute_public_url(artifact_id)
 
 
 def _ref_url(m: re.Match) -> str:

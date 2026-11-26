@@ -1,4 +1,5 @@
 import { API_BASE } from './api'
+import { artifactUrl } from './markdown'
 import { useAuthStore } from '../stores/auth'
 
 export interface UploadedArtifact {
@@ -89,10 +90,23 @@ export function uploadArtifact(
       }
       if (xhr.status >= 200 && xhr.status < 300 && body && typeof body.id === 'string') {
         onProgress(1)
+        const url = String(
+          body.public_url ?? new URL(artifactUrl(body.id), window.location.origin).href,
+        )
+        const type = contentType(file)
+        const kind = type?.startsWith('image/')
+          ? 'image'
+          : type === 'text/html'
+            ? 'html'
+            : type === 'application/pdf'
+              ? 'pdf'
+              : 'text'
+        const href = kind === 'image' ? url : `${url}?type=${kind}`
+        const name = file.name.replace(/[\[\]()\r\n]/g, '') || 'artifact'
         resolve({
           id: body.id,
-          url: String(body.url ?? ''),
-          markdown: String(body.markdown ?? `[${file.name}](artifact://${body.id})`),
+          url,
+          markdown: String(body.markdown ?? `[${name}](${href})`),
         })
       } else {
         reject(new Error(String(body?.detail ?? `Upload failed (HTTP ${xhr.status})`)))

@@ -17,6 +17,7 @@ IMAGE = {"type": "image", "source": {"type": "base64", "media_type": "image/png"
 
 @pytest.fixture
 def storage(monkeypatch):
+    monkeypatch.setenv("FRONTEND_URL", "https://pioneer.example/")
     store = AsyncMock(
         return_value=artifact_service.StoredObject(
             "image-id",
@@ -43,7 +44,7 @@ async def test_claude_image_summary_and_detail_become_links(storage):
     assert complete
     assert DATA not in json.dumps(payload)
     assert len(json.dumps(payload)) < 2000
-    assert "artifact://image-id" in payload["line"]
+    assert "https://pioneer.example/api/artifacts/image-id/public" in payload["line"]
     assert "Screenshot" in payload["detail"]["output"]
     storage.assert_awaited_once_with(PNG, "image/png", "guild", "t-1")
     artifact = db.add.call_args.args[0]
@@ -64,7 +65,7 @@ async def test_pi_structured_images_and_data_urls_become_links(storage):
     )
     assert complete
     assert DATA not in json.dumps(payload)
-    assert payload["text"] == "[image](artifact://image-id)"
+    assert payload["text"] == "[image](https://pioneer.example/api/artifacts/image-id/public)"
     storage.assert_awaited_once()
 
 
@@ -81,7 +82,7 @@ async def test_history_migrates_once_and_keeps_image_out_of_raw_meta(storage):
     )
     result = await message_payloads([message], db, "guild", 1)
     assert DATA not in json.dumps(result)
-    assert "artifact://image-id" in message.meta
+    assert "https://pioneer.example/api/artifacts/image-id/public" in message.meta
     await message_payloads([message], db, "guild", 1)
     storage.assert_awaited_once()
 
@@ -134,7 +135,7 @@ async def test_terminal_handler_persists_and_broadcasts_links(storage, monkeypat
     assert DATA not in log.line
     assert DATA not in log.data
     sent = broadcast.call_args.args[1]
-    assert "artifact://image-id" in sent.line
+    assert "https://pioneer.example/api/artifacts/image-id/public" in sent.line
     assert DATA not in sent.model_dump_json()
     db.commit.assert_awaited_once()
 
@@ -155,8 +156,8 @@ async def test_conversation_route_returns_links_for_legacy_images(storage, monke
     db.exec = AsyncMock(return_value=result)
     payload = await conversations.list_conversation_messages("guild", 1, "user", db)
     assert DATA not in json.dumps(payload)
-    assert "artifact://image-id" in payload[0]["content"]
-    assert "artifact://image-id" in message.content
+    assert "https://pioneer.example/api/artifacts/image-id/public" in payload[0]["content"]
+    assert "https://pioneer.example/api/artifacts/image-id/public" in message.content
 
 
 async def test_plain_text_is_unchanged(storage):
