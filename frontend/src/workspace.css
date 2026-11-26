@@ -587,6 +587,31 @@
 .project-state.merged {
   color: var(--color-gem, #b97ce7);
 }
+.task-state {
+  font: 600 var(--text-caption) / 1.4 var(--font-mono);
+  color: var(--color-text-dim);
+}
+.task-state.green {
+  color: var(--color-green);
+}
+.task-state.amber {
+  color: var(--color-amber);
+}
+.task-state.red {
+  color: var(--color-red);
+}
+.task-state.blue {
+  color: var(--color-blue);
+}
+.task-state.orange {
+  color: var(--color-orange);
+}
+.task-state.teal {
+  color: var(--color-teal);
+}
+.sub-hidden {
+  font-style: italic;
+}
 .board-status {
   border: 1px solid var(--color-brass-dark);
   border-radius: 2px;
