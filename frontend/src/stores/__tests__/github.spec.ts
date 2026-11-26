@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useGitHubStore } from '../github'
 import { useGuildStore } from '../guild'
+import { useAuthStore } from '../auth'
 
 describe('useGitHubStore', () => {
   beforeEach(() => {
@@ -69,16 +70,31 @@ describe('useGitHubStore', () => {
       expect(store.issues).toEqual([])
     })
 
+    it('uses the backend list endpoint instead of calling GitHub', async () => {
+      const fetchMock = vi.fn().mockResolvedValue(Response.json([gh(1)]))
+      vi.stubGlobal('fetch', fetchMock)
+      const store = useGitHubStore()
+      store.token = 't'
+      useAuthStore().loginToken = 'backend-session'
+      await store.fetchIssues(['team/a'], false, 'closed')
+      expect(fetchMock).toHaveBeenCalledOnce()
+      expect(fetchMock).toHaveBeenCalledWith('/api/issues/team/a?state=closed', {
+        headers: { Authorization: 'Bearer backend-session' },
+      })
+      expect(store.issues[0]?.repo).toBe('team/a')
+    })
+
     it.each([
-      [403, {}, 'denied access to team/a'],
-      [404, {}, 'team/a was not found'],
-      [429, { 'retry-after': '60' }, 'rate limit reached for team/a; retry after'],
-      [403, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '2000000000' }, 'rate limit'],
-    ])('surfaces %i failures while keeping other repos', async (status, headers, message) => {
+      [403, 'GitHub denied access to team/a (403).'],
+      [404, 'team/a was not found or is not accessible (404).'],
+      [429, 'GitHub rate limit reached for team/a; retry in a few minutes.'],
+    ])('surfaces %i failures while keeping other repos', async (status, message) => {
       vi.stubGlobal(
         'fetch',
         vi.fn(async (url: string) =>
-          url.includes('team/a') ? new Response('{}', { status, headers }) : Response.json([gh(1)]),
+          url.includes('team/a')
+            ? Response.json({ detail: message }, { status })
+            : Response.json([gh(1)]),
         ),
       )
       const store = useGitHubStore()

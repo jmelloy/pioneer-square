@@ -269,9 +269,8 @@ export const useGitHubStore = defineStore('github', () => {
     try {
       const results = await Promise.allSettled(
         reposToFetch.map(async (repoName) => {
-          const data = await fetchAllPages(
-            `${GH_API}/repos/${repoName}/issues?state=${state}&per_page=100&sort=created&direction=desc`,
-            repoName,
+          const data = await api<Array<Record<string, unknown>>>(
+            `/api/issues/${repoName}?state=${state}`,
           )
           // PRs are kept: ProjectsView shows them under its Pull requests tab.
           return data.map((i) => ({ ...i, repo: repoName })) as GitHubIssue[]
