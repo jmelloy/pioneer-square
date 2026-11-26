@@ -5,12 +5,15 @@ frontend can use the backend's stored OAuth token rather than holding a
 raw GitHub token in localStorage indefinitely.
 
 Routes:
+  GET  /api/issues/{owner}/{repo}
   GET  /api/issues/{owner}/{repo}/{issue_number}
   POST /api/issues/{owner}/{repo}/{issue_number}/comments
   PATCH /api/issues/{owner}/{repo}/{issue_number}
 """
 
 from __future__ import annotations
+
+from typing import Literal
 
 import httpx
 from auth_deps import require_user
@@ -20,6 +23,7 @@ from models import GithubToken
 from pydantic import BaseModel
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from util.github_etag import get_issue_page
 
 router = APIRouter()
 
@@ -53,6 +57,48 @@ class CommentCreate(BaseModel):
 class IssueUpdate(BaseModel):
     title: str | None = None
     body: str | None = None
+
+
+@router.get("/api/issues/{owner}/{repo}")
+async def list_issues(
+    owner: str,
+    repo: str,
+    state: Literal["open", "closed", "all"] = "all",
+    github_user_id: str = Depends(require_user),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """List all issue/PR pages, revalidating each cached page with GitHub."""
+    token = await _get_github_token(github_user_id, db)
+    headers = _gh_headers(token)
+    issues = []
+    page = 1
+    async with httpx.AsyncClient(timeout=15) as client:
+        while True:
+            url = (
+                f"{GH_API}/repos/{owner}/{repo}/issues?state={state}"
+                f"&per_page=100&sort=created&direction=desc&page={page}"
+            )
+            res = await get_issue_page(client, url, headers)
+            if not res.is_success:
+                limited = res.status_code == 429 or (
+                    res.status_code == 403 and res.headers.get("x-ratelimit-remaining") == "0"
+                )
+                if limited:
+                    detail = (
+                        f"GitHub rate limit reached for {owner}/{repo}; retry in a few minutes."
+                    )
+                elif res.status_code == 403:
+                    detail = f"GitHub denied access to {owner}/{repo} (403)."
+                elif res.status_code == 404:
+                    detail = f"{owner}/{repo} was not found or is not accessible (404)."
+                else:
+                    detail = f"GitHub error: {res.text[:200]}"
+                raise HTTPException(status_code=res.status_code, detail=detail)
+            issues.extend(res.json())
+            if "next" not in res.links:
+                break
+            page += 1
+    return issues
 
 
 @router.get("/api/issues/{owner}/{repo}/{issue_number}")
