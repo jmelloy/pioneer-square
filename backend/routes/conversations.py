@@ -35,7 +35,7 @@ from message_artifacts import message_payloads
 from message_authors import user_authors
 from models import THREAD_STATUSES, Conversation, Message
 from pydantic import BaseModel
-from sqlalchemy import func, or_
+from sqlalchemy import func, literal_column
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from ws_types import ChatMsg
@@ -273,6 +273,11 @@ async def list_conversations(
     cap) but queries :class:`models.Conversation` directly rather than
     joining through ``Thread``, since ``name``/``status`` already live on
     the conversation itself (see its docstring in ``models.py``).
+
+    ``q`` searches names and individual message bodies using English full-text
+    matching (ANDed words, stemming, no substring matching). Blank queries do
+    not filter; stop-word-only queries return no matches. See
+    ``docs/conversation-search.md`` for search and deployment semantics (#1531).
     """
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
@@ -300,18 +305,21 @@ async def list_conversations(
             raise HTTPException(status_code=400, detail=f"Invalid status: {status!r}")
         stmt = stmt.where(col(Conversation.status) == status)
     if q and (query := q.strip()):
-        matching_message = (
-            select(Message.id)
-            .where(
-                col(Message.conversation_id) == col(Conversation.id),
-                col(Message.guild_id) == guild_pk,
-                col(Message.content).icontains(query, autoescape=True),
-            )
-            .exists()
+        # A literal configuration keeps these expressions identical to the GIN indexes.
+        config = literal_column("'english'::regconfig")
+        terms = func.plainto_tsquery(config, query)
+        matching_conversations = select(Message.conversation_id).where(
+            col(Message.guild_id) == guild_pk,
+            col(Message.conversation_id).is_not(None),
+            func.to_tsvector(config, col(Message.content)).bool_op("@@")(terms),
         )
-        stmt = stmt.where(
-            or_(col(Conversation.name).icontains(query, autoescape=True), matching_message)
+        matching_names = select(Conversation.id).where(
+            col(Conversation.guild_id) == guild_pk,
+            func.to_tsvector(
+                config, func.coalesce(col(Conversation.name), literal_column("''"))
+            ).bool_op("@@")(terms),
         )
+        stmt = stmt.where(col(Conversation.id).in_(matching_names.union(matching_conversations)))
     out = []
     for conversation, preview in (await db.exec(stmt.limit(200))).all():
         item = _to_out(conversation)

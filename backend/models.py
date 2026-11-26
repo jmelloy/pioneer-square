@@ -158,6 +158,12 @@ class Message(SQLModel, table=True):
     __tablename__ = "messages"  # type: ignore[assignment]
     __table_args__ = (
         Index("ix_messages_guild_id_created_at", "guild_id", "created_at"),
+        Index(
+            "ix_messages_conversation_content_fts",
+            text("to_tsvector('english'::regconfig, content)"),
+            postgresql_using="gin",
+            postgresql_where=text("conversation_id IS NOT NULL"),
+        ),
         Index("ix_messages_conversation_id_created_at_id", "conversation_id", "created_at", "id"),
         Index(
             "ix_messages_conversation_plain_senders",
@@ -236,6 +242,11 @@ class Conversation(SQLModel, table=True):
     __table_args__ = (
         Index("ix_conversations_guild_id_user_id", "guild_id", "user_id"),
         Index("ix_conversations_status", "status"),
+        Index(
+            "ix_conversations_name_fts",
+            text("to_tsvector('english'::regconfig, coalesce(name, ''))"),
+            postgresql_using="gin",
+        ),
         Index(
             "uq_conversations_discord_thread_id_active",
             "discord_thread_id",
