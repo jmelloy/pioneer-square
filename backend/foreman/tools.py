@@ -31,7 +31,7 @@ from events import (
     broadcast_msg,
     emit_terminal_line,  # noqa: F401 — looked up as foreman.tools.emit_terminal_line by ports.RealEvents
 )
-from foreman.conversation_service import get_or_create_active_conversation
+from foreman.conversation_service import create_conversation
 from foreman.message_utils import _json_default, truncate_tool_result
 from foreman.ports import RealEvents, RealGithub, RealScheduler, SystemClock
 from foreman.tool_context import ToolContext
@@ -1580,9 +1580,7 @@ async def _handle_create_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
     # A run's pinned conversation wins over the user's unrelated latest one.
     conversation_id = ctx.conversation_id
     if conversation_id is None and guild_pk is not None and user_id:
-        conversation, _created = await get_or_create_active_conversation(
-            db, guild_pk, user_id, name_hint=name
-        )
+        conversation = await create_conversation(db, guild_pk, user_id, name=name)
         conversation_id = conversation.id
     db.add(
         Task(
@@ -1958,8 +1956,8 @@ async def _handle_assign_task(inp: dict, ctx: ToolContext) -> tuple[str, bool]:
                 # from (#1167).
                 conversation_id = ctx.conversation_id
                 if conversation_id is None and guild_pk is not None and user_id:
-                    assign_conversation, _created = await get_or_create_active_conversation(
-                        db, guild_pk, user_id, name_hint=name
+                    assign_conversation = await create_conversation(
+                        db, guild_pk, user_id, name=name
                     )
                     conversation_id = assign_conversation.id
                 db.add(

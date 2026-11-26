@@ -82,7 +82,7 @@ class RunConfig:
     # Owning Conversation (#1271/#1279) this run's history is scoped to.
     # Also selects the context-trimming policy (see ForemanRun._fit_context):
     # set -> the whole conversation, trimmed only by the explicit token budget
-    # (#1294); None -> the legacy (guild, user) window on both ends.
+    # (#1294); None -> the legacy window, except periodic-check starts fresh.
     conversation_id: int | None = None
 
 
@@ -113,9 +113,13 @@ class ForemanRun:
         # at send time below — the DB still holds just the human's literal text.
         await self._journal.system(audit_system)
         await self._journal.human(human_message)
-        messages = await self._history.load_for_llm(
-            self._cfg.guild_id, self._cfg.user_id, self._cfg.conversation_id
-        )
+        if self._cfg.trigger == "periodic-check":
+            # Guild maintenance must neither replay nor extend a human conversation.
+            messages = [{"role": "user", "content": human_message}]
+        else:
+            messages = await self._history.load_for_llm(
+                self._cfg.guild_id, self._cfg.user_id, self._cfg.conversation_id
+            )
         _inject_state_preamble(messages, state_preamble)
 
         capped = True
@@ -178,10 +182,14 @@ class ForemanRun:
         result = await self._llm.call(
             system_blocks=system_blocks,
             messages=messages,
-            tools=FOREMAN_TOOLS,
-            tool_choice=tool_choice,
+            tools=[] if self._cfg.trigger == "github-event-observer" else FOREMAN_TOOLS,
+            tool_choice=None if self._cfg.trigger == "github-event-observer" else tool_choice,
             max_tokens=1024,
         )
+        if self._cfg.trigger == "github-event-observer" and any(
+            block.type == "tool_use" for block in result.content
+        ):
+            raise ValueError("Webhook observers cannot execute tools")
         turn_id = await self._journal.assistant_turn(result.content, api_log_id=result.api_log_id)
         # Re-parse through the DB serializer so `messages` stays plain dicts
         # (not SDK content-block objects), matching what a reloaded history

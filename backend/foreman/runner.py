@@ -462,8 +462,8 @@ async def _load_history(
 ) -> list[dict]:
     """Load this run's history as a list of Anthropic-API-compatible message dicts.
 
-    With a *conversation_id* (every production run — see ``_run_foreman_ai``)
-    that is the **complete** conversation, trimmed only when it exceeds the
+    With a *conversation_id*, that is the **complete** conversation, trimmed only
+    when it exceeds the
     explicit token budget (#1294). Without one, the legacy fallback: the last
     ``_HUMAN_TURN_WINDOW`` non-tool-response turns for ``(guild_id, user_id)``
     plus all tool-exchange turns between them.
@@ -1299,7 +1299,7 @@ async def run_foreman_ai(
     lock_key = (guild_id, user_id)
     state = _guild_locks.setdefault(lock_key, _GuildRunLock())
     if state.busy:
-        if is_human or trigger == "github-event":
+        if is_human or trigger in {"github-event", "github-event-observer"}:
             _enqueue_human_turn(
                 lock_key,
                 guild_id,
@@ -1363,10 +1363,13 @@ def _enqueue_human_turn(
     """
     queue = _human_queues.setdefault(lock_key, deque())
     if len(queue) >= _HUMAN_QUEUE_MAX:
-        dropped = next((turn for turn in queue if turn.trigger == "github-event"), None)
+        dropped = next(
+            (turn for turn in queue if turn.trigger in {"github-event", "github-event-observer"}),
+            None,
+        )
         if dropped is not None:
             queue.remove(dropped)
-        elif trigger == "github-event":
+        elif trigger in {"github-event", "github-event-observer"}:
             logger.warning(
                 "guild=%s key=%s queue full of human input; dropping incoming GitHub batch",
                 guild_id,
@@ -1521,10 +1524,9 @@ async def _run_foreman_ai(
 ):
     """Process a human message (or system escalation) through the Claude foreman AI.
 
-    The run always uses the whole-guild conversation history for *user_id*
-    (issue #1200) — ``task_id``, when present, is metadata identifying the
-    work item this turn concerns (stamped on ``ForemanTurn``/``Message`` rows
-    for UI badges and Discord thread routing), not a separate history scope.
+    Conversation runs load only their attached tasks and their own history.
+    Periodic checks inspect the guild-wide board without resolving or replaying
+    a human conversation. ``task_id`` identifies the work item this turn concerns.
 
     ``conversation_id``, when given, pins the run to that exact conversation
     instead of resolving one from *task_id*/*user_id* below — see
@@ -1571,6 +1573,15 @@ async def _run_foreman_ai(
         guild_pk_val = await get_guild_pk(db, guild_id)
         if guild_pk_val is None:
             raise ValueError(f"Guild not found: {guild_id}")
+        # Maintenance has no conversation; all other runs resolve their scope first.
+        if trigger == "periodic-check":
+            conversation_id = None
+        elif conversation_id is None:
+            conversation_id = await resolve_conversation_id(
+                db, guild_pk_val, task_id=task_id, user_id=user_id
+            )
+            await db.commit()
+
         task_result = await db.exec(
             select(
                 col(Task.id),
@@ -1587,6 +1598,7 @@ async def _run_foreman_ai(
             .where(
                 col(Task.guild_id) == guild_pk_val,
                 col(Task.finished_at).is_(None),
+                task_in_conversation(conversation_id) if conversation_id is not None else True,
             )
             .order_by(col(Task.created_at).desc())
         )
@@ -1595,16 +1607,6 @@ async def _run_foreman_ai(
             for r in task_result.all()
         ]
 
-        # Owning Conversation (#1271) for every Message/ForemanTurn row this
-        # run writes — task_id's conversation takes precedence (issue #1200:
-        # the referenced task's conversation is the context), else the user's.
-        if conversation_id is None:
-            conversation_id = await resolve_conversation_id(
-                db, guild_pk_val, task_id=task_id, user_id=user_id
-            )
-            # Persist a newly created conversation before this read-only
-            # session is closed (otherwise it is rolled back).
-            await db.commit()
         # Everything else this conversation owns — its tasks and GitHub
         # events — so the run sees the whole work item, not just its turns.
         conversation_block = await _load_conversation_context(db, conversation_id)

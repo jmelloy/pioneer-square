@@ -430,7 +430,7 @@ def test_webhook_missing_github_headers(client):
     assert resp.status_code == 400
 
 
-def test_webhook_emits_foreman_chat_message(client):
+def test_webhook_emits_activity_into_new_task_conversation(client):
     test_client, db_url = client
     insert_guild(db_url, "gchat1")
     _set_webhook_secret(db_url, "gchat1", "schat1")
@@ -459,15 +459,15 @@ def test_webhook_emits_foreman_chat_message(client):
         ).scalar_one_or_none()
     assert row is not None
     assert row.from_agent == "github"
-    assert row.to_agent == "foreman"
-    assert row.content.startswith("[github-event]")
-    assert "pull_request/opened" in row.content
-    assert "owner/repo#10" in row.content
-    assert "task: t-chat1" in row.content
-    assert row.message_type == "chat"
+    assert row.to_agent == "user"
+    assert "opened" in row.content
+    assert "https://github.com/owner/repo/pull/10" in row.content
+    assert row.task_id == "t-chat1"
+    assert row.conversation_id is not None
+    assert row.message_type == "activity"
 
 
-def test_webhook_chat_line_includes_merged_status(client):
+def test_unowned_merged_pr_starts_conversation_with_merge_activity(client):
     test_client, db_url = client
     insert_guild(db_url, "gchat2")
     _set_webhook_secret(db_url, "gchat2", "schat2")
@@ -496,8 +496,9 @@ def test_webhook_chat_line_includes_merged_status(client):
             select(Message).where(col(Message.guild_id) == guild_pk)
         ).scalar_one_or_none()
     assert row is not None
-    assert "merged=true" in row.content
-    assert "task:" not in row.content  # no task linked
+    assert "PR merged" in row.content
+    assert row.conversation_id is not None
+    assert row.task_id is None
 
 
 def test_webhook_chat_line_not_emitted_for_duplicate(client):

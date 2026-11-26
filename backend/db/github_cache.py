@@ -151,7 +151,6 @@ def conversation_item_filter(
         select(Task.id)
         .where(
             task_in_conversation(conversation_id),
-            col(Task.finished_at).is_(None),
             col(repo_col) == col(model.repo),
             col(number_col) == col(model.number),
         )

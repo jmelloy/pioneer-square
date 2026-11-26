@@ -453,7 +453,7 @@ def test_pr_merge_skips_already_terminal_task(client):
     assert _get_task_state(db_url, "t-term-1") == "cancelled"
 
 
-def test_webhook_skips_foreman_when_no_task_match(client):
+def test_webhook_starts_pr_conversation_when_no_task_matches(client):
     test_client, db_url = client
     insert_guild(db_url, "gd2")
     _set_webhook_secret(db_url, "gd2", "ssecret")
@@ -464,7 +464,9 @@ def test_webhook_skips_foreman_when_no_task_match(client):
         mock_q.schedule = AsyncMock()
         resp = test_client.post("/webhooks/github/gd2", content=body, headers=headers)
     assert resp.status_code == 202
-    assert mock_q.schedule.call_count == 0
+    mock_q.schedule.assert_awaited_once()
+    assert mock_q.schedule.call_args.kwargs["conversation_id"] is not None
+    assert mock_q.schedule.call_args.kwargs["task_id"] is None
 
 
 def test_webhook_skips_foreman_for_bot_on_non_ci(client):
@@ -660,14 +662,14 @@ class TestDebounce:
             key = "g-stalegen:t-sg1"
 
             # State as if a newer timer (gen=2) has taken over
-            q._buffers[key] = [("stale event", "u8", None, None)]
+            q._buffers[key] = [("stale event", "u8", None, None, ())]
             q._generation[key] = 2
 
             # Run _fire with the old gen (1) — stale coroutine waking up
             await q._fire(key, "g-stalegen", 1)
 
             assert len(self._foreman_calls) == 0
-            assert q._buffers.get(key) == [("stale event", "u8", None, None)]
+            assert q._buffers.get(key) == [("stale event", "u8", None, None, ())]
 
     async def test_cancelled_events_not_lost(self):
         """Events buffered before an external cancellation are preserved for re-delivery."""
@@ -1515,7 +1517,7 @@ async def test_deliver_kwargs_match_run_foreman_ai_signature():
         patch.object(wh, "run_foreman_ai", new=recorder),
         patch.object(wh, "ensure_poll_loop"),
     ):
-        await queue._deliver("g-sig:t-sig1", "g-sig", [("event", "u-sig", "t-sig1", 123)])
+        await queue._deliver("g-sig:t-sig1", "g-sig", [("event", "u-sig", "t-sig1", 123, ())])
 
     assert len(recorded) == 1
     args, kwargs = recorded[0]
