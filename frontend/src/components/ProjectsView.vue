@@ -42,7 +42,7 @@
           <span aria-hidden="true">▦</span><span>{{ project.name }}</span
           ><span class="count">{{
             selectedBoard?.id === project.id
-              ? boardIssues.filter((issue) => issue.state === 'open').length
+              ? boardIssues.filter((issue) => issue.state === 'open' && !isPr(issue)).length
               : ''
           }}</span>
         </button>
@@ -73,22 +73,6 @@
           <button class="pixel-btn" @click="openSettings">+ Add repositories</button>
         </div>
       </div>
-      <div class="issue-status-filters">
-        <h3>☷ All issues</h3>
-        <button
-          v-for="option in stateOptions"
-          :key="option.value"
-          class="project-choice"
-          :class="{ selected: state === option.value }"
-          @click="state = option.value"
-        >
-          <span class="issue-status-dot" :class="option.value" aria-hidden="true"></span
-          ><span>{{ option.label }}</span
-          ><span class="count">{{
-            projectIssues.filter((i) => option.value === 'all' || i.state === option.value).length
-          }}</span>
-        </button>
-      </div>
       <div class="project-art" aria-hidden="true"></div>
       <div class="project-connection" :class="{ connected: guildStore.isConnected }">
         ● {{ guildStore.isConnected ? 'Connected' : 'Disconnected' }}
@@ -99,30 +83,71 @@
       <header class="projects-heading">
         <h1>
           <span class="project-gem" aria-hidden="true">◆</span>
-          {{ selectedBoard ? selectedBoard.name : 'Projects / Issues' }}
+          {{ heading }}
         </h1>
+        <a
+          v-if="selectedBoard || selectedRepo"
+          class="projects-heading-link"
+          :href="selectedBoard ? selectedBoard.url : `https://github.com/${selectedRepo}`"
+          target="_blank"
+          rel="noopener noreferrer"
+          >{{ selectedBoard ? 'Open in GitHub' : selectedRepo }} ↗</a
+        >
+      </header>
+      <div class="project-kind-tabs" role="tablist" aria-label="Item type">
+        <button
+          v-for="option in kindOptions"
+          :key="option.value"
+          role="tab"
+          class="project-kind-tab"
+          :class="{ active: kind === option.value }"
+          :aria-selected="kind === option.value"
+          @click="kind = option.value"
+        >
+          {{ option.label }}
+          <span class="project-kind-count">{{
+            projectIssues.filter(
+              (i) => isPr(i) === (option.value === 'pulls') && i.state === 'open',
+            ).length
+          }}</span>
+        </button>
+      </div>
+      <div class="projects-toolbar">
+        <div class="issue-status-filters" role="group" aria-label="State">
+          <button
+            v-for="option in stateOptions"
+            :key="option.value"
+            class="issue-filter"
+            :class="{ selected: state === option.value }"
+            :aria-pressed="state === option.value"
+            @click="state = option.value"
+          >
+            <span class="issue-status-dot" :class="option.value" aria-hidden="true"></span
+            >{{ option.label }}
+            <span class="count">{{
+              kindIssues.filter((i) => option.value === 'all' || i.state === option.value).length
+            }}</span>
+          </button>
+        </div>
         <input
           v-model="search"
           type="search"
-          placeholder="Search issues…"
-          aria-label="Search issues"
+          :placeholder="kind === 'pulls' ? 'Search pull requests…' : 'Search issues…'"
+          :aria-label="kind === 'pulls' ? 'Search pull requests' : 'Search issues'"
         />
-        <select v-model="sort" aria-label="Sort issues">
+        <select v-model="sort" aria-label="Sort">
           <option value="newest">Newest first</option>
           <option value="oldest">Oldest first</option>
         </select>
-        <button class="pixel-btn" :disabled="listLoading || !ghStore.isConfigured" @click="refresh">
-          {{ listLoading ? 'Loading…' : selectedBoard ? '↻ Sync' : '↻ Refresh' }}
-        </button>
-        <a
-          v-if="selectedBoard"
+        <button
           class="pixel-btn"
-          :href="selectedBoard.url"
-          target="_blank"
-          rel="noopener noreferrer"
-          >↗ Open in GitHub</a
+          :disabled="listLoading || !ghStore.isConfigured"
+          :aria-label="selectedBoard ? 'Sync' : 'Refresh'"
+          @click="refresh"
         >
-      </header>
+          {{ listLoading ? '…' : '↻' }}
+        </button>
+      </div>
       <div v-if="!ghStore.isConfigured" class="workspace-empty">
         Connect GitHub in your preferences to browse project issues.
       </div>
@@ -133,46 +158,59 @@
       <div class="project-split">
         <div class="project-table-pane">
           <div class="project-table-scroll">
-            <table class="project-table">
-              <thead>
-                <tr>
-                  <th scope="col">#</th>
-                  <th scope="col">Title</th>
-                  <th scope="col">Project</th>
-                  <th scope="col">Status</th>
-                  <th scope="col">Created</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-for="issue in pageIssues"
-                  :key="issue.id"
-                  :class="{ selected: selectedIssue?.id === issue.id }"
+            <ul class="issue-list">
+              <li
+                v-for="row in pageRows"
+                :key="row.issue.id"
+                class="issue-row"
+                :class="{ selected: selectedIssue?.id === row.issue.id, child: row.depth > 0 }"
+                :style="{ '--depth': row.depth }"
+              >
+                <span v-if="row.depth" class="issue-tree" aria-hidden="true">└</span>
+                <button
+                  class="issue-select"
+                  :aria-pressed="selectedIssue?.id === row.issue.id"
+                  @click="selectIssue(row.issue.id)"
                 >
-                  <td>{{ issue.number }}</td>
-                  <td>
-                    <button
-                      class="issue-select"
-                      :aria-pressed="selectedIssue?.id === issue.id"
-                      @click="selectIssue(issue.id)"
+                  <span class="issue-line">
+                    <span class="issue-num">{{ row.issue.number }}</span>
+                    <span class="issue-title" :class="{ closed: row.issue.state !== 'open' }">{{
+                      row.issue.title
+                    }}</span>
+                  </span>
+                  <span class="issue-meta">
+                    <span class="project-state" :class="itemState(row.issue)">{{
+                      itemState(row.issue)
+                    }}</span>
+                    <span v-if="statusName(row.issue)" class="board-status">{{
+                      statusName(row.issue)
+                    }}</span>
+                    <span v-if="row.issue.sub_issues_summary?.total" class="sub-progress">
+                      <span class="sub-bar" aria-hidden="true"
+                        ><span
+                          :style="{ width: `${row.issue.sub_issues_summary.percent_completed}%` }"
+                        ></span></span
+                      >{{ row.issue.sub_issues_summary.completed }}/{{
+                        row.issue.sub_issues_summary.total
+                      }}
+                      sub-issues
+                    </span>
+                    <span v-if="!selectedRepo || selectedBoard" class="issue-repo"
+                      >◆ {{ row.issue.repo.split('/').pop() }}</span
                     >
-                      {{ issue.title }}
-                    </button>
-                  </td>
-                  <td>
-                    <span class="project-gem" aria-hidden="true">◆</span>
-                    {{ issue.repo.split('/').pop() }}
-                  </td>
-                  <td>
-                    <span class="project-state" :class="issue.state">{{ issue.state }}</span>
-                    <span v-if="issue.status" class="board-status">{{ issue.status }}</span>
-                  </td>
-                  <td class="issue-created">{{ formatAge(issue.created_at) }}</td>
-                </tr>
-              </tbody>
-            </table>
+                    <span class="issue-created">{{ formatAge(row.issue.created_at) }}</span>
+                  </span>
+                </button>
+              </li>
+            </ul>
             <p v-if="!filteredIssues.length" class="workspace-empty">
-              {{ listLoading ? 'Loading issues…' : 'No matching issues.' }}
+              {{
+                listLoading
+                  ? 'Loading…'
+                  : kind === 'pulls'
+                    ? 'No matching pull requests.'
+                    : 'No matching issues.'
+              }}
             </p>
           </div>
           <footer class="project-pagination">
@@ -182,7 +220,7 @@
                   ? `${(page - 1) * PAGE_SIZE + 1}–${Math.min(page * PAGE_SIZE, filteredIssues.length)} of ${filteredIssues.length}`
                   : '0'
               }}
-              issues</span
+              {{ kind === 'pulls' ? 'pull requests' : 'issues' }}</span
             >
             <button
               class="pixel-btn"
@@ -204,7 +242,9 @@
           </footer>
         </div>
         <div class="project-detail">
-          <button class="project-back pixel-btn" @click="showDetail = false">← Issues</button>
+          <button class="project-back pixel-btn" @click="showDetail = false">
+            ← {{ kind === 'pulls' ? 'Pull requests' : 'Issues' }}
+          </button>
           <IssueViewer
             v-if="selectedIssue"
             :key="selectedIssue.id"
@@ -213,7 +253,7 @@
             :issue-number="selectedIssue.number"
           />
           <div v-else class="workspace-empty">
-            Select an issue to see its details, comments, and linked tasks.
+            Select an item to see its details, comments, and linked tasks.
           </div>
         </div>
       </div>
@@ -243,6 +283,27 @@ const state = ref('open')
 const sort = ref('newest')
 const page = ref(1)
 const PAGE_SIZE = 20
+const kind = ref('issues')
+const kindOptions = [
+  { value: 'issues', label: 'Issues' },
+  { value: 'pulls', label: 'Pull requests' },
+]
+useQueryRef(
+  'kind',
+  kind,
+  'issues',
+  kindOptions.map((o) => o.value),
+)
+const isPr = (issue: GitHubIssue) => !!issue.pull_request
+function itemState(issue: GitHubIssue) {
+  if (issue.pull_request?.merged_at) return 'merged'
+  if (issue.draft && issue.state === 'open') return 'draft'
+  return issue.state
+}
+// Projects v2 "status" arrives as {id, name, category}; the board cache sends a name.
+function statusName(issue: GitHubIssue) {
+  return typeof issue.status === 'string' ? issue.status : (issue.status?.name ?? '')
+}
 const stateOptions = [
   { value: 'all', label: 'All' },
   { value: 'open', label: 'Open' },
@@ -312,7 +373,9 @@ const filteredRepos = computed(() =>
 const scopedIssues = computed(() =>
   ghStore.issues.filter((issue) => repoNames.value.includes(issue.repo)),
 )
-const activeIssues = computed(() => scopedIssues.value.filter((issue) => issue.state === 'open'))
+const activeIssues = computed(() =>
+  scopedIssues.value.filter((issue) => issue.state === 'open' && !isPr(issue)),
+)
 const projectIssues = computed(() =>
   selectedBoard.value
     ? boardIssues.value
@@ -324,8 +387,18 @@ function selectRepo(repo: string) {
   boardParam.value = ''
   selectedRepo.value = repo
 }
+const heading = computed(() =>
+  selectedBoard.value
+    ? selectedBoard.value.name
+    : selectedRepo.value
+      ? selectedRepo.value.split('/').pop()!
+      : 'All projects',
+)
+const kindIssues = computed(() =>
+  projectIssues.value.filter((issue) => isPr(issue) === (kind.value === 'pulls')),
+)
 const filteredIssues = computed(() =>
-  projectIssues.value
+  kindIssues.value
     .filter(
       (issue) =>
         (state.value === 'all' || issue.state === state.value) &&
@@ -337,15 +410,35 @@ const filteredIssues = computed(() =>
     ),
 )
 const pageCount = computed(() => Math.max(1, Math.ceil(filteredIssues.value.length / PAGE_SIZE)))
-const pageIssues = computed(() =>
-  filteredIssues.value.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE),
+// Sub-issues sit right under their parent when both are in the list.
+// ponytail: children can land on the next page; page by top-level rows if that bothers anyone.
+const rows = computed(() => {
+  const listed = new Set(filteredIssues.value.map((i) => i.url))
+  const children = new Map<string, GitHubIssue[]>()
+  const roots: GitHubIssue[] = []
+  for (const issue of filteredIssues.value) {
+    const parent = issue.parent_issue_url
+    if (parent && listed.has(parent)) children.set(parent, [...(children.get(parent) ?? []), issue])
+    else roots.push(issue)
+  }
+  const out: Array<{ issue: GitHubIssue; depth: number }> = []
+  const walk = (issue: GitHubIssue, depth: number) => {
+    out.push({ issue, depth })
+    for (const child of children.get(issue.url ?? '') ?? []) walk(child, depth + 1)
+  }
+  roots.forEach((issue) => walk(issue, 0))
+  return out
+})
+const pageRows = computed(() =>
+  rows.value.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE),
 )
+const pageIssues = computed(() => pageRows.value.map((row) => row.issue))
 const selectedIssue = computed(
   () => filteredIssues.value.find((issue) => issue.id === selectedId.value) ?? pageIssues.value[0],
 )
 
 const scopeKey = computed(() => repoNames.value.join('\n'))
-watch([scopeKey, selectedRepo, selectedBoard, state, search, sort], () => {
+watch([scopeKey, selectedRepo, selectedBoard, kind, state, search, sort], () => {
   page.value = 1
   showDetail.value = false
   selectedId.value = null

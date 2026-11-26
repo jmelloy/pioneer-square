@@ -273,9 +273,8 @@ export const useGitHubStore = defineStore('github', () => {
             `${GH_API}/repos/${repoName}/issues?state=${state}&per_page=100&sort=created&direction=desc`,
             repoName,
           )
-          return data
-            .filter((i) => !i.pull_request)
-            .map((i) => ({ ...i, repo: repoName })) as GitHubIssue[]
+          // PRs are kept: ProjectsView shows them under its Pull requests tab.
+          return data.map((i) => ({ ...i, repo: repoName })) as GitHubIssue[]
         }),
       )
       if (generation !== issuesGeneration) return []
@@ -371,6 +370,16 @@ export const useGitHubStore = defineStore('github', () => {
     return issues
   }
 
+  // Direct children of an issue (GitHub sub-issues), with the user's token.
+  async function fetchSubIssues(repo: string, issueNumber: number): Promise<GitHubIssue[]> {
+    if (!token.value) return []
+    const data = await fetchAllPages(
+      `${GH_API}/repos/${repo}/issues/${issueNumber}/sub_issues?per_page=100`,
+      `sub-issues of ${repo}#${issueNumber}`,
+    )
+    return data.map((i) => ({ ...i, repo })) as GitHubIssue[]
+  }
+
   function logout() {
     token.value = ''
     repos.value = []
@@ -398,6 +407,7 @@ export const useGitHubStore = defineStore('github', () => {
     clearIssues,
     fetchIssueDetail,
     fetchProjectIssues,
+    fetchSubIssues,
     postComment,
     updateIssue,
     openIssueTab,

@@ -204,7 +204,14 @@ export interface GitHubIssue {
   state: string
   labels: GitHubLabel[]
   created_at: string
-  pull_request?: unknown
+  url?: string
+  html_url?: string
+  pull_request?: { merged_at?: string | null }
+  draft?: boolean
+  // GitHub's Projects status field, or a plain name from the board cache.
+  status?: string | { name?: string } | null
+  sub_issues_summary?: { total: number; completed: number; percent_completed: number }
+  parent_issue_url?: string | null
   repo: string
   [key: string]: unknown
 }

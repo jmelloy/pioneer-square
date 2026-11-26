@@ -79,6 +79,24 @@
       <div class="issue-tab-content">
         <!-- Details tab -->
         <div v-if="activeTab === 'details'" class="issue-body-section">
+          <section v-if="subIssues.length" class="sub-issues" aria-label="Sub-issues">
+            <div class="section-header">
+              <span class="section-title">Sub-issues</span>
+              <span class="sub-count"
+                >{{ subIssues.filter((s) => s.state !== 'open').length }} /
+                {{ subIssues.length }}</span
+              >
+            </div>
+            <ul class="sub-list">
+              <li v-for="sub in subIssues" :key="sub.id" :class="{ closed: sub.state !== 'open' }">
+                <span class="sub-state">{{ sub.state === 'open' ? 'open' : 'done' }}</span>
+                <a :href="sub.html_url" target="_blank" rel="noopener noreferrer"
+                  >#{{ sub.number }}</a
+                >
+                <span class="sub-title">{{ sub.title }}</span>
+              </li>
+            </ul>
+          </section>
           <div class="section-header">
             <span class="section-title">Description</span>
             <button
@@ -229,7 +247,7 @@ import { useGitHubStore } from '../stores/github'
 import type { GitHubIssueDetail, GitHubComment } from '../stores/github'
 import { useGuildStore } from '../stores/guild'
 import { useTasksStore } from '../stores/tasks'
-import type { Task, LogEntry } from '../types'
+import type { GitHubIssue, Task, LogEntry } from '../types'
 import { api } from '../utils/api'
 import { renderMarkdown } from '../utils/markdown'
 import { vArtifacts } from '../utils/artifacts'
@@ -248,6 +266,7 @@ const guildStore = useGuildStore()
 const tasksStore = useTasksStore()
 
 const issue = ref<GitHubIssueDetail | null>(null)
+const subIssues = ref<GitHubIssue[]>([])
 const comments = ref<GitHubComment[]>([])
 const loading = ref(false)
 const loadError = ref('')
@@ -418,6 +437,11 @@ async function submitComment() {
 onMounted(() => {
   loadIssue()
   loadIssueTasks() // the foreman pane links conversations through the issue's tasks
+  // Optional extra: a failure just hides the section.
+  ghStore
+    .fetchSubIssues(`${props.owner}/${props.repo}`, props.issueNumber)
+    .then((subs) => (subIssues.value = subs))
+    .catch(() => {})
 })
 </script>
 
@@ -643,6 +667,48 @@ onMounted(() => {
   font: 600 var(--text-section-title) / var(--leading-heading) var(--font-ui);
   color: var(--color-brass-light);
   text-transform: uppercase;
+}
+
+.sub-issues {
+  margin-bottom: 16px;
+}
+.sub-count {
+  color: var(--color-text-dim);
+  font: var(--text-caption) var(--font-mono);
+}
+.sub-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  border: 1px solid #49301480;
+  border-radius: 3px;
+}
+.sub-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid #49301480;
+}
+.sub-list li:last-child {
+  border-bottom: none;
+}
+.sub-state {
+  width: 40px;
+  color: var(--color-green);
+  font: 600 var(--text-caption) var(--font-ui);
+  text-transform: uppercase;
+}
+.sub-list li.closed .sub-state {
+  color: var(--color-gem, #b97ce7);
+}
+.sub-list li.closed .sub-title {
+  color: var(--color-text-dim);
+  text-decoration: line-through;
+}
+.sub-list a {
+  color: var(--color-brass-light);
+  font: var(--text-caption) var(--font-mono);
 }
 
 .edit-btn {

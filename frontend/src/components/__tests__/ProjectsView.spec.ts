@@ -61,7 +61,10 @@ describe('ProjectsView', () => {
 
   it('defaults to open issues in configured repositories, newest first', () => {
     const wrapper = render()
-    expect(wrapper.findAll('tbody tr').map((row) => row.find('td').text())).toEqual(['3', '1'])
+    expect(wrapper.findAll('.issue-row').map((row) => row.find('.issue-num').text())).toEqual([
+      '3',
+      '1',
+    ])
     expect(wrapper.find('.viewer-stub').text()).toBe('factory #3')
     expect(useGitHubStore().fetchIssues).toHaveBeenCalledWith(['team/factory', 'team/engine'])
   })
@@ -71,11 +74,11 @@ describe('ProjectsView', () => {
     const counts = () => wrapper.findAll('.project-list .count').map((badge) => badge.text())
     expect(counts()).toEqual(['2', '2', '0'])
     await wrapper.findAll('.issue-status-filters button')[0]!.trigger('click')
-    expect(wrapper.findAll('tbody tr')).toHaveLength(3)
+    expect(wrapper.findAll('.issue-row')).toHaveLength(3)
     expect(counts()).toEqual(['2', '2', '0'])
     await wrapper.findAll('.project-list .project-choice')[2]!.trigger('click')
     await wrapper.findAll('.issue-status-filters button')[2]!.trigger('click')
-    expect(wrapper.findAll('tbody tr')).toHaveLength(1)
+    expect(wrapper.findAll('.issue-row')).toHaveLength(1)
     expect(counts()).toEqual(['2', '2', '0'])
     await wrapper.find('[aria-label="Search issues"]').setValue('missing')
     expect(counts()).toEqual(['2', '2', '0'])
@@ -84,22 +87,22 @@ describe('ProjectsView', () => {
   it('filters by project, state, and search and clears stale selection', async () => {
     const wrapper = render()
     await wrapper.findAll('.issue-status-filters button')[0]!.trigger('click')
-    expect(wrapper.findAll('tbody tr')).toHaveLength(3)
+    expect(wrapper.findAll('.issue-row')).toHaveLength(3)
     await wrapper.findAll('.issue-select')[1]!.trigger('click')
     expect(wrapper.find('.viewer-stub').text()).toBe('engine #2')
     await wrapper.findAll('.project-list .project-choice')[1]!.trigger('click')
-    expect(wrapper.findAll('tbody tr')).toHaveLength(2)
+    expect(wrapper.findAll('.issue-row')).toHaveLength(2)
     expect(wrapper.find('.viewer-stub').text()).toBe('factory #3')
     await wrapper.find('[aria-label="Search issues"]').setValue('Issue 1')
-    expect(wrapper.findAll('tbody tr')).toHaveLength(1)
+    expect(wrapper.findAll('.issue-row')).toHaveLength(1)
     await wrapper.findAll('.issue-status-filters button')[2]!.trigger('click')
-    expect(wrapper.findAll('tbody tr')).toHaveLength(0)
+    expect(wrapper.findAll('.issue-row')).toHaveLength(0)
     expect(wrapper.find('.viewer-stub').exists()).toBe(false)
   })
 
   it('syncs project and status with the URL and follows back/forward', async () => {
     const rows = (w: ReturnType<typeof render>) =>
-      w.findAll('tbody tr').map((row) => row.find('td').text())
+      w.findAll('.issue-row').map((row) => row.find('.issue-num').text())
     const path = () => router.currentRoute.value.fullPath
     await router.push('/g?project=team/engine&state=closed')
     const wrapper = render()
@@ -125,7 +128,7 @@ describe('ProjectsView', () => {
 
   describe('guild primary repo', () => {
     const rows = (w: ReturnType<typeof render>) =>
-      w.findAll('tbody tr').map((row) => row.find('td').text())
+      w.findAll('.issue-row').map((row) => row.find('.issue-num').text())
     beforeEach(() => {
       useGuildStore().currentGuild!.primary_repo = 'team/engine'
       useGitHubStore().issues.push(issue(5, 'team/engine'))
@@ -179,18 +182,21 @@ describe('ProjectsView', () => {
   it('ignores unknown status values in the URL', async () => {
     await router.push('/g?state=bogus')
     const wrapper = render()
-    expect(wrapper.findAll('tbody tr').map((row) => row.find('td').text())).toEqual(['3', '1'])
+    expect(wrapper.findAll('.issue-row').map((row) => row.find('.issue-num').text())).toEqual([
+      '3',
+      '1',
+    ])
   })
 
   it('paginates and resets the page when filters change', async () => {
     useGitHubStore().issues = Array.from({ length: 23 }, (_, i) => issue(i + 1))
     const wrapper = render()
-    expect(wrapper.findAll('tbody tr')).toHaveLength(20)
+    expect(wrapper.findAll('.issue-row')).toHaveLength(20)
     await wrapper.find('[aria-label="Next page"]').trigger('click')
-    expect(wrapper.findAll('tbody tr')).toHaveLength(3)
+    expect(wrapper.findAll('.issue-row')).toHaveLength(3)
     expect(wrapper.find('.viewer-stub').text()).toBe('factory #3')
     await wrapper.find('[aria-label="Search issues"]').setValue('Issue 23')
-    expect(wrapper.findAll('tbody tr')).toHaveLength(1)
+    expect(wrapper.findAll('.issue-row')).toHaveLength(1)
     expect(wrapper.find('[aria-label="Previous page"]').attributes('disabled')).toBeDefined()
   })
 
@@ -229,7 +235,7 @@ describe('ProjectsView', () => {
     guild.browse_repos = []
     await flushPromises()
     expect(store.fetchIssues).toHaveBeenLastCalledWith([])
-    expect(wrapper.findAll('tbody tr')).toHaveLength(0)
+    expect(wrapper.findAll('.issue-row')).toHaveLength(0)
   })
 
   describe('settings handoff', () => {
@@ -303,21 +309,37 @@ describe('ProjectsView', () => {
       await flushPromises()
       expect(board.find('.count').text()).toBe('1')
       await wrapper.findAll('.issue-status-filters button')[0]!.trigger('click')
-      expect(wrapper.findAll('tbody tr')).toHaveLength(2)
+      expect(wrapper.findAll('.issue-row')).toHaveLength(2)
       expect(board.find('.count').text()).toBe('1')
       await wrapper.findAll('.issue-status-filters button')[1]!.trigger('click')
       expect(fetchBoard).toHaveBeenCalledWith('PVT_1', false)
       expect(router.currentRoute.value.query.board).toBe('PVT_1')
-      expect(wrapper.findAll('tbody tr').map((r) => r.find('td').text())).toEqual(['9'])
+      expect(wrapper.findAll('.issue-row').map((r) => r.find('.issue-num').text())).toEqual(['9'])
       expect(wrapper.find('.board-status').text()).toBe('In Progress')
       expect(wrapper.find('.viewer-stub').text()).toBe('engine #9')
       expect(wrapper.find('.projects-heading a').attributes('href')).toContain('/projects/2')
-      await wrapper.find('.projects-heading button').trigger('click')
+      await wrapper.find('[aria-label="Sync"]').trigger('click')
       expect(fetchBoard).toHaveBeenLastCalledWith('PVT_1', true)
       await wrapper.findAll('.project-list .project-choice')[0]!.trigger('click')
       await flushPromises()
       expect(router.currentRoute.value.query.board).toBeUndefined()
-      expect(wrapper.findAll('tbody tr')).toHaveLength(2)
+      expect(wrapper.findAll('.issue-row')).toHaveLength(2)
     })
+  })
+
+  it('splits pull requests into their own tab and nests sub-issues under parents', async () => {
+    const base = 'https://api.github.com/repos/team/factory/issues/'
+    useGitHubStore().issues = [
+      { ...issue(1), url: base + 1, status: { name: 'Todo' } as never },
+      { ...issue(5), url: base + 5, parent_issue_url: base + 1 },
+      { ...issue(6), pull_request: { merged_at: null } },
+    ]
+    const wrapper = render()
+    const rows = () => wrapper.findAll('.issue-row').map((r) => r.find('.issue-num').text())
+    expect(rows()).toEqual(['1', '5']) // child follows its parent, not newest-first
+    expect(wrapper.findAll('.issue-row')[1]!.classes()).toContain('child')
+    expect(wrapper.find('.board-status').text()).toBe('Todo')
+    await wrapper.findAll('.project-kind-tab')[1]!.trigger('click')
+    expect(rows()).toEqual(['6'])
   })
 })
