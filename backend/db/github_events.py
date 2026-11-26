@@ -35,7 +35,7 @@ def conversation_event_filter(conversation_id: int):
                 col(Task.pr_number) == col(GithubEvent.pr_number),
             ),
         )
-        .where(task_in_conversation(conversation_id), col(Task.finished_at).is_(None))
+        .where(task_in_conversation(conversation_id))
     )
     # Separate indexed branches avoid a correlated scan of the entire delivery log.
     return col(GithubEvent.id).in_(stamped.correlate(None).union(linked.correlate(None)))

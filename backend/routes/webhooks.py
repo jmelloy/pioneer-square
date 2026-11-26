@@ -43,10 +43,11 @@ from models import (
     GuildMember,
     Message,
     Task,
+    link_conversation_task,
 )
 from models import task_conversation_id as primary_conversation_id
 from pydantic import BaseModel
-from sqlalchemy import update
+from sqlalchemy import func, union, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
@@ -135,6 +136,10 @@ def _devready_issue_trigger(event_type: str, action: str | None, payload: dict) 
     return None
 
 
+_ConversationTargets = tuple[tuple[int, str | None], ...]
+_BufferedEvent = tuple[str, str | None, str | None, int | None, _ConversationTargets]
+
+
 class DebounceQueue:
     """Per-PR debounce queue that coalesces rapid webhook events.
 
@@ -144,7 +149,7 @@ class DebounceQueue:
 
     def __init__(self, window_seconds: float = DEBOUNCE_WINDOW_SECONDS) -> None:
         self._window = window_seconds
-        self._buffers: dict[str, list[tuple[str, str | None, str | None, int | None]]] = {}
+        self._buffers: dict[str, list[_BufferedEvent]] = {}
         self._tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
         self._generation: dict[str, int] = {}
 
@@ -190,23 +195,21 @@ class DebounceQueue:
                 exc_info=exc,
             )
 
-    async def _deliver(
-        self, key: str, guild_id: str, items: list[tuple[str, str | None, str | None, int | None]]
-    ) -> None:
-        summaries = [s for s, _, _, _ in items]
+    async def _deliver(self, key: str, guild_id: str, items: list[_BufferedEvent]) -> None:
+        summaries = [s for s, _, _, _, _ in items]
         combined = "\n\n---\n\n".join(summaries) if len(summaries) > 1 else summaries[0]
         # Use the first non-bot user_id in the batch. All items share the same
         # task owner, but a bot user_id (ending in "[bot]") is less useful for
         # attribution than a real human.  Fall back to any non-None user_id if
         # every entry is a bot, and to None if the batch is entirely anonymous.
         user_id = next(
-            (uid for _, uid, _, _ in items if uid and not uid.endswith("[bot]")),
-            next((uid for _, uid, _, _ in items if uid), None),
+            (uid for _, uid, _, _, _ in items if uid and not uid.endswith("[bot]")),
+            next((uid for _, uid, _, _, _ in items if uid), None),
         )
         # All events buffered under one key share a task (key is "{guild}:{task_id}");
         # task_id is metadata on the run, not a separate context (issue #1200).
-        task_id = next((tid for _, _, tid, _ in items if tid), None)
-        conversation_id = next((cid for _, _, _, cid in items if cid is not None), None)
+        task_id = next((tid for _, _, tid, _, _ in items if tid), None)
+        conversation_id = next((cid for _, _, _, cid, _ in items if cid is not None), None)
         await run_foreman_ai(
             guild_id,
             combined,
@@ -215,6 +218,19 @@ class DebounceQueue:
             conversation_id=conversation_id,
             trigger="github-event",
         )
+        # One action owner prevents duplicate follow-ups across shared conversations.
+        observers = {cid: uid for *_, targets in items for cid, uid in targets}
+        for cid, uid in observers.items():
+            if cid != conversation_id:
+                await run_foreman_ai(
+                    guild_id,
+                    combined,
+                    extra_context="Another attached conversation owns actions for this webhook. "
+                    "Explain the event for this conversation's attached tasks; do not take actions.",
+                    user_id=uid,
+                    conversation_id=cid,
+                    trigger="github-event-observer",
+                )
         # Automated github churn (CI check/status especially) fired its run above;
         # only guarantee the safety-net loop exists — do NOT reset the backoff, or
         # a PR under active CI would pin the periodic poll at the floor.
@@ -263,6 +279,7 @@ class DebounceQueue:
         user_id: str | None,
         task_id: str | None = None,
         conversation_id: int | None = None,
+        related_conversations: _ConversationTargets = (),
     ) -> None:
         """Buffer *summary* and (re)start the per-PR debounce timer.
 
@@ -291,7 +308,9 @@ class DebounceQueue:
         # above ensures the old task cannot also deliver the same events, so
         # there is no risk of double delivery.
         self._buffers[key] = snapshot
-        self._buffers[key].append((summary, user_id, task_id, conversation_id))
+        self._buffers[key].append(
+            (summary, user_id, task_id, conversation_id, related_conversations)
+        )
         # Use asyncio.create_task directly: the task is kept alive by
         # self._tasks[key] (a strong reference), so GC is not a concern.
         # _log_fire_error handles unexpected exceptions via the done callback.
@@ -413,7 +432,6 @@ async def _find_task(
             col(Task.guild_id) == guild_pk,
             col(Task.issue_repo if issue else Task.pr_repo) == repo,
             col(Task.issue_number if issue else Task.pr_number) == pr_number,
-            col(Task.finished_at).is_(None),
         )
         .order_by(col(Task.created_at).desc(), col(Task.id).desc())
         .limit(1)
@@ -777,25 +795,57 @@ async def github_webhook(
     issue_number = issue_payload.get("number") if isinstance(issue_payload, dict) else None
     lookup_number = pr_number if pr_number is not None else issue_number
     is_issue = pr_number is None and issue_number is not None
+    if repo and lookup_number is not None:
+        # Serialize association creation until the delivery is committed.
+        await db.exec(
+            select(
+                func.pg_advisory_xact_lock(
+                    func.hashtextextended(
+                        f"webhook-conversation:{guild_pk}:{repo}:{is_issue}:{lookup_number}", 0
+                    )
+                )
+            )
+        )
     task_row = await _find_task(db, guild_pk, repo, lookup_number, issue=is_issue)
     task_id = task_row.id if task_row else None
     task_user_id = task_row.user_id if task_row else None
     task_conversation_id = task_row.conversation_id if task_row else None
-    if task_conversation_id is None and repo and lookup_number is not None:
-        model = GithubIssue if is_issue else GithubPullRequest
-        cached = (
-            await db.exec(
-                select(Conversation.id, Conversation.user_id)
-                .join(model, col(model.conversation_id) == col(Conversation.id))
-                .where(
-                    col(Conversation.guild_id) == guild_pk,
-                    col(model.repo) == repo,
-                    col(model.number) == lookup_number,
+    model = GithubIssue if is_issue else GithubPullRequest
+    related_conversations: _ConversationTargets = ()
+    if repo and lookup_number is not None:
+        associations = [
+            select(ConversationTask.conversation_id)
+            .join(Task, Task.id == ConversationTask.task_id)
+            .where(
+                Task.guild_id == guild_pk,
+                (Task.issue_repo if is_issue else Task.pr_repo) == repo,
+                (Task.issue_number if is_issue else Task.pr_number) == lookup_number,
+            ),
+            select(model.conversation_id).where(model.repo == repo, model.number == lookup_number),
+        ]
+        if pr_number is not None:
+            # Review/comment events may precede a full PR cache payload.
+            associations.append(
+                select(GithubEvent.conversation_id).where(
+                    GithubEvent.guild_id == guild_pk,
+                    GithubEvent.repo == repo,
+                    GithubEvent.pr_number == pr_number,
                 )
             )
-        ).first()
-        if cached:
-            task_conversation_id, task_user_id = cached
+        related_conversations = tuple(
+            (
+                await db.exec(
+                    select(Conversation.id, Conversation.user_id)
+                    .where(
+                        Conversation.guild_id == guild_pk,
+                        Conversation.id.in_(union(*associations)),
+                    )
+                    .order_by(Conversation.id)
+                )
+            ).all()
+        )
+    if task_conversation_id is None and related_conversations:
+        task_conversation_id, task_user_id = related_conversations[0]
 
     # Unowned review/issue work must not inherit the owner's unrelated latest chat.
     requested_reviewer = (payload.get("requested_reviewer") or {}).get("login")
@@ -807,19 +857,29 @@ async def github_webhook(
     starts_work = bool(
         (requested_reviewer and owner_login and requested_reviewer.lower() == owner_login.lower())
         or _devready_issue_trigger(event_type, action, payload)
+        or (
+            (task_id or pr_number is not None)
+            and not (event_type == "pull_request" and action == "review_requested")
+            and _should_dispatch_to_foreman(
+                event_type, action, payload, sender_login, task_id or "new-pr"
+            )[0]
+        )
     )
     if task_conversation_id is None and starts_work:
         owner = (
-            await db.exec(
-                select(GuildMember.user_id)
-                .where(
-                    col(GuildMember.guild_id) == guild_pk,
-                    col(GuildMember.role) == "owner",
-                    col(GuildMember.deleted_at).is_(None),
+            task_user_id
+            or (
+                await db.exec(
+                    select(GuildMember.user_id)
+                    .where(
+                        col(GuildMember.guild_id) == guild_pk,
+                        col(GuildMember.role) == "owner",
+                        col(GuildMember.deleted_at).is_(None),
+                    )
+                    .limit(1)
                 )
-                .limit(1)
-            )
-        ).first()
+            ).first()
+        )
         if owner:
             node = payload.get("pull_request") or issue_payload
             conversation_name = (
@@ -832,6 +892,11 @@ async def github_webhook(
             )
             if conversation is not None:
                 task_conversation_id, task_user_id = conversation.id, owner
+        if task_conversation_id is None:
+            raise HTTPException(status_code=503, detail="Unable to create webhook conversation")
+
+    if task_id and task_conversation_id is not None:
+        await db.exec(link_conversation_task(task_conversation_id, task_id))
 
     # Trim the persisted payload so a runaway diff hunk can't balloon the DB.
     body_text = body.decode("utf-8", errors="replace")
@@ -1279,6 +1344,7 @@ async def github_webhook(
                     task_user_id,
                     task_id=task_id,
                     conversation_id=task_conversation_id,
+                    related_conversations=related_conversations,
                 )
                 logger.info(
                     "github webhook review_requested dispatched guild=%s delivery=%s repo=%s pr=%s "
@@ -1318,6 +1384,7 @@ async def github_webhook(
             task_user_id,
             task_id=task_id,
             conversation_id=task_conversation_id,
+            related_conversations=related_conversations,
         )
         logger.info(
             "github webhook issues devready dispatched guild=%s delivery=%s repo=%s issue=%s "
@@ -1345,6 +1412,7 @@ async def github_webhook(
                 task_user_id,
                 task_id=task_id,
                 conversation_id=task_conversation_id,
+                related_conversations=related_conversations,
             )
         else:
             logger.info(
