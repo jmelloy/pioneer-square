@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useGitHubStore } from '../github'
 import { useGuildStore } from '../guild'
+import { useAuthStore } from '../auth'
 
 describe('useGitHubStore', () => {
   beforeEach(() => {
@@ -74,9 +75,12 @@ describe('useGitHubStore', () => {
       vi.stubGlobal('fetch', fetchMock)
       const store = useGitHubStore()
       store.token = 't'
+      useAuthStore().loginToken = 'backend-session'
       await store.fetchIssues(['team/a'], false, 'closed')
       expect(fetchMock).toHaveBeenCalledOnce()
-      expect(fetchMock.mock.calls[0]![0]).toBe('/api/issues/team/a?state=closed')
+      expect(fetchMock).toHaveBeenCalledWith('/api/issues/team/a?state=closed', {
+        headers: { Authorization: 'Bearer backend-session' },
+      })
       expect(store.issues[0]?.repo).toBe('team/a')
     })
 
