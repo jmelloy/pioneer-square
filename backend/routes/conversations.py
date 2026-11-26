@@ -273,6 +273,11 @@ async def list_conversations(
     cap) but queries :class:`models.Conversation` directly rather than
     joining through ``Thread``, since ``name``/``status`` already live on
     the conversation itself (see its docstring in ``models.py``).
+
+    ``q`` searches names and individual message bodies using English full-text
+    matching (ANDed words, stemming, no substring matching). Blank queries do
+    not filter; stop-word-only queries return no matches. See
+    ``docs/conversation-search.md`` for search and deployment semantics (#1531).
     """
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
