@@ -542,7 +542,7 @@ onMounted(() => {
 
 .issue-title {
   margin: 0;
-  font: 600 var(--text-page-title) / var(--leading-heading) var(--font-ui);
+  font: 600 var(--text-page-title) / var(--leading-heading) var(--font-pixel);
   color: var(--color-brass-light);
   overflow-wrap: anywhere;
   min-width: 0;
@@ -622,7 +622,7 @@ onMounted(() => {
   border-bottom: 2px solid transparent;
   color: var(--color-text-dim);
   cursor: pointer;
-  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-pixel);
   transition: all 0.15s;
   margin-bottom: -1px;
 }

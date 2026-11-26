@@ -623,7 +623,7 @@ watch(
   padding: 0;
   text-align: left;
   cursor: pointer;
-  font: 400 var(--text-page-title) / var(--leading-heading) var(--font-display);
+  font: 400 var(--text-page-title) / var(--leading-heading) var(--font-pixel);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

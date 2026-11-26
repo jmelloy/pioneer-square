@@ -46,6 +46,7 @@ const isLive = computed(() => {
 }
 
 .pane-title {
+  font-family: var(--font-pixel);
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -54,7 +55,7 @@ const isLive = computed(() => {
 }
 
 .title-text {
-  font: 400 var(--text-page-title) / var(--leading-heading) var(--font-display);
+  font: 400 var(--text-page-title) / var(--leading-heading) var(--font-pixel);
   color: var(--color-brass-light);
   min-width: 0;
   overflow-wrap: anywhere;
