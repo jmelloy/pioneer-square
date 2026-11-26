@@ -251,6 +251,7 @@ async function send() {
 }
 .ifp-input {
   flex: 1;
+  min-width: 0;
   background: var(--color-bg);
   border: 2px solid var(--color-brass-dark);
   color: var(--color-text);
@@ -266,5 +267,29 @@ async function send() {
 .ifp-error {
   color: var(--color-red, #e55);
   font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 768px) {
+  .ifp-compose {
+    flex-direction: column;
+  }
+
+  .ifp-input {
+    font-size: 16px;
+  }
+
+  .ifp-open,
+  .ifp-send {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .ifp-conv-name,
+  .ifp-msg-text {
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 }
 </style>
