@@ -435,7 +435,7 @@
 .projects-heading h1 {
   flex: 1;
   color: var(--color-brass-light);
-  font: 400 var(--text-page-title) / var(--leading-heading) var(--font-display);
+  font: 400 var(--text-page-title) / var(--leading-heading) var(--font-pixel);
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -460,7 +460,7 @@
   border-radius: 3px 3px 0 0;
   background: transparent;
   color: var(--color-text-dim);
-  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-pixel);
   cursor: pointer;
 }
 .project-kind-tab.active {
