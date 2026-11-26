@@ -57,6 +57,55 @@ def test_validate_accepts_documents():
     assert artifact_service.artifact_type("image/gif") == "image"
 
 
+@pytest.mark.parametrize("kind", ["image", "html", "text", "pdf"])
+@pytest.mark.parametrize("origin", [None, "https://pioneer.example/"])
+def test_metadata_uses_public_links(monkeypatch, kind, origin):
+    from datetime import UTC, datetime
+
+    from fastapi import Request
+    from models import Artifact
+    from routes.artifacts import _payload
+
+    if origin:
+        monkeypatch.setenv("FRONTEND_URL", origin)
+    else:
+        monkeypatch.delenv("FRONTEND_URL", raising=False)
+    request = Request(
+        {
+            "type": "http",
+            "scheme": "https",
+            "server": ("backend.example", 443),
+            "path": "/",
+            "headers": [],
+        }
+    )
+    row = Artifact(
+        id="id-1",
+        guild_id=1,
+        key="key",
+        url="legacy",
+        type=kind,
+        content_type="text/plain",
+        size_bytes=1,
+        created_at=datetime.now(UTC),
+    )
+    payload = _payload(row, request, "report")
+    base = (origin or "https://backend.example").rstrip("/")
+    url = f"{base}/api/artifacts/id-1/public"
+    hint = "" if kind == "image" else f"?type={kind}"
+    assert payload["public_url"] == url
+    assert payload["artifactUri"] == url + hint
+    assert payload["markdown"] == f"[report]({url}{hint})"
+
+
+def test_absolute_public_url_default(monkeypatch):
+    monkeypatch.delenv("FRONTEND_URL", raising=False)
+    assert (
+        artifact_service.absolute_public_url("id-1")
+        == "http://localhost:5173/api/artifacts/id-1/public"
+    )
+
+
 def test_html_upload_is_typed_and_sandboxed(client, monkeypatch):
     monkeypatch.setenv("FRONTEND_URL", "https://pioneer.example/")
     c, db = client

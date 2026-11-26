@@ -1,7 +1,7 @@
 import type { Directive } from 'vue'
 import { openLightbox } from '../composables/useLightbox'
 
-// renderMarkdown() turns `artifact://<id>` refs into `<a><img src=".../api/artifacts/<id>/public"></a>`
+// renderMarkdown() turns public artifact URLs (and legacy refs) into linked images.
 // (HTML artifacts: `<a href=".../public?type=html">`). This directive styles them and opens the
 // lightbox instead of a new tab.
 const SELECTOR = 'a > img[src*="/api/artifacts/"]'

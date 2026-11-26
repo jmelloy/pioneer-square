@@ -102,7 +102,7 @@ export function uploadArtifact(
               ? 'pdf'
               : 'text'
         const href = kind === 'image' ? url : `${url}?type=${kind}`
-        const name = file.name.replace(/[\[\]()\r\n]/g, '') || 'artifact'
+        const name = file.name.replace(/[[\]()\r\n]/g, '') || 'artifact'
         resolve({
           id: body.id,
           url,

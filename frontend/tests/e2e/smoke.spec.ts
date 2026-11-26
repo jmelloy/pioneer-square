@@ -772,7 +772,11 @@ describeIfBrowser('browser smoke', () => {
           primary_repo: task.issue_repo,
           agents: [],
           messages: [
-            { type: 'chat', from: 'foreman', content: `[${name}](artifact://finishing-image)` },
+            {
+              type: 'chat',
+              from: 'foreman',
+              content: `[${name}](${baseUrl}/api/artifacts/finishing-image/public)`,
+            },
           ],
         },
       }),
