@@ -27,7 +27,14 @@ from _test_config import TEST_DATABASE_URL
 from auth_deps import get_guild_pk
 from foreman import triggers
 from foreman.conversation_service import close_conversation, get_or_create_active_conversation
-from helpers import create_db, insert_conversation, insert_guild, truncate_all
+from helpers import (
+    _sync_session,
+    create_db,
+    insert_conversation,
+    insert_guild,
+    make_auth_token,
+    truncate_all,
+)
 from models import Conversation, Message
 from routes.conversations import (
     ConversationMessageCreate,
@@ -304,12 +311,39 @@ class TestListConversationsRoute:
 
 
 class TestSearchConversationsRoute:
+    def test_search_http_requires_membership_and_returns_conversations(self, client):
+        test_client, db_url = client
+        insert_guild(db_url, "g-search-http")
+        conv_id = insert_conversation(db_url, "g-search-http")
+        with _sync_session(db_url) as db:
+            conversation = db.get(Conversation, conv_id)
+            conversation.name = "Deployment incidents"
+            db.commit()
+        url = "/api/guilds/g-search-http/conversations?q=deployments"
+        assert test_client.get(url).status_code == 401
+        outsider = make_auth_token(db_url, user_id="outsider")
+        assert (
+            test_client.get(url, headers={"Authorization": f"Bearer {outsider}"}).status_code == 403
+        )
+        member = make_auth_token(db_url)
+        response = test_client.get(url, headers={"Authorization": f"Bearer {member}"})
+        assert response.status_code == 200
+        assert [c["id"] for c in response.json()] == [conv_id]
+        assert response.json()[0]["name"] == "Deployment incidents"
+
     @pytest.mark.parametrize(
         ("query", "status", "matches"),
         [
             (" PIPELINE ", None, True),
             ("needle", None, True),
             ("100%_", None, True),
+            ("pipelines", None, True),
+            ("needles completion", None, True),
+            ("needle missing", None, False),
+            ("need", None, False),
+            ("the and", None, False),
+            ("%_", None, False),
+            ("' OR 1=1 --", None, False),
             ("needle", "archived", True),
             ("needle", "active", False),
             ("missing", None, False),
@@ -359,6 +393,58 @@ class TestSearchConversationsRoute:
             out = await list_conversations("g-search", status, "user-1", db, q=query)
 
         assert [c.id for c in out] == ([conversation.id] if matches else [])
+
+    async def test_search_tracks_message_edits_and_conversation_renames(self, db_session):
+        insert_guild(db_session, "g-search-edit")
+        guild_pk = await _guild_pk("g-search-edit")
+        conv_id = insert_conversation(db_session, "g-search-edit", user_id="user-1")
+        async with database_module.AsyncSessionLocal() as db:
+            conversation = await db.get(Conversation, conv_id)
+            conversation.name = None
+            message = Message(
+                guild_id=guild_pk,
+                conversation_id=conv_id,
+                content="Running deployments",
+                message_type="chat",
+                created_at=datetime.now(UTC),
+            )
+            db.add(message)
+            await db.commit()
+            out = await list_conversations("g-search-edit", None, "user-1", db, q="deployment")
+            assert [c.id for c in out] == [conv_id]
+
+            message.content = "Resolved incident"
+            await db.commit()
+            assert (
+                await list_conversations("g-search-edit", None, "user-1", db, q="deployment") == []
+            )
+            conversation.name = "Deployment guide"
+            await db.commit()
+            out = await list_conversations("g-search-edit", None, "user-1", db, q="deployment")
+            assert [c.id for c in out] == [conv_id]
+
+    async def test_excludes_unlinked_and_wrong_guild_messages(self, db_session):
+        insert_guild(db_session, "g-search-scope")
+        insert_guild(db_session, "g-search-other")
+        guild_pk = await _guild_pk("g-search-scope")
+        other_pk = await _guild_pk("g-search-other")
+        conv_id = insert_conversation(db_session, "g-search-scope", user_id="user-1")
+        async with database_module.AsyncSessionLocal() as db:
+            for owner, conversation_id in [(guild_pk, None), (other_pk, conv_id)]:
+                db.add(
+                    Message(
+                        guild_id=owner,
+                        conversation_id=conversation_id,
+                        content="secret needle",
+                        message_type="chat",
+                        created_at=datetime.now(UTC),
+                    )
+                )
+            await db.commit()
+            assert await list_conversations("g-search-scope", None, "user-1", db, q="needle") == []
+            # Whitespace retains the existing unfiltered list behavior.
+            out = await list_conversations("g-search-scope", None, "user-1", db, q="  ")
+            assert [c.id for c in out] == [conv_id]
 
     async def test_searches_before_applying_result_limit(self, db_session):
         insert_guild(db_session, "g-search-old")
