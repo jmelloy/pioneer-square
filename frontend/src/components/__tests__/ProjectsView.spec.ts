@@ -5,6 +5,7 @@ import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import ProjectsView from '../ProjectsView.vue'
 import { useGitHubStore } from '../../stores/github'
 import { useGuildStore } from '../../stores/guild'
+import { useTasksStore } from '../../stores/tasks'
 import type { GitHubIssue } from '../../types'
 
 enableAutoUnmount(afterEach)
@@ -341,5 +342,32 @@ describe('ProjectsView', () => {
     expect(wrapper.find('.board-status').text()).toBe('Todo')
     await wrapper.findAll('.project-kind-tab')[1]!.trigger('click')
     expect(rows()).toEqual(['6'])
+  })
+
+  it("shows each issue's newest task and counts closed sub-issues the Open filter hides", () => {
+    useGitHubStore().issues = [
+      { ...issue(1), sub_issues_summary: { total: 3, completed: 2, percent_completed: 67 } },
+    ]
+    useTasksStore().tasks = [
+      {
+        id: 't-old',
+        state: 'done',
+        issue_repo: 'team/factory',
+        issue_number: 1,
+        created_at: '2026-01-01',
+      },
+      {
+        id: 't-new',
+        state: 'awaiting-review',
+        worker_id: 'w-3f2a',
+        issue_repo: 'team/factory',
+        issue_number: 1,
+        created_at: '2026-02-01',
+      },
+    ]
+    const wrapper = render()
+    expect(wrapper.find('.task-state').text()).toBe('● w-3f2a · review')
+    expect(wrapper.find('.task-state').classes()).toContain('amber')
+    expect(wrapper.find('.sub-hidden').text()).toBe('2 closed hidden')
   })
 })

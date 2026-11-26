@@ -182,6 +182,13 @@
                     <span class="project-state" :class="itemState(row.issue)">{{
                       itemState(row.issue)
                     }}</span>
+                    <span
+                      v-if="taskFor(row.issue)"
+                      class="task-state"
+                      :class="tasksStore.stateColor(taskFor(row.issue)!.state)"
+                      >● {{ taskFor(row.issue)!.worker_id ?? 'unassigned' }} ·
+                      {{ tasksStore.stateLabel(taskFor(row.issue)!.state) }}</span
+                    >
                     <span v-if="statusName(row.issue)" class="board-status">{{
                       statusName(row.issue)
                     }}</span>
@@ -195,6 +202,11 @@
                       }}
                       sub-issues
                     </span>
+                    <span
+                      v-if="state === 'open' && row.issue.sub_issues_summary?.completed"
+                      class="sub-hidden"
+                      >{{ row.issue.sub_issues_summary.completed }} closed hidden</span
+                    >
                     <span v-if="!selectedRepo || selectedBoard" class="issue-repo"
                       >◆ {{ row.issue.repo.split('/').pop() }}</span
                     >
@@ -266,13 +278,27 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { readLegacyRepos, useGitHubStore } from '../stores/github'
 import { useGuildStore } from '../stores/guild'
 import { useUiStore } from '../stores/ui'
+import { useTasksStore } from '../stores/tasks'
 import { formatAge } from '../utils/format'
 import IssueViewer from './IssueViewer.vue'
 import { useQueryRef } from '../composables/useQueryRef'
-import type { GitHubIssue } from '../types'
+import type { GitHubIssue, Task } from '../types'
 
 const ghStore = useGitHubStore()
 const guildStore = useGuildStore()
+const tasksStore = useTasksStore()
+// Newest task per issue, from the guild's task list (kept live over the WebSocket).
+const issueTasks = computed(() => {
+  const latest = new Map<string, Task>()
+  for (const task of tasksStore.tasks) {
+    if (!task.issue_number || !task.issue_repo) continue
+    const key = `${task.issue_repo}#${task.issue_number}`
+    const seen = latest.get(key)
+    if (!seen || (task.created_at ?? '') > (seen.created_at ?? '')) latest.set(key, task)
+  }
+  return latest
+})
+const taskFor = (issue: GitHubIssue) => issueTasks.value.get(`${issue.repo}#${issue.number}`)
 const projectSearch = ref('')
 const search = ref('')
 // URL value of ?project=: '' (absent) = default, 'all' = All projects, else owner/repo.
