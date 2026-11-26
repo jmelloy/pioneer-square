@@ -1042,8 +1042,23 @@ onMounted(() => {
   }
 
   .issue-tab-btn {
-    flex: 1;
+    flex: 1 1 auto;
     white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .section-header {
+    flex-wrap: wrap;
+  }
+
+  .section-title {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .sub-state {
+    width: auto;
+    min-width: 40px;
   }
 
   .issue-viewer :is(button, .gh-link, .gh-link-sm, .sub-list a, .tl-pr) {

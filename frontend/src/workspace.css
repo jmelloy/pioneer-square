@@ -758,6 +758,13 @@
 }
 
 @media (max-width: 768px) {
+  .projects-workspace:has(.show-detail) .project-sidebar,
+  .show-detail .projects-heading,
+  .show-detail .project-kind-tabs,
+  .show-detail .projects-toolbar {
+    display: none;
+  }
+
   .projects-workspace {
     flex-direction: column;
     padding: 0;

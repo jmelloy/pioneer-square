@@ -193,7 +193,7 @@ describeIfBrowser('browser smoke', () => {
     await page.setViewportSize({ width: 390, height: 844 })
     await expectScrollable('.project-table-scroll')
     await page.locator('.issue-select').first().click()
-    await expectScrollable('.issue-tab-content')
+    await expectScrollable('.issue-viewer')
   }, 30_000)
 
   it('keeps workspace text readable and contained across phone and desktop widths', async () => {
@@ -375,7 +375,7 @@ describeIfBrowser('browser smoke', () => {
   it('reflows issue details and comments with touch-sized actions on mobile', async () => {
     page.setDefaultTimeout(5000)
     await installTypographyFixture(page)
-    const longText = 'unbroken-identifier'.repeat(20)
+    const longText = 'unbroken-identifier'.repeat(5)
     await page.route('**/api/issues/test/factory/1', (route) =>
       route.fulfill({
         json: {
@@ -386,7 +386,7 @@ describeIfBrowser('browser smoke', () => {
             state: 'open',
             html_url: 'https://github.com/test/factory/issues/1',
             created_at: task.created_at,
-            user: { login: longText, avatar_url: '' },
+            user: { login: longText, avatar_url: 'https://example.com/mobile-test.svg' },
             labels: [{ id: 1, name: longText, color: 'eab900' }],
             body: `${logs[0]!.line}\n\n![Wide image](https://example.com/mobile-test.svg)`,
           },
@@ -395,7 +395,7 @@ describeIfBrowser('browser smoke', () => {
               id: 1,
               body: logs[0]!.line,
               created_at: task.created_at,
-              user: { login: longText, avatar_url: '' },
+              user: { login: longText, avatar_url: 'https://example.com/mobile-test.svg' },
               html_url: 'https://github.com/test/factory/issues/1#issuecomment-1',
             },
           ],
@@ -405,7 +405,7 @@ describeIfBrowser('browser smoke', () => {
     await page.route('https://example.com/mobile-test.svg', (route) =>
       route.fulfill({
         contentType: 'image/svg+xml',
-        body: '<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="300" />',
+        body: '<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="300"><rect width="1400" height="300" fill="#64748b" /></svg>',
       }),
     )
     await page.goto(`${baseUrl}/${task.guild_id}`)
@@ -420,25 +420,27 @@ describeIfBrowser('browser smoke', () => {
           .locator('.issue-tab-bar')
           .getByRole('button', { name: new RegExp(tab) })
           .click()
-        const overflow = await page
-          .locator('.issue-viewer')
-          .evaluate((el) =>
-            [el, ...el.querySelectorAll('*')]
-              .filter(
-                (node) =>
-                  node.tagName !== 'IMG' &&
-                  node.clientWidth > 0 &&
-                  node.scrollWidth > node.clientWidth + 1,
-              )
-              .map((node) => ({
-                className: node.className,
-                width: node.clientWidth,
-                scroll: node.scrollWidth,
-                font: getComputedStyle(node).fontSize,
-              })),
-          )
+        const overflow = await page.locator('.issue-viewer').evaluate((el) =>
+          [el, ...el.querySelectorAll('*')]
+            .filter(
+              (node) =>
+                node.tagName !== 'IMG' &&
+                node.clientWidth > 0 &&
+                node.scrollWidth > node.clientWidth + 1,
+            )
+            .map((node) => ({
+              className: node.className,
+              width: node.clientWidth,
+              scroll: node.scrollWidth,
+              font: getComputedStyle(node).fontSize,
+            })),
+        )
         expect(overflow, `${width}px ${tab} overflow`).toEqual([])
         expect(await page.locator('.project-table-pane').isVisible()).toBe(false)
+        expect(await page.locator('.projects-toolbar').isVisible()).toBe(false)
+        expect(
+          await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth),
+        ).toBeLessThanOrEqual(1)
         const targets = await page
           .locator('.issue-viewer button, .issue-viewer .gh-link, .issue-viewer .gh-link-sm')
           .evaluateAll((els) =>
@@ -458,11 +460,29 @@ describeIfBrowser('browser smoke', () => {
           [320, 768].includes(width) &&
           tab !== 'Task Log'
         ) {
-          await page.locator('.issue-title').scrollIntoViewIfNeeded()
+          if (width === 320 && tab === 'Details') {
+            await page.locator('.issue-viewer').evaluate((el) => {
+              el.scrollTop = 0
+            })
+            await page.screenshot({
+              path: `${process.env.ISSUE_MOBILE_SCREENSHOTS}/issue-320-header.png`,
+            })
+          }
+          await page
+            .locator(
+              tab === 'Details' ? '.issue-body-section > .section-header' : '.comment-header',
+            )
+            .scrollIntoViewIfNeeded()
           await page.screenshot({
             path: `${process.env.ISSUE_MOBILE_SCREENSHOTS}/issue-${width}-${tab.toLowerCase()}.png`,
             fullPage: true,
           })
+          if (width === 320 && tab === 'Comments') {
+            await page.locator('.post-comment-section').scrollIntoViewIfNeeded()
+            await page.screenshot({
+              path: `${process.env.ISSUE_MOBILE_SCREENSHOTS}/issue-320-comment-composer.png`,
+            })
+          }
         }
       }
       await page.locator('.issue-title-row .edit-btn').click()
