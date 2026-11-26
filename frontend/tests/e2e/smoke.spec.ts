@@ -372,6 +372,115 @@ describeIfBrowser('browser smoke', () => {
     }
   }, 30_000)
 
+  it('reflows issue details and comments with touch-sized actions on mobile', async () => {
+    page.setDefaultTimeout(5000)
+    await installTypographyFixture(page)
+    const longText = 'unbroken-identifier'.repeat(20)
+    await page.route('**/api/issues/test/factory/1', (route) =>
+      route.fulfill({
+        json: {
+          issue: {
+            id: 1,
+            number: 1,
+            title: longText,
+            state: 'open',
+            html_url: 'https://github.com/test/factory/issues/1',
+            created_at: task.created_at,
+            user: { login: longText, avatar_url: '' },
+            labels: [{ id: 1, name: longText, color: 'eab900' }],
+            body: `${logs[0]!.line}\n\n![Wide image](https://example.com/mobile-test.svg)`,
+          },
+          comments: [
+            {
+              id: 1,
+              body: logs[0]!.line,
+              created_at: task.created_at,
+              user: { login: longText, avatar_url: '' },
+              html_url: 'https://github.com/test/factory/issues/1#issuecomment-1',
+            },
+          ],
+        },
+      }),
+    )
+    await page.route('https://example.com/mobile-test.svg', (route) =>
+      route.fulfill({
+        contentType: 'image/svg+xml',
+        body: '<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="300" />',
+      }),
+    )
+    await page.goto(`${baseUrl}/${task.guild_id}`)
+    await page.getByRole('button', { name: /Projects \/ Issues/ }).click()
+    await page.locator('.issue-select').first().click()
+    await page.locator('.issue-body img').waitFor()
+
+    for (const width of [320, 375, 390, 700, 701, 768]) {
+      await page.setViewportSize({ width, height: 740 })
+      for (const tab of ['Details', 'Comments', 'Task Log']) {
+        await page
+          .locator('.issue-tab-bar')
+          .getByRole('button', { name: new RegExp(tab) })
+          .click()
+        const overflow = await page
+          .locator('.issue-viewer')
+          .evaluate((el) =>
+            [el, ...el.querySelectorAll('*')]
+              .filter(
+                (node) =>
+                  node.tagName !== 'IMG' &&
+                  node.clientWidth > 0 &&
+                  node.scrollWidth > node.clientWidth + 1,
+              )
+              .map((node) => ({
+                className: node.className,
+                width: node.clientWidth,
+                scroll: node.scrollWidth,
+                font: getComputedStyle(node).fontSize,
+              })),
+          )
+        expect(overflow, `${width}px ${tab} overflow`).toEqual([])
+        expect(await page.locator('.project-table-pane').isVisible()).toBe(false)
+        const targets = await page
+          .locator('.issue-viewer button, .issue-viewer .gh-link, .issue-viewer .gh-link-sm')
+          .evaluateAll((els) =>
+            els.map((el) => ({
+              name: el.textContent,
+              width: el.getBoundingClientRect().width,
+              height: el.getBoundingClientRect().height,
+            })),
+          )
+        for (const target of targets) {
+          expect(target.width, `${width}px ${target.name} width`).toBeGreaterThanOrEqual(44)
+          expect(target.height, `${width}px ${target.name} height`).toBeGreaterThanOrEqual(44)
+        }
+        await page.locator('.ifp-send').scrollIntoViewIfNeeded()
+        if (
+          process.env.ISSUE_MOBILE_SCREENSHOTS &&
+          [320, 768].includes(width) &&
+          tab !== 'Task Log'
+        ) {
+          await page.locator('.issue-title').scrollIntoViewIfNeeded()
+          await page.screenshot({
+            path: `${process.env.ISSUE_MOBILE_SCREENSHOTS}/issue-${width}-${tab.toLowerCase()}.png`,
+            fullPage: true,
+          })
+        }
+      }
+      await page.locator('.issue-title-row .edit-btn').click()
+      await page.locator('.title-input').fill('Edited title')
+      expect(
+        await page.locator('.title-input').evaluate((el) => el.scrollWidth - el.clientWidth),
+      ).toBeLessThanOrEqual(1)
+      await page.locator('.issue-title-edit .cancel-btn').click()
+      await page
+        .locator('.issue-tab-bar')
+        .getByRole('button', { name: 'Details', exact: true })
+        .click()
+      await page.locator('.issue-body-section .edit-btn').click()
+      await page.locator('.body-textarea').fill('Edited description')
+      await page.locator('.body-edit .cancel-btn').click()
+    }
+  }, 60_000)
+
   it('uses readable standalone log typography without widening the page', async () => {
     await installTypographyFixture(page)
     await page.goto(`${baseUrl}/task/${task.id}/log`)

@@ -448,6 +448,7 @@ onMounted(() => {
 <style scoped>
 .issue-viewer {
   width: 100%;
+  min-width: 0;
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -563,6 +564,7 @@ onMounted(() => {
   color: var(--color-text);
   border-radius: 3px;
   width: 100%;
+  box-sizing: border-box;
 }
 
 .title-input:focus {
@@ -1003,5 +1005,85 @@ onMounted(() => {
 .tl-logs-pre code {
   background: none;
   padding: 0;
+}
+
+.issue-repo-label,
+.issue-author,
+.comment-author,
+.sub-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.avatar,
+.edit-btn {
+  flex-shrink: 0;
+}
+
+.issue-viewer :deep(.markdown-prose img) {
+  max-width: 100%;
+  height: auto;
+}
+
+@media (max-width: 768px) {
+  /* One scroll surface keeps long headers and the composer reachable on short screens. */
+  .issue-viewer {
+    overflow-y: auto;
+  }
+
+  .issue-tab-content {
+    flex: none;
+    overflow: visible;
+  }
+
+  .issue-tab-bar {
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+
+  .issue-tab-btn {
+    flex: 1;
+    white-space: normal;
+  }
+
+  .issue-viewer :is(button, .gh-link, .gh-link-sm, .sub-list a, .tl-pr) {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .gh-link,
+  .gh-link-sm,
+  .sub-list a,
+  .tl-pr {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .sub-list li {
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .sub-title {
+    flex-basis: 100%;
+  }
+
+  .tl-name {
+    flex-basis: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .issue-viewer :deep(.markdown-prose pre) {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .issue-viewer :deep(.markdown-prose table) {
+    display: table;
+    width: 100%;
+    table-layout: fixed;
+  }
 }
 </style>
