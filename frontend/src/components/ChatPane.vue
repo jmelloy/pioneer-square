@@ -171,7 +171,7 @@ onUnmounted(() => {
 }
 
 .chat-title {
-  font: 400 var(--text-section-title) / var(--leading-heading) var(--font-pixel);
+  font: 400 var(--text-section-title) / var(--leading-heading) var(--font-display);
   color: var(--color-brass-light);
   letter-spacing: 0.02em;
   text-shadow: 0 0 6px rgba(255, 214, 68, 0.4);

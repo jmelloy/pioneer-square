@@ -658,7 +658,7 @@ onBeforeUnmount(() => {
   border: 1px solid var(--color-brass-dark);
   color: var(--color-text-dim);
   cursor: pointer;
-  font: 600 var(--text-small) / var(--leading-heading) var(--font-pixel);
+  font: 600 var(--text-small) / var(--leading-heading) var(--font-ui);
   text-transform: uppercase;
   padding: 6px 12px;
   border-radius: 2px;

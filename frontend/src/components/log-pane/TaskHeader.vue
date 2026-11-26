@@ -106,7 +106,7 @@ function formatDateTime(iso?: string) {
 }
 
 .pane-description-label {
-  font: 600 var(--text-caption) / 1.4 var(--font-pixel);
+  font: 600 var(--text-caption) / 1.4 var(--font-ui);
   color: var(--color-text-dim);
   margin-bottom: 6px;
 }

@@ -87,6 +87,7 @@ body {
 
 /* Explicit opt-in also covers standalone views and teleported panels. */
 .ui-surface {
+  --font-pixel: var(--font-ui);
   --font-button: var(--font-ui);
   --text-button: 0.875rem;
   --tracking-button: normal;

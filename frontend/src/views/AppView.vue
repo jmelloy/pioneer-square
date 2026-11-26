@@ -296,7 +296,7 @@ watch(
   }
 
   .tab-label {
-    font: 600 var(--text-caption) / var(--leading-heading) var(--font-pixel);
+    font: 600 var(--text-caption) / var(--leading-heading) var(--font-ui);
     text-transform: uppercase;
   }
 
