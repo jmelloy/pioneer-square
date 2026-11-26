@@ -7,6 +7,7 @@ bytes in S3 (see ``artifact_service``) and records an ``artifacts`` row.
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 from datetime import UTC, datetime
 
@@ -16,7 +17,7 @@ from auth_deps import get_guild_pk, require_worker_or_member_path
 from conversation_activity import publish_activity
 from database import get_db_dep
 from events import broadcast_msg
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from models import Artifact, Task, TaskLog, Worker, task_conversation_id
 from sqlmodel import col, select
@@ -38,13 +39,16 @@ def artifact_uri(a: Artifact) -> str:
     return f"artifact://{a.id}" + ("" if a.type == "image" else f"?type={a.type}")
 
 
-def _payload(a: Artifact, name: str | None = None) -> dict:
+def _payload(a: Artifact, request: Request, name: str | None = None) -> dict:
     uri = artifact_uri(a)
+    # Workers may reach us over an internal hostname; prefer the configured public origin.
+    base = (os.environ.get("FRONTEND_URL") or str(request.base_url)).rstrip("/")
     return {
         "id": a.id,
         "key": a.key,
         # Stored url may be a legacy presigned link; always hand out the permanent one.
         "url": artifact_service.public_url(a.id),
+        "public_url": base + artifact_service.public_url(a.id),
         "contentType": a.content_type,
         "type": a.type,
         "sizeBytes": a.size_bytes,
@@ -60,6 +64,7 @@ def _payload(a: Artifact, name: str | None = None) -> dict:
 @router.post("/guilds/{guild_id}/artifacts")
 async def upload_artifact(
     guild_id: str,
+    request: Request,
     file: UploadFile = File(...),
     task_id: str | None = Form(default=None),
     type: str | None = Form(default=None),  # optional; must match the file's content type
@@ -111,7 +116,7 @@ async def upload_artifact(
         updated_at=now,
     )
     db.add(row)
-    payload = _payload(row, file.filename)
+    payload = _payload(row, request, file.filename)
     line = f"Artifact: {payload['markdown']}"
     if task_id:
         db.add(TaskLog(task_id=task_id, timestamp=now, line=line, worker_id=worker_id))
@@ -152,6 +157,7 @@ async def upload_artifact(
 async def get_artifact(
     guild_id: str,
     artifact_id: str,
+    request: Request,
     _principal: str = Depends(require_worker_or_member_path),
     db: AsyncSession = Depends(get_db_dep),
 ):
@@ -165,7 +171,7 @@ async def get_artifact(
     ).first()
     if row is None:
         raise HTTPException(status_code=404, detail="Artifact not found")
-    return _payload(row)
+    return _payload(row, request)
 
 
 @router.get("/api/artifacts/{artifact_id}/public")

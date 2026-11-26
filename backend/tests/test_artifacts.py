@@ -80,7 +80,12 @@ def test_html_upload_is_typed_and_sandboxed(client, monkeypatch):
     assert pub.headers["content-security-policy"] == "sandbox allow-scripts"
 
 
-def test_upload_route(client, monkeypatch):
+@pytest.mark.parametrize("public_origin", [None, "https://pioneer.example/"])
+def test_upload_route(client, monkeypatch, public_origin):
+    if public_origin:
+        monkeypatch.setenv("FRONTEND_URL", public_origin)
+    else:
+        monkeypatch.delenv("FRONTEND_URL", raising=False)
     c, db = client
     insert_guild(db, "art1")
     insert_member(db, "art1", "m-art1", "member")
@@ -98,6 +103,12 @@ def test_upload_route(client, monkeypatch):
     assert r.status_code == 200, r.text
     # Payload always carries the permanent proxy URL, never the S3 one.
     assert r.json()["url"] == "/api/artifacts/id-1/public"
+    base = (public_origin or str(c.base_url)).rstrip("/")
+    public_url = base + "/api/artifacts/id-1/public"
+    assert r.json()["public_url"] == public_url
+    metadata = c.get("/guilds/art1/artifacts/id-1", headers=h)
+    assert metadata.status_code == 200, metadata.text
+    assert metadata.json()["public_url"] == public_url
 
     class Body:
         def iter_chunks(self, size):
@@ -105,7 +116,7 @@ def test_upload_route(client, monkeypatch):
 
     seen = []
     monkeypatch.setattr(artifact_service, "open_object", lambda key: seen.append(key) or Body())
-    pub = c.get("/api/artifacts/id-1/public")  # no auth: the UUID is the capability
+    pub = c.get(public_url)  # no auth: the UUID is the capability
     assert pub.status_code == 200, pub.text
     assert pub.content == PNG and seen == ["a/art1/id-1.png"]
     assert pub.headers["content-type"] == "image/png"
@@ -124,6 +135,7 @@ def test_upload_route(client, monkeypatch):
 def test_task_upload_persists_and_broadcasts_link(client, monkeypatch):
     from routes import artifacts
 
+    monkeypatch.setenv("FRONTEND_URL", "https://pioneer.example/")
     c, db = client
     insert_guild(db, "art-task")
     insert_member(db, "art-task", "m-art-task", "member")
@@ -149,6 +161,20 @@ def test_task_upload_persists_and_broadcasts_link(client, monkeypatch):
         headers=h,
     )
     assert r.status_code == 200, r.text
+    public_url = "https://pioneer.example/api/artifacts/report-id/public"
+    assert r.json()["public_url"] == public_url
+    metadata = c.get("/guilds/art-task/artifacts/report-id", headers=h)
+    assert metadata.status_code == 200, metadata.text
+    assert metadata.json()["public_url"] == public_url
+
+    class Body:
+        def iter_chunks(self, size):
+            yield b"<h1>report</h1>"
+
+    monkeypatch.setattr(artifact_service, "open_object", lambda key: Body())
+    downloaded = c.get(public_url)
+    assert downloaded.status_code == 200, downloaded.text
+    assert downloaded.content == b"<h1>report</h1>"
     log = c.get("/api/task/t-art-task/log", headers=h)
     assert log.status_code == 200, log.text
     assert [entry["line"] for entry in log.json()["logs"]] == [
